@@ -1,15 +1,10 @@
 #!/usr/bin/env sh
-# install.sh — quiet one-command Astrid installer
+# install.sh — one command. That's the product.
 #
 #   curl -fsSL https://astridos.org/install.sh | sh
 #
-# Ownership (keep this thin):
-#   * This script  → CLI + bootable base; announce host plugins
-#   * Marketplace  → editor plugin (MCP, doctor, hooks)
-#   * astrid init  → capsules (doctor offers on SessionStart; --host does it now)
-#   * astrid update → CLI upgrade the Astrid way
-#
-# Quiet by default. Pass --verbose for chatter.
+# Quiet: only checkmarks of what ran. Does CLI + base + detected host
+# plugins (marketplace) + host capsules (astrid init). Re-run upgrades.
 set -eu
 
 ORACLES_REPO="${ASTRID_ORACLES_REPO:-unicity-astrid/oracles}"
@@ -19,10 +14,8 @@ ASTRID_MANAGED_BIN="${ASTRID_HOME:-$HOME/.astrid}/bin"
 BREW_TAP="${ASTRID_BREW_TAP:-unicity-astrid/tap}"
 BREW_FORMULA="${ASTRID_BREW_FORMULA:-astrid}"
 
-VERBOSE=0
 NO_BREW=0
 BASE_ONLY=0
-SKIP_INIT=0
 ALL_HOSTS=0
 REQUESTED_HOSTS=""
 BIN_ROOT="${ASTRID_BIN_ROOT:-}"
@@ -30,26 +23,21 @@ ASTRID=""
 
 have() { command -v "$1" >/dev/null 2>&1; }
 say()  { printf '%s\n' "$*"; }
-v()    { [ "$VERBOSE" -eq 1 ] && say "  $*" || true; }
-die()  { say "error: $*" >&2; exit 1; }
-step() { say "• $*"; }
-ok()   { say "  ✓ $*"; }
+die()  { say "✗ $*" >&2; exit 1; }
+ok()   { say "✓ $*"; }
+fail() { say "✗ $*"; }
 
 usage() {
   cat <<'EOF'
-Astrid installer (quiet)
+curl -fsSL https://astridos.org/install.sh | sh
 
-  curl -fsSL https://astridos.org/install.sh | sh
+One command: CLI, base home, plugins + capsules for hosts on this machine.
 
-Ensures the CLI, a bootable base home, and points you at host plugins.
-Capsules are provisioned by the SessionStart doctor (or --host).
-
-  --host NAME   also run distro init for claude|grok|codex (repeatable)
-  --all         --host for every host
-  --base-only   skip host detection / plugin hints
+  --host NAME   only this host (claude|grok|codex), repeatable
+  --all         every host
+  --base-only   skip host plugins/capsules
   --no-brew     never use Homebrew
   --bin-root D  use astrid from D
-  --verbose     more output
   -h, --help
 EOF
 }
@@ -61,7 +49,7 @@ while [ "$#" -gt 0 ]; do
       h="${1:-}"
       case "$h" in
         claude|grok|codex) REQUESTED_HOSTS="${REQUESTED_HOSTS} ${h}" ;;
-        *) die "unknown host '$h' (want claude|grok|codex)" ;;
+        *) die "unknown host '$h'" ;;
       esac
       ;;
     --all) ALL_HOSTS=1 ;;
@@ -72,19 +60,16 @@ while [ "$#" -gt 0 ]; do
       BIN_ROOT="${1:-}"
       [ -n "$BIN_ROOT" ] || die "--bin-root needs a path"
       ;;
-    --skip-init) SKIP_INIT=1 ;;
-    --verbose|-v) VERBOSE=1 ;;
-    --yes|-y|--upgrade) ;; # accepted, no-op (always non-interactive + upgrade-friendly)
+    --yes|-y|--upgrade|--verbose|-v|--skip-init) ;; # accepted for compat
     -h|--help) usage; exit 0 ;;
-    *) die "unknown argument: $1 (try --help)" ;;
+    *) die "unknown argument: $1" ;;
   esac
   shift
 done
 
-# --- GitHub token (capsule/API paths; also helps astrid update) ------------
 if [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] && have gh; then
   _tok="$(gh auth token 2>/dev/null || true)"
-  [ -n "$_tok" ] && export GH_TOKEN="$_tok" && v "using GH_TOKEN from gh auth"
+  [ -n "$_tok" ] && export GH_TOKEN="$_tok"
 fi
 
 has_pair() { [ -n "$1" ] && [ -x "$1/astrid" ] && [ -x "$1/astrid-daemon" ]; }
@@ -117,7 +102,7 @@ install_from_github() {
   if [ -n "${ASTRID_VERSION:-}" ]; then
     tag="v${ASTRID_VERSION#v}"
   else
-    have curl || die "curl required to install from GitHub releases"
+    have curl || die "curl required"
     api="https://api.github.com/repos/${ASTRID_RELEASE_REPO}/releases/latest"
     meta="$(curl -fsSL --max-time 30 \
       ${GH_TOKEN:+-H "Authorization: Bearer ${GH_TOKEN}"} \
@@ -130,15 +115,12 @@ install_from_github() {
   asset="astrid-${version}-${target}.tar.gz"
   base="https://github.com/${ASTRID_RELEASE_REPO}/releases/download/${tag}"
 
-  v "downloading $asset"
-  curl -fsSL --max-time 120 -o "$tmp/$asset" "${base}/${asset}" \
-    || die "download failed: ${base}/${asset}"
-  curl -fsSL --max-time 30 -o "$tmp/SHA256SUMS.txt" "${base}/SHA256SUMS.txt" \
-    || die "could not download SHA256SUMS.txt"
+  curl -fsSL --max-time 120 -o "$tmp/$asset" "${base}/${asset}" || die "download failed"
+  curl -fsSL --max-time 30 -o "$tmp/SHA256SUMS.txt" "${base}/SHA256SUMS.txt" || die "no SHA256SUMS"
   expected="$(awk -v a="$asset" '$2 == a || $2 == "./"a || index($0, a) { print $1; exit }' "$tmp/SHA256SUMS.txt")"
   [ -n "$expected" ] || die "no checksum for $asset"
   actual="$(sha256_file "$tmp/$asset")"
-  [ "$expected" = "$actual" ] || die "checksum mismatch for $asset"
+  [ "$expected" = "$actual" ] || die "checksum mismatch"
 
   mkdir -p "$ASTRID_MANAGED_BIN"
   tar -xzf "$tmp/$asset" -C "$tmp"
@@ -155,28 +137,25 @@ install_from_github() {
   ASTRID="$ASTRID_MANAGED_BIN/astrid"
   export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
 
-  # PATH for future shells (once)
   case "$(uname -s 2>/dev/null)" in Darwin) path_rc="$HOME/.zprofile" ;; *) path_rc="$HOME/.profile" ;; esac
   if [ -n "$path_rc" ] && ! grep -qF '.astrid/bin' "$path_rc" 2>/dev/null; then
     printf '\n# Astrid CLI\nexport PATH="%s:$PATH"\n' "$ASTRID_MANAGED_BIN" >> "$path_rc"
-    v "added PATH to $path_rc"
   fi
   trap - EXIT
   rm -rf "$tmp" 2>/dev/null || true
-  ok "installed $($ASTRID --version 2>/dev/null | head -n1) → $ASTRID_MANAGED_BIN"
 }
 
 ensure_cli() {
   if [ -n "$BIN_ROOT" ]; then
-    has_pair "$BIN_ROOT" || die "--bin-root missing astrid + astrid-daemon"
+    has_pair "$BIN_ROOT" || die "--bin-root incomplete"
     ASTRID="$BIN_ROOT/astrid"
     export ASTRID_BIN_ROOT="$BIN_ROOT"
-    ok "using $BIN_ROOT"
+    ok "CLI $($ASTRID --version 2>/dev/null | head -n1)"
     return 0
   fi
   if [ -n "${ASTRID_BIN:-}" ] && [ -x "$ASTRID_BIN" ]; then
     ASTRID="$ASTRID_BIN"
-    ok "using ASTRID_BIN=$ASTRID"
+    ok "CLI $($ASTRID --version 2>/dev/null | head -n1)"
     return 0
   fi
 
@@ -191,7 +170,6 @@ ensure_cli() {
   fi
 
   if [ -n "$ASTRID" ] && [ -x "$ASTRID" ]; then
-    step "CLI present — astrid update"
     if "$ASTRID" update -y >/dev/null 2>&1; then
       if has_pair "$ASTRID_MANAGED_BIN"; then
         export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
@@ -199,42 +177,41 @@ ensure_cli() {
       elif have astrid; then
         ASTRID="$(command -v astrid)"
       fi
-      ok "$($ASTRID --version 2>/dev/null | head -n1)"
+      ok "CLI $($ASTRID --version 2>/dev/null | head -n1)"
     else
-      ok "kept $($ASTRID --version 2>/dev/null | head -n1) (update no-op or deferred)"
+      ok "CLI $($ASTRID --version 2>/dev/null | head -n1)"
     fi
     return 0
   fi
 
-  step "CLI missing — install from GitHub Releases"
-  if install_from_github; then return 0; fi
+  if install_from_github; then
+    ok "CLI $($ASTRID --version 2>/dev/null | head -n1)"
+    return 0
+  fi
   if [ "$NO_BREW" -eq 0 ] && have brew; then
-    step "fallback — Homebrew"
     brew tap "$BREW_TAP" >/dev/null 2>&1 || true
     brew install "${BREW_TAP}/${BREW_FORMULA}" >/dev/null 2>&1 \
       || brew install "$BREW_FORMULA" >/dev/null 2>&1 \
       || die "Homebrew install failed"
-    ASTRID="$(command -v astrid)" || die "brew install left no astrid on PATH"
-    ok "$($ASTRID --version 2>/dev/null | head -n1)"
+    ASTRID="$(command -v astrid)" || die "no astrid on PATH after brew"
+    ok "CLI $($ASTRID --version 2>/dev/null | head -n1)"
     return 0
   fi
-  die "could not install Astrid (releases then brew)"
+  die "could not install Astrid"
 }
 
 ensure_base() {
-  [ "$SKIP_INIT" -eq 1 ] && return 0
   home="${ASTRID_HOME:-$HOME/.astrid}"
-  if [ -d "$home/home/default" ] || [ -f "$home/home/default/.config/distro.lock" ] \
-    || [ -f "$home/home/default/.config/Distro.lock" ] || [ -f "$home/config.toml" ]; then
-    step "base home present"
-    ok "$home"
+  if [ -d "$home/home/default" ] || [ -f "$home/config.toml" ] \
+    || [ -f "$home/home/default/.config/distro.lock" ] \
+    || [ -f "$home/home/default/.config/Distro.lock" ]; then
+    ok "base home"
     return 0
   fi
-  step "base home — astrid init -y"
   if "$ASTRID" init -y >/dev/null 2>&1; then
-    ok "initialized"
+    ok "base home"
   else
-    say "  ! init reported an error (run: astrid doctor)"
+    fail "base home (astrid init) — try: astrid doctor"
   fi
 }
 
@@ -251,29 +228,13 @@ detect_hosts() {
   printf '%s' "$hosts"
 }
 
-distro_url() {
-  printf '%s/%s.toml\n' "$DISTRO_BASE" "$1"
-}
+distro_url() { printf '%s/%s.toml\n' "$DISTRO_BASE" "$1"; }
 
 principal_for() {
   case "$1" in
     claude) printf 'claude-code\n' ;;
     grok)   printf 'grok-code\n' ;;
     codex)  printf 'codex-code\n' ;;
-  esac
-}
-
-plugin_cmd() {
-  case "$1" in
-    claude)
-      printf 'claude plugin marketplace add %s && claude plugin install astrid@astrid-oracles\n' "$ORACLES_REPO"
-      ;;
-    grok)
-      printf 'grok plugin marketplace add %s && grok plugin install astrid@astrid-oracles\n' "$ORACLES_REPO"
-      ;;
-    codex)
-      printf 'codex plugin marketplace add %s && codex plugin install astrid@astrid-oracles\n' "$ORACLES_REPO"
-      ;;
   esac
 }
 
@@ -285,29 +246,80 @@ pretty() {
   esac
 }
 
-# Explicit --host: provision capsules now (Astrid's path). Default re-run does not.
-provision_host() {
+# Best-effort marketplace install. Host CLIs differ; failures are soft.
+install_plugin() {
+  host="$1"
+  label="$(pretty "$host")"
+  case "$host" in
+    claude)
+      if ! have claude && [ ! -x "${HOME}/.claude/local/claude" ]; then
+        fail "$label plugin (no claude CLI)"
+        return 1
+      fi
+      claude_bin="$(command -v claude 2>/dev/null || true)"
+      [ -n "$claude_bin" ] || claude_bin="${HOME}/.claude/local/claude"
+      if "$claude_bin" plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 \
+        && "$claude_bin" plugin install astrid@astrid-oracles >/dev/null 2>&1; then
+        ok "$label plugin"
+      elif "$claude_bin" plugin install astrid@astrid-oracles >/dev/null 2>&1; then
+        ok "$label plugin"
+      else
+        fail "$label plugin"
+        return 1
+      fi
+      ;;
+    grok)
+      if ! have grok; then
+        fail "$label plugin (no grok CLI)"
+        return 1
+      fi
+      if grok plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 \
+        && grok plugin install astrid@astrid-oracles >/dev/null 2>&1; then
+        ok "$label plugin"
+      elif grok plugin install astrid@astrid-oracles >/dev/null 2>&1; then
+        ok "$label plugin"
+      else
+        fail "$label plugin"
+        return 1
+      fi
+      ;;
+    codex)
+      if ! have codex; then
+        fail "$label plugin (no codex CLI)"
+        return 1
+      fi
+      if codex plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 \
+        && codex plugin install astrid@astrid-oracles >/dev/null 2>&1; then
+        ok "$label plugin"
+      elif codex plugin install astrid@astrid-oracles >/dev/null 2>&1; then
+        ok "$label plugin"
+      else
+        fail "$label plugin"
+        return 1
+      fi
+      ;;
+  esac
+}
+
+install_capsules() {
   host="$1"
   p="$(principal_for "$host")"
   d="$(distro_url "$host")"
-  step "capsules for $(pretty "$host") → $p"
-  if ! "$ASTRID" init --distro "$d" -y >/dev/null 2>&1; then
-    v "default init soft-failed"
-  fi
+  label="$(pretty "$host")"
+  "$ASTRID" init --distro "$d" -y >/dev/null 2>&1 || true
   if "$ASTRID" init --distro "$d" --principal "$p" -y >/dev/null 2>&1; then
-    ok "distro applied ($p)"
+    ok "$label capsules ($p)"
   else
-    say "  ! init failed for $p — export GH_TOKEN=\$(gh auth token) and re-run with --host $host"
+    fail "$label capsules ($p) — need GH_TOKEN=\$(gh auth token)?"
   fi
 }
 
-# ---------------------------------------------------------------------------
-main() {
-  say "Astrid"
-  say "  install or upgrade the CLI, ensure a bootable home,"
-  say "  then point host apps at their plugins (capsules come later)."
-  say ""
+wire_host() {
+  install_plugin "$1" || true
+  install_capsules "$1"
+}
 
+main() {
   ensure_cli
   ensure_base
 
@@ -316,32 +328,12 @@ main() {
   set -- $hosts
 
   if [ "$#" -eq 0 ]; then
-    step "no coding hosts detected"
-    ok "base Astrid is enough — open Claude / Grok / Codex later and re-run, or use --host"
+    ok "hosts (none detected — base only)"
   else
-    step "hosts: $*"
     for h in "$@"; do
-      cmd="$(plugin_cmd "$h")"
-      say "  $(pretty "$h") plugin:"
-      say "    $cmd"
+      wire_host "$h"
     done
-
-    # Only when user asked --host / --all: run distro init now.
-    if [ -n "$REQUESTED_HOSTS" ] || [ "$ALL_HOSTS" -eq 1 ]; then
-      say ""
-      step "provisioning capsules (--host/--all)"
-      for h in "$@"; do
-        provision_host "$h"
-      done
-    else
-      say "  capsules: open the host app — SessionStart doctor offers astrid init"
-      say "            or re-run with --host claude (etc.) to provision now"
-    fi
   fi
-
-  say ""
-  say "Done.  astrid doctor   ·   https://astridos.org/start/"
-  say "Upgrade anytime: curl -fsSL https://astridos.org/install.sh | sh"
 }
 
 main

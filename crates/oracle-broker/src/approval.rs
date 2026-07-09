@@ -540,7 +540,7 @@ pub(crate) fn handle_mcp_ingress_respond(payload: Value) -> Result<(), SysError>
                 }
                 log::info(format!("{}: broker ingress.respond: recorded trust for ingress source_id \
                      '{source_id}'", crate::profile::log_tag()));
-                // Best-effort audit on the same `sage.v1.audit.*` family the
+                // Best-effort audit on the same `astrid.v1.audit.*` family the
                 // policy gate uses. source_id is kernel-stamped, not a
                 // reflected argument.
                 let _ = ipc::publish_json(

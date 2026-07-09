@@ -17,9 +17,9 @@
 //! The bare tool name is supplied by the broker, which strips the
 //! `mcp__astrid__` MCP prefix and charset-validates before constructing the
 //! routed topic — see [`crate::broker`]. The single execution door is the
-//! broker; there is no `sage.v1.tool.call.*` agent-runner leg (it was
+//! broker; there is no `astrid-removed tool.call.*` agent-runner leg (it was
 //! retired — the registered `astrid mcp serve` MCP server is where the
-//! supervised `claude -p` executes tools, so an inline sage dispatch would
+//! supervised `claude -p` executes tools, so an inline runner dispatch would
 //! double-execute).
 
 use astrid_sdk::prelude::*;
@@ -28,7 +28,7 @@ use serde_json::{Value, json};
 use crate::approval::{self, ApprovalRequired, GrantRequired};
 
 /// Per-call drain window for the `tool.v1.execute.<name>.result` reply.
-/// Bounded well under sage's 60 s `TOOL_CALL_DEADLINE` so the bridge
+/// Bounded well under the runner's 60 s `TOOL_CALL_DEADLINE` so the bridge
 /// times out first and synthesises a clean `isError:true` result rather
 /// than letting the supervisor's deadline-sweeper write back a generic
 /// "deadline exceeded" string. 50 s leaves comfortable headroom for the

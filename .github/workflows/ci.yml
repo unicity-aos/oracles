@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - name: Shared libraries (native)
+        run: cargo test -p oracle-core -p oracle-broker -p oracle-host -p claude-install --lib
+      - name: Capsules (wasm)
+        run: |
+          cargo build -p astrid-mcp -p claude-runner -p claude-install -p claude-completion \
+            -p codex-runner -p codex-install
+      - name: Plugin shell syntax
+        run: |
+          set -e
+          for f in plugins/common/bin/* plugins/claude/bin/astrid-* plugins/grok/bin/astrid-* plugins/codex/bin/astrid-up; do
+            [ -f "$f" ] && [ ! -L "$f" ] || continue
+            case "$f" in *statusline*) continue ;; esac
+            head -1 "$f" | grep -qE 'sh|bash' || continue
+            sh -n "$f"
+          done
+
+  clippy-shared:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy
+      - name: Clippy shared crates
+        run: |
+          cargo clippy -p oracle-core -p oracle-broker -p oracle-host --all-targets -- -D warnings

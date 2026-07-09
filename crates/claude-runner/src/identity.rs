@@ -97,7 +97,7 @@ fn publish_fallback_audit(principal_id: &str, session_id: &str, reason: &str) {
 }
 
 /// Materialize the prompt atomically under
-/// `home://.claude/.sage-identity-<sid>`. Writes to a temp sibling
+/// `home://.claude/.claude-identity-<sid>`. Writes to a temp sibling
 /// then renames so a crash mid-write never leaves a half-formed file.
 ///
 /// `home_path` is accepted for backwards source-shape compatibility
@@ -120,7 +120,7 @@ pub(crate) fn write_prompt_file(
     // `home://` is bound by the kernel to the invoking principal's
     // home; the per-principal scope falls out of the scheme, not the
     // path string.
-    let final_path = format!("home://.claude/.sage-identity-{session_id}");
+    let final_path = format!("home://.claude/.claude-identity-{session_id}");
     let tmp_path = format!("{final_path}.tmp");
 
     // Use the monotonic clock to make the temp path less collidable in

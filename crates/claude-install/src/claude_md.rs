@@ -1,4 +1,4 @@
-//! `.claude/CLAUDE.md` authoring — the standalone Astrid grounding sage
+//! `.claude/CLAUDE.md` authoring — standalone Astrid grounding the runner
 //! writes for a managed Claude agent.
 //!
 //! The distribution does not have to ship the `spark` identity capsule,

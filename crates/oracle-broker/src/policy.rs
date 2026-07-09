@@ -247,7 +247,7 @@ fn glob_match(pattern: &str, text: &str) -> bool {
 /// value. Returns an EMPTY rule set (→ default allow → capability PEP is
 /// the live boundary) on any of: unset/empty value, host read error,
 /// JSON parse error, or a cap/shape violation — and emits a LOUD audit on
-/// the failure paths so an operator monitoring `sage.v1.audit.policy_*`
+/// the failure paths so an operator monitoring `astrid.v1.audit.policy_*`
 /// sees that policy is not in force.
 ///
 /// This degrades to the capability PEP rather than failing CLOSED
@@ -315,7 +315,7 @@ fn validate(rules: &[Rule]) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Audit a policy-load failure on `sage.v1.audit.policy_load_failed`.
+/// Audit a policy-load failure on `astrid.v1.audit.policy_load_failed`.
 /// Best-effort — the bus failing here must not itself wedge the tool
 /// path; the load already degraded to "no policy".
 fn audit_load_failure(reason: &str) {

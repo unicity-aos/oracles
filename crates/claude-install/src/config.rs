@@ -1,34 +1,20 @@
 //! Per-principal config — the dual-axis (interaction × auth) shape
 //! threaded through every `.claude/` writer in this crate.
 //!
-//! # Duplicate, not shared
+//! # Wire-shape mirror of claude-runner
 //!
-//! The canonical [`PrincipalConfig`] lives in the sibling `sage` crate at
-//! `capsules/sage/crates/sage/src/config.rs`. We mirror the same shape
-//! here so `claude-install` can branch the JSON writers without taking a
-//! dependency on `sage` (the install crate runs in a separate WASM
-//! component with its own KV namespace — the config is threaded over the
-//! IPC envelope, not read out of a shared store). Keep the serde shape
-//! byte-identical with the canonical type: any drift breaks the relink
-//! envelope's `config` field.
+//! [`PrincipalConfig`] is mirrored here so install JSON writers can branch
+//! without a WASM edge to the runner. Keep serde fields byte-compatible with
+//! `claude-runner::config::PrincipalConfig`. Shared axes ([`InteractionMode`])
+//! come from `oracle-host`.
 //!
-//! When the canonical type changes (new mode value, new field), update
-//! both copies in the same commit, bump [`PrincipalConfig::SCHEMA_VERSION`]
-//! to invalidate older relink envelopes, and add the back-compat default
-//! branch to [`PrincipalConfig::validate`].
+//! When the canonical type changes, update both crates and bump
+//! [`PrincipalConfig::SCHEMA_VERSION`].
 
 use serde::{Deserialize, Serialize};
 
-/// How the user drives Claude. Wire-form is `"headless" | "repl"`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InteractionMode {
-    /// Astrid spawns `claude -p` and drives the agent loop.
-    #[default]
-    Headless,
-    /// User runs `claude` directly in the principal folder (native REPL).
-    Repl,
-}
+/// Shared headless/repl axis (see `oracle_host::InteractionMode`).
+pub(crate) use oracle_host::InteractionMode;
 
 /// How Claude authenticates. Wire-form is `"api_key" | "subscription"`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,9 +29,9 @@ pub enum AuthMode {
 }
 
 /// Which Anthropic model tier `claude` runs under. Mirror of
-/// `sage::config::ModelPreference` — wire-form
+/// `claude_runner` model preference — wire-form
 /// `"default" | "opus" | "sonnet" | "haiku"`. The CLI-alias mapping
-/// lives in the `sage` crate (claude-install never builds argv); only the
+/// lives in `claude-runner` (claude-install never builds argv); only the
 /// wire shape is mirrored here.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -58,8 +44,8 @@ pub enum ModelPreference {
     Haiku,
 }
 
-/// Per-principal sage config. Mirror of the canonical
-/// `sage::config::PrincipalConfig` — see module docs.
+/// Per-principal Claude config. Mirror of the canonical
+/// `claude_runner` PrincipalConfig — see module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrincipalConfig {
     /// How the user drives Claude (headless vs repl).
@@ -69,7 +55,7 @@ pub struct PrincipalConfig {
     #[serde(default)]
     pub auth_mode: AuthMode,
     /// Model tier `claude` runs under (governance). Mirror field — used
-    /// by `sage` to build argv; carried here only to keep the wire shape
+    /// by claude-runner to build argv; carried here only to keep the wire shape
     /// byte-identical.
     #[serde(default)]
     pub model: ModelPreference,
@@ -94,7 +80,7 @@ impl Default for PrincipalConfig {
 }
 
 impl PrincipalConfig {
-    /// Wire-format version. Persisted so older sage payloads can be
+    /// Wire-format version. Persisted so older runner payloads can be
     /// detected and migrated; bump on incompatible shape changes.
     pub const SCHEMA_VERSION: u32 = 2;
 
@@ -105,7 +91,7 @@ impl PrincipalConfig {
     /// Best-effort sanity check. Today the serde enum variants are
     /// closed (anything else is a deserialize error), so the only thing
     /// left to enforce is `schema_version <= SCHEMA_VERSION` — a future
-    /// payload from a newer sage would fail loudly here rather than be
+    /// payload from a newer runner would fail loudly here rather than be
     /// silently truncated to the default.
     #[allow(dead_code)]
     pub fn validate(&self) -> Result<(), String> {
@@ -175,7 +161,7 @@ mod tests {
     }
 
     /// Canonical fully-populated wire payload for schema_version=2. The
-    /// sibling `sage` crate's test module declares an identical literal
+    /// sibling `claude-runner` crate's test module declares an identical literal
     /// — keep the two strings byte-for-byte equal. Bump alongside
     /// [`PrincipalConfig::SCHEMA_VERSION`] when the wire shape changes.
     /// Avoiding a shared crate by design (two consumers only); the

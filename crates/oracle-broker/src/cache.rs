@@ -32,7 +32,7 @@ pub(crate) const MAX_CACHED_TOOLS: usize = 512;
 /// MCP tool descriptor.
 ///
 /// Field names match the MCP `tools/list` response shape so the agent
-/// runner can forward this verbatim. `capabilities` is sage-specific
+/// runner can forward this verbatim. `capabilities` is host-specific
 /// metadata (the source capsule's capability discriminator) and is
 /// preserved through the cache for downstream capability checks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

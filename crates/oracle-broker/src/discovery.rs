@@ -1,4 +1,4 @@
-//! Tool descriptor discovery and the `sage.v1.tools.list` publish path.
+//! Tool descriptor discovery and the `astrid.v1.tools.list` publish path.
 //!
 //! Two entry points feed the cache:
 //!
@@ -10,7 +10,7 @@
 //! * [`collect_tool_descriptors`] — event-driven; merges every
 //!   broadcast `tool.v1.response.describe.*` into the cache via CAS.
 //!
-//! Both publish `sage.v1.tools.list` with MCP-shaped descriptors whose
+//! Both publish `astrid.v1.tools.list` with MCP-shaped descriptors whose
 //! names are prefixed `mcp__astrid__<original>` so the agent runner can
 //! pass them straight to Claude via `--allowed-tools mcp__astrid__*`.
 
@@ -28,7 +28,7 @@ fn tools_list_topic() -> &'static str {
     crate::profile::tools_list_topic()
 }
 
-/// MCP tool name prefix sage exposes to Claude. The `--allowed-tools
+/// MCP tool name prefix Astrid exposes to Claude. The `--allowed-tools
 /// mcp__astrid__*` flag on the agent subprocess matches against this.
 fn mcp_tool_prefix() -> &'static str {
     crate::profile::mcp_tool_prefix()
@@ -65,7 +65,7 @@ const MAX_CAPABILITIES_BYTES: usize = 2_048;
 /// `cache::MAX_CACHED_TOOLS`.
 const MAX_TOOLS_PER_RESPONSE: usize = 256;
 
-/// Handle `sage.v1.tools.describe`.
+/// Handle `astrid.v1.tools.describe`.
 ///
 /// Cache-fresh path: republish the cached list and return. Cache-miss /
 /// stale path: subscribe-before-publish fan-out, dedupe by name

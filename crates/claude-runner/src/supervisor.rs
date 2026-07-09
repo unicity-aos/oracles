@@ -9,7 +9,7 @@
 //! 3. Detects process crash / buffer overflow / capsule reload and
 //!    publishes synthetic `exited` events so consumers don't hang.
 //!
-//! Tool execution is NOT sage's job. Claude calls the registered `astrid
+//! Tool execution is NOT the runner's job. Claude calls the registered `astrid
 //! mcp serve` MCP server directly over the MCP protocol, so tool calls
 //! never round-trip through the supervisor. The supervisor only relays
 //! the conversation stream (init / text / done / partial) onto the
@@ -80,7 +80,7 @@ fn drive_session(sessions: &Sessions, session_id: &str) -> Result<(), SysError> 
     let logs = match prep.process.read_logs() {
         Ok(l) => l,
         Err(e) => {
-            log::warn(format!("sage: read_logs failed for {session_id}: {e}"));
+            log::warn(format!("claude-runner: read_logs failed for {session_id}: {e}"));
             return Ok(());
         }
     };
@@ -107,7 +107,7 @@ fn drive_session(sessions: &Sessions, session_id: &str) -> Result<(), SysError> 
                     }
                     Err(CodecError::Malformed(msg)) => {
                         log::warn(format!(
-                            "sage: malformed stream-json on {session_id}: {msg}"
+                            "claude-runner: malformed stream-json on {session_id}: {msg}"
                         ));
                     }
                 }
@@ -237,7 +237,7 @@ fn collect_events(session_id: &str, decoded: Decoded, out: &mut Vec<PendingEvent
         }
         Decoded::Unknown(value) => {
             log::warn(format!(
-                "sage: unknown stream-json envelope on {session_id}: {}",
+                "claude-runner: unknown stream-json envelope on {session_id}: {}",
                 value
                     .get("type")
                     .and_then(Value::as_str)
@@ -300,7 +300,7 @@ fn reload_reconcile(sessions: &Sessions) -> Result<(), SysError> {
     let records: Vec<SessionRecord> = match list_all_records() {
         Ok(r) => r,
         Err(e) => {
-            log::warn(format!("sage: reload-reconcile list failed: {e}"));
+            log::warn(format!("claude-runner: reload-reconcile list failed: {e}"));
             return Ok(());
         }
     };
@@ -313,7 +313,7 @@ fn reload_reconcile(sessions: &Sessions) -> Result<(), SysError> {
         // validation was deployed (or a future bug that writes a tainted id)
         // must not publish on an attacker-chosen topic. Drop it either way.
         if crate::validate_id("session_id", &rec.session_id).is_err() {
-            log::warn("sage: reload-reconcile dropping record with invalid session_id");
+            log::warn("claude-runner: reload-reconcile dropping record with invalid session_id");
             let _ = delete_record(&rec.session_id);
             // The matching hook token is keyed by the same id; sweep it.
             let _ = crate::hooks::forget_token(&rec.principal_id, &rec.session_id);
@@ -352,7 +352,7 @@ fn reload_reconcile(sessions: &Sessions) -> Result<(), SysError> {
                     && let Err(e) = p.release()
                 {
                     log::warn(format!(
-                        "sage: reconcile release({}) failed: {e:?}",
+                        "claude-runner: reconcile release({}) failed: {e:?}",
                         rec.session_id
                     ));
                 }
@@ -446,7 +446,7 @@ fn resume_session(
         }),
     );
     log::info(format!(
-        "sage: resumed session {session_id} after capsule reload (re-attached {process_id})"
+        "claude-runner: resumed session {session_id} after capsule reload (re-attached {process_id})"
     ));
     Ok(())
 }

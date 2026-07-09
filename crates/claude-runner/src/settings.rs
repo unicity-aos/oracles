@@ -76,7 +76,7 @@ pub(crate) fn apply(req: SettingsSetRequest) -> Result<(), SysError> {
     }
 
     // Load existing config with schema-version classification so a
-    // future-schema record on disk (e.g. left behind by a newer sage
+    // future-schema record on disk (e.g. left behind by a newer runner
     // binary that the operator has just downgraded from) is NOT
     // silently flattened into our default and overwritten on save —
     // that would invert the fail-secure intent ITEM 3 / handle_spawn's
@@ -200,7 +200,7 @@ pub(crate) fn apply(req: SettingsSetRequest) -> Result<(), SysError> {
 
     // (2b) claude.v1.install.relink: trigger claude-install's rewrite. The
     // merged config is threaded into the payload so claude-install (in a
-    // different KV namespace) does not need to read sage's KV.
+    // different KV namespace) does not need to read the runner's KV.
     let _ = ipc::publish_json(
         RELINK_TOPIC,
         &serde_json::json!({

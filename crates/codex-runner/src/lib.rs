@@ -11,6 +11,7 @@
 
 use astrid_sdk::prelude::*;
 use oracle_host::ids::validate_id as host_validate_id;
+// InteractionMode re-exported above
 use serde::{Deserialize, Serialize};
 use std::time::UNIX_EPOCH;
 
@@ -19,16 +20,8 @@ const SESSION_KEY_PREFIX: &str = "codex.session";
 const HOOK_TOKEN_KEY_PREFIX: &str = "codex.hook_token";
 const MAX_CODEX_EVENT_LINES: usize = 512;
 
-/// How the user drives Codex.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InteractionMode {
-    /// Astrid invokes bounded `codex exec` turns.
-    #[default]
-    Headless,
-    /// User drives Codex directly; the runner refuses supervised spawn.
-    Repl,
-}
+/// Shared headless/repl axis.
+pub(crate) use oracle_host::InteractionMode;
 
 /// Per-principal Codex runner settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

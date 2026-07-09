@@ -120,16 +120,16 @@ pub fn run_install<P: HostProvisioner>(
     let key = marker_key(&topics, principal);
     let home = P::home_path(ctx);
 
-    if !force {
-        if let Some(marker) = kv::get_json_opt::<InstallMarker>(&key)? {
-            if marker.artifact_version >= P::ARTIFACT_VERSION {
-                return Ok(true);
-            }
-            publish_status::<P>(principal, "reconcile_stale_artifacts", None)?;
-            P::reconcile_stale(ctx)?;
-            write_marker::<P>(&key, &home)?;
+    if !force
+        && let Some(marker) = kv::get_json_opt::<InstallMarker>(&key)?
+    {
+        if marker.artifact_version >= P::ARTIFACT_VERSION {
             return Ok(true);
         }
+        publish_status::<P>(principal, "reconcile_stale_artifacts", None)?;
+        P::reconcile_stale(ctx)?;
+        write_marker::<P>(&key, &home)?;
+        return Ok(true);
     }
 
     publish_status::<P>(principal, "create_dirs", None)?;

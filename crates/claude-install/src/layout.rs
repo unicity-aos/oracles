@@ -54,7 +54,7 @@ pub(crate) fn mcp_path() -> String {
 /// (`/Library/Application Support/ClaudeCode/managed-settings.json` on macOS,
 /// `/etc/claude-code/managed-settings.json` on Linux), which this WASM
 /// capsule cannot write. So this file is INERT until the host mounts it —
-/// the mount is the out-of-process half, filed as core #881. Sage authors only
+/// the mount is the out-of-process half, filed as core #881. The runner authors only
 /// the body (see [`managed_settings_json`]); the host owns placement.
 ///
 /// SECURITY NOTE for the mount (core #881): this staging file lives under the
@@ -247,10 +247,10 @@ const NATIVE_ALLOW: &[&str] = &[
 
 /// The Claude hook events the runner declares in `settings.local.json`. Each
 /// event is wired through the `astrid-emit` native helper, which
-/// publishes the Claude-side hook payload on the sage-namespaced
+/// publishes the Claude-side hook payload on the claude-namespaced
 /// `claude.v1.hook.*` topic so the runner's run-loop validator can
 /// authenticate the spawn-token and republish on the canonical
-/// `hook.v1.event.*` (or sage-namespaced `claude.v1.notification`) topic.
+/// `hook.v1.event.*` (or claude-namespaced `claude.v1.notification`) topic.
 /// See [`HOOK_TOPIC_MAP`] for the per-event topic.
 ///
 /// The COMPLETE Claude hook event surface — every event name here is
@@ -306,7 +306,7 @@ const HOOK_EVENTS: &[&str] = &[
     "Notification",
 ];
 
-/// Per-event mapping from Claude's hook name to the sage-namespaced
+/// Per-event mapping from Claude's hook name to the claude-namespaced
 /// `claude.v1.hook.*` topic that `astrid-emit` publishes on.
 ///
 /// The runner's run-loop validator subscribes to `claude.v1.hook.*`,
@@ -369,7 +369,7 @@ fn hook_topic(event: &str) -> &'static str {
 /// Build the `hooks` block — identical in both interaction modes.
 ///
 /// Each event invokes the `astrid-emit` native helper with the
-/// sage-namespaced `claude.v1.hook.*` topic. `astrid-emit`
+/// claude-namespaced `claude.v1.hook.*` topic. `astrid-emit`
 /// reads Claude's stdin hook payload, packages it into the envelope
 /// shape the runner's validator expects (hook, payload, correlation_id,
 /// principal_id, session_id, token), and publishes on the bus.
@@ -474,12 +474,12 @@ fn pretooluse_gate_handler() -> serde_json::Value {
 /// * a carrier for two strings Claude reads only from a settings tier and
 ///   not from argv: the `apiKeyHelper` command path and the `hooks` block.
 ///   Both name external commands Claude execs; their integrity rests on
-///   the commands themselves (and, for hooks, the per-spawn token sage's
+///   the commands themselves (and, for hooks, the per-spawn token the runner's
 ///   validator checks), not on this file being tamper-proof.
 ///
 /// Branching is driven by the two axes in [`PrincipalConfig`]:
 ///
-/// * [`InteractionMode::Headless`]: sage drives the loop. The allow list
+/// * [`InteractionMode::Headless`]: the runner drives the loop. The allow list
 ///   is [`NATIVE_ALLOW`] (Claude's dev tools + the Astrid MCP surface), the
 ///   escape surface in [`REQUIRED_DENIES`] is denied, `permissions.defaultMode`
 ///   is `dontAsk` (auto-deny the rest, no prompt), the `sandbox` block bounds
@@ -613,7 +613,7 @@ pub(crate) fn managed_settings_json(cfg: &PrincipalConfig) -> serde_json::Value 
 
 /// `.claude/.mcp.json` body for the given principal config.
 ///
-/// Registered identically in BOTH modes: the `sage` MCP server as
+/// Registered identically in BOTH modes: the `astrid` MCP server as
 /// `astrid mcp serve --principal <principal_id>` — the stdio MCP server
 /// that fronts the daemon's astrid-mcp broker (unicity-astrid/astrid#880).
 /// `principal_id` is the sanitised invoking principal, baked in so the
@@ -628,7 +628,7 @@ pub(crate) fn managed_settings_json(cfg: &PrincipalConfig) -> serde_json::Value 
 /// * [`InteractionMode::Repl`]: the operator drives `claude` interactively
 ///   in this folder; auto-discovered `.claude/.mcp.json` registers the same
 ///   Astrid server, so the REPL session is "on Astrid" with the capsule
-///   tool surface available. The operator may add more servers; sage only
+///   tool surface available. The operator may add more servers; Astrid only
 ///   guarantees the Astrid one is present.
 pub(crate) fn mcp_json(_cfg: &PrincipalConfig, principal_id: &str) -> serde_json::Value {
     // Register the Astrid MCP server in BOTH modes. This is what makes a
@@ -637,7 +637,7 @@ pub(crate) fn mcp_json(_cfg: &PrincipalConfig, principal_id: &str) -> serde_json
     // REPL the operator drives in this folder — discovers and calls the
     // capsule tool surface (`mcp__astrid__*`). The principal is baked in so
     // the daemon scopes tool execution to this identity. The operator can
-    // still add their own MCP servers to this file in repl mode; sage only
+    // still add their own MCP servers to this file in repl mode; Astrid only
     // guarantees the Astrid server is present.
     let mut servers = serde_json::Map::new();
     servers.insert(
@@ -1154,7 +1154,7 @@ mod tests {
             assert_eq!(
                 args,
                 vec!["mcp", "serve", "--principal", "alice"],
-                "headless ({am:?}): sage server must be `astrid mcp serve --principal <id>` with the baked principal"
+                "headless ({am:?}): Astrid server must be `astrid mcp serve --principal <id>` with the baked principal"
             );
         }
     }

@@ -5,8 +5,8 @@
 //! forward host interceptors to the handlers re-exported here.
 //!
 //! The live execution door is the product-neutral `astrid.v1.request.mcp.*`
-//! surface. Product-local topics (`{product}.v1.tools.*`, audit) are derived
-//! from the installed [`oracle_core::OracleIdentity`].
+//! surface. Discovery/audit topics (`astrid.v1.tools.*`, `astrid.v1.audit.*`)
+//! come from the installed [`oracle_core::OracleIdentity`].
 
 #![deny(unsafe_code)]
 #![deny(clippy::all)]
@@ -27,9 +27,9 @@ pub use oracle_core::{Host, HostProfile, OracleIdentity};
 pub use profile::{install, install_astrid};
 
 /// Capsule entry points — product-agnostic once [`install`] has run.
+///
+/// Interceptor-shaped handlers for the `astrid-mcp` capsule.
 pub mod handlers {
-    //! Interceptor-shaped handlers for the astrid-mcp capsule.
-
     use astrid_sdk::prelude::*;
 
     /// `astrid.v1.tools.describe` — assemble and publish the tool list.

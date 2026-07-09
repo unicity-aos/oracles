@@ -27,9 +27,9 @@ kv = []
 [subscribe]
 # Run the per-principal install: create home://.claude/, write
 # settings.local.json (hardened permissions + the MCP stub pointing at
-# /bin/false — sage parses tool_use blocks out of stream-json directly).
+# /bin/false — the runner parses tool_use blocks out of stream-json directly).
 # Onboarding credentials (the Anthropic API key) are NOT elicited from
-# here; the sibling `sage` crate's Capsule.toml `[env]` block declares
+# here; the sibling `claude-runner` Capsule.toml `[env]` block declares
 # them so the kernel elicits at install time and persists via the host
 # SecretStore. See the crate-level doc in src/lib.rs.
 "claude.v1.install.run" = { wit = "opaque", handler = "handle_install" }

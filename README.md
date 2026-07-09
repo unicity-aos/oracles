@@ -1,50 +1,34 @@
 # Astrid Oracles
 
-External coding runtimes bound into **Astrid**. One backend; host adapters
-only where the host protocol forces it.
+Governed host adapters for external coding agents on **Astrid OS**.
+
+An **oracle** is a host runtime (Claude Code, Grok Build, Codex) brought under
+Astrid’s protocol: MCP endpoints, principals, capabilities, install layout, and
+settings. One shared backend; thin per-host adapters.
 
 ## Architecture
 
 ```
-                    ┌─────────────────────────────────────┐
-  Claude / Grok /   │  plugins/{claude,grok,codex}        │
-  Codex plugins     │    thin wrappers → plugins/common   │
-                    └──────────────┬──────────────────────┘
-                                   │ MCP (mcp__astrid__*)
-                                   ▼
-                    ┌─────────────────────────────────────┐
-                    │  astrid-mcp  (oracle-broker)          │
-                    │  OracleIdentity::ASTRID — one wire id │
-                    └─────────────────────────────────────┘
-                                   │
-              ┌────────────────────┼────────────────────┐
-              ▼                    ▼                    ▼
-     claude-install         (grok: broker only)   codex-install
-     HostProvisioner                              HostProvisioner
-              │                                         │
-              ▼                                         ▼
-        claude-runner                              codex-runner
-        (claude -p)                                (codex exec)
+plugins/{claude,grok,codex}          host UI / hooks
+        │
+        ▼
+plugins/common/bin                   resolve · up · doctor · install
+        │
+        ▼
+astrid-mcp  (oracle-broker)          mcp__astrid__*  ·  astrid.v1.request.mcp.*
+        │
+        ├── claude-install / codex-install    HostProvisioner (home layout)
+        └── claude-runner  / codex-runner     host process protocol
 ```
 
-| Crate | Shared? | Role |
-|-------|---------|------|
-| `oracle-core` | yes | `Host`, `OracleIdentity` |
-| `oracle-broker` | yes | MCP broker implementation |
-| `oracle-host` | yes | `PrincipalId`, atomic fs, `HostProvisioner`, topics |
-| `astrid-mcp` | yes | sole broker capsule |
-| `claude-install` / `codex-install` | thin | host home layouts on shared install loop |
-| `claude-runner` / `codex-runner` | host protocol | process supervision / exec |
-
-## Plugins
-
-```
-plugins/
-  common/bin/     # astrid-up, doctor, install, resolve (shared)
-  claude/bin/     # thin wrappers + Claude-only statusline
-  grok/bin/       # thin wrappers
-  codex/bin/      # Codex-specific up (hooks surface differs)
-```
+| Layer | Crates |
+|-------|--------|
+| Identity | `oracle-core` (`Host`, `OracleIdentity::ASTRID`) |
+| MCP broker | `oracle-broker` → capsule `astrid-mcp` |
+| Host primitives | `oracle-host` (`PrincipalId`, `HostProvisioner`, `InteractionMode`) |
+| Claude | `claude-install`, `claude-runner`, `claude-completion` |
+| Codex | `codex-install`, `codex-runner` |
+| Grok | broker only today (plugin + distro; no supervised runner yet) |
 
 ## Distros
 
@@ -54,12 +38,43 @@ astrid init --distro ./distros/grok.toml   --principal grok-code
 astrid init --distro ./distros/codex.toml  --principal codex-code
 ```
 
-## Build
+Sources resolve to `@unicity-astrid/oracles` (this monorepo).
+
+## Plugins
 
 ```bash
-cargo test -p oracle-core -p oracle-broker -p oracle-host --lib
-cargo build -p astrid-mcp -p claude-install -p claude-runner \
-            -p codex-install -p codex-runner
+# Claude Code
+claude plugin marketplace add /path/to/oracles   # marketplace at .claude-plugin/
+# or point marketplace source at ./plugins/claude
+
+# Grok
+grok plugin install /path/to/oracles/plugins/grok --trust
+
+# Codex
+# install plugins/codex via Codex plugin marketplace (.agents/plugins)
+```
+
+Shared scripts: `plugins/common/bin/`. Host wrappers set `ASTRID_HOST` and
+plugin root env vars.
+
+## Build & test
+
+```bash
+cargo test -p oracle-core -p oracle-broker -p oracle-host -p claude-install --lib
+cargo build -p astrid-mcp -p claude-runner -p claude-install -p claude-completion \
+            -p codex-runner -p codex-install
+```
+
+WASM target is selected per capsule via `crates/*/.cargo/config.toml`.
+
+## Migration
+
+Retired product brands (Sage / Mimir / Sibyl) still parse on `Host::from_id`
+for old paths. New installs use host ids (`claude`, `grok`, `codex`) and the
+`astrid-mcp` capsule only. Re-init principals after upgrading:
+
+```bash
+astrid init --distro ./distros/<host>.toml --principal <principal> -y
 ```
 
 ## License

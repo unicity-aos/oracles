@@ -94,7 +94,7 @@ pub(crate) fn stop_session(
 
     if !initial {
         log::warn(format!(
-            "sage: stop({session_id}) — no live session, dropping"
+            "claude-runner: stop({session_id}) — no live session, dropping"
         ));
         return Ok(());
     }
@@ -170,7 +170,7 @@ pub(crate) fn stop_session(
             // cleaned up by the next reload-recovery sweep if delete fails.
             if let Err(e) = state::delete_record(session_id) {
                 log::warn(format!(
-                    "sage: KV record cleanup for {session_id} failed: {e:?}"
+                    "claude-runner: KV record cleanup for {session_id} failed: {e:?}"
                 ));
             }
             // Drop the per-(principal, session) hook token so a forged
@@ -179,7 +179,7 @@ pub(crate) fn stop_session(
             // effort: log on failure (parallel to delete_record above).
             if let Err(e) = crate::hooks::forget_token(&principal_id, session_id) {
                 log::warn(format!(
-                    "sage: hook-token cleanup for {session_id} failed: {e:?}"
+                    "claude-runner: hook-token cleanup for {session_id} failed: {e:?}"
                 ));
             }
         }
@@ -190,7 +190,7 @@ pub(crate) fn stop_session(
             // Drop our publish — at-most-once on the bus. The matching
             // `evict()` path performs the hook-token + record cleanup.
             log::info(format!(
-                "sage: stop({session_id}) — already evicted by supervisor; skipping duplicate exited event"
+                "claude-runner: stop({session_id}) — already evicted by supervisor; skipping duplicate exited event"
             ));
         }
     }
@@ -209,7 +209,7 @@ pub(crate) fn handle_identity_refresh(
     let result: SaveIdentityResult = match serde_json::from_str(&msg.payload) {
         Ok(r) => r,
         Err(e) => {
-            log::warn(format!("sage: save_identity payload parse failed: {e}"));
+            log::warn(format!("claude-runner: save_identity payload parse failed: {e}"));
             return Ok(());
         }
     };
@@ -223,7 +223,7 @@ pub(crate) fn handle_identity_refresh(
         .or_else(|| msg.principal.verified().map(str::to_string))
         .unwrap_or_default();
     if principal_id.is_empty() {
-        log::warn("sage: save_identity success without resolvable principal; ignoring");
+        log::warn("claude-runner: save_identity success without resolvable principal; ignoring");
         return Ok(());
     }
 
@@ -245,7 +245,7 @@ pub(crate) fn handle_identity_refresh(
     }
 
     log::info(format!(
-        "sage: identity refresh for {principal_id}; recycling {} session(s)",
+        "claude-runner: identity refresh for {principal_id}; recycling {} session(s)",
         targets.len()
     ));
 
@@ -280,7 +280,7 @@ pub(crate) fn handle_identity_refresh(
     for t in targets {
         if let Err(e) = stop_session(sessions, &t.session_id, "identity_refresh") {
             log::warn(format!(
-                "sage: identity-refresh stop({}) failed: {e:?}",
+                "claude-runner: identity-refresh stop({}) failed: {e:?}",
                 t.session_id
             ));
         }
@@ -311,14 +311,14 @@ pub(crate) fn respawn_pending(sessions: &Sessions) -> Result<(), SysError> {
         for mut s in marker.sessions {
             match respawn_one(sessions, &marker.principal_id, &s) {
                 Ok(()) => log::info(format!(
-                    "sage: respawned session {} for {} on identity refresh",
+                    "claude-runner: respawned session {} for {} on identity refresh",
                     s.session_id, marker.principal_id
                 )),
                 Err(e) => {
                     s.attempts = s.attempts.saturating_add(1);
                     if s.attempts >= MAX_RESPAWN_ATTEMPTS {
                         log::warn(format!(
-                            "sage: respawn({}) for {} failed after {} attempts; giving up — {e:?}",
+                            "claude-runner: respawn({}) for {} failed after {} attempts; giving up — {e:?}",
                             s.session_id, marker.principal_id, s.attempts
                         ));
                         let _ = ipc::publish_json(
@@ -334,7 +334,7 @@ pub(crate) fn respawn_pending(sessions: &Sessions) -> Result<(), SysError> {
                         // to issue a fresh spawn request to recover.
                     } else {
                         log::warn(format!(
-                            "sage: respawn({}) for {} failed (attempt {}); will retry — {e:?}",
+                            "claude-runner: respawn({}) for {} failed (attempt {}); will retry — {e:?}",
                             s.session_id, marker.principal_id, s.attempts
                         ));
                         still_pending.push(s);
@@ -346,7 +346,7 @@ pub(crate) fn respawn_pending(sessions: &Sessions) -> Result<(), SysError> {
         if still_pending.is_empty() {
             // Clear the marker.
             if let Err(e) = kv::delete(&key) {
-                log::warn(format!("sage: clearing {key} failed: {e:?}"));
+                log::warn(format!("claude-runner: clearing {key} failed: {e:?}"));
             }
         } else {
             let updated = PendingRestart {
@@ -354,7 +354,7 @@ pub(crate) fn respawn_pending(sessions: &Sessions) -> Result<(), SysError> {
                 sessions: still_pending,
             };
             if let Err(e) = kv::set_json(&key, &updated) {
-                log::warn(format!("sage: updating {key} failed: {e:?}"));
+                log::warn(format!("claude-runner: updating {key} failed: {e:?}"));
             }
         }
     }
@@ -367,7 +367,7 @@ fn respawn_one(
     s: &PendingRestartSession,
 ) -> Result<(), SysError> {
     // Resolve the principal's home from the prior identity_path:
-    // ".../.claude/.sage-identity-<sid>" -> "..." (the home dir).
+    // ".../.claude/.claude-identity-<sid>" -> "..." (the home dir).
     let home_scheme = home_from_identity_path(&s.identity_path).ok_or_else(|| {
         SysError::ApiError(format!(
             "respawn({}): can't derive home from identity_path {}",
@@ -399,8 +399,8 @@ fn respawn_one(
     // `.env("ANTHROPIC_API_KEY")` call — Claude falls back to its
     // keychain OAuth path written by `claude /login`.
     //
-    // NOTE: `respawn_pending` runs in sage's supervisor loop under
-    // sage's capsule principal — same context as `handle_spawn`'s
+    // NOTE: `respawn_pending` runs in the runner's supervisor loop under
+    // the runner's capsule principal — same context as `handle_spawn`'s
     // interceptor — so `load_or_default()` reads the same canonical
     // `claude.principal.config` record that the cold-spawn pipeline
     // reads. The `principal_id` argument here is threaded through to
@@ -432,7 +432,7 @@ fn respawn_one(
     // respawned subprocess. The previous incarnation's token was deleted
     // by `stop_session` during identity-refresh teardown; without a new
     // token persisted to KV, `astrid-emit` invocations from the
-    // respawned `claude -p` child would fail sage's validator lookup and
+    // respawned `claude -p` child would fail the runner's validator lookup and
     // get dropped as forgeries. Mirrors the mint+persist pattern in
     // `handle_spawn` for cold spawns.
     let hook_token = crate::hooks::mint_token()?;
@@ -629,7 +629,7 @@ fn trailing(s: &str) -> Option<String> {
 }
 
 fn home_from_identity_path(identity_path: &str) -> Option<String> {
-    // Convention: identity paths live at "home://.claude/.sage-identity-<sid>".
+    // Convention: identity paths live at "home://.claude/.claude-identity-<sid>".
     // The home root is the `home://` VFS scheme — the kernel binds it
     // to the invoking principal's home (`~/.astrid/home/<principal>/`,
     // see core/crates/astrid-kernel/src/lib.rs:75). Validate the shape
@@ -654,7 +654,7 @@ mod tests {
 
     #[test]
     fn home_path_derivation_round_trip() {
-        let h = home_from_identity_path("home://.claude/.sage-identity-abc").unwrap();
+        let h = home_from_identity_path("home://.claude/.claude-identity-abc").unwrap();
         assert_eq!(h, "home://");
     }
 
@@ -673,7 +673,7 @@ mod tests {
         // the record instead.
         assert!(
             home_from_identity_path(
-                "~/.astrid/principals/p1/something_other_than_dot_claude/.sage-identity-abc",
+                "~/.astrid/principals/p1/something_other_than_dot_claude/.claude-identity-abc",
             )
             .is_none()
         );

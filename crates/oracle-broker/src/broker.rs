@@ -274,7 +274,7 @@ pub(crate) fn handle_mcp_call(payload: Value) -> Result<(), SysError> {
                 "kind": "tool.call",
                 "req_id": req.req_id,
                 "content": mcp_content(Value::String(
-                    format!("{}: caller context unavailable; tool call rejected", crate::profile::log_tag()).into(),
+                    format!("{}: caller context unavailable; tool call rejected", crate::profile::log_tag()),
                 )),
                 "isError": true,
             });
@@ -591,7 +591,7 @@ fn pretooluse_gate_reply(req: &CallRequest) -> Value {
             "{}: PreToolUse policy denied native tool '{tool_name}' (req_id '{}'): {reason}", crate::profile::log_tag(),
             req.req_id
         ));
-        // Audit the native-tool denial on the same `sage.v1.audit.policy_*`
+        // Audit the native-tool denial on the same `astrid.v1.audit.policy_*`
         // family the in-process broker gate uses. Operator rule id only —
         // never the reflected tool arguments (injection). Best-effort.
         let _ = ipc::publish_json(

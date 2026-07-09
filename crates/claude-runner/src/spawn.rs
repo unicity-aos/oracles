@@ -21,7 +21,7 @@
 //! weight: `--disallowedTools` hoists the deny list out of the Local
 //! tier (`settings.local.json`, fully session-overridable) into the
 //! binding CLI tier, and `--setting-sources local` narrows on-disk tier
-//! loading to just sage's own authored file so a stray `user`/`project`
+//! loading to just the runner's own authored file so a stray `user`/`project`
 //! settings file cannot dilute the posture. Managed and CLI flags always
 //! load regardless of `--setting-sources`, so the narrowing only shrinks
 //! the overridable surface; it never weakens the managed tier.
@@ -126,7 +126,7 @@ const DENIED_TOOLS: &[&str] = &[
     "TeamCreate",
     "TeamDelete",
     // Scheduling / control flow — queue a future prompt, reschedule a
-    // loop, or drive plan-mode / worktree transitions outside sage's run
+    // loop, or drive plan-mode / worktree transitions outside the runner's run
     // loop. sage owns session lifecycle.
     "CronCreate",
     "CronDelete",
@@ -252,7 +252,7 @@ fn argv(
         "--output-format".to_string(),
         "stream-json".to_string(),
         "--verbose".to_string(),
-        // Register EXACTLY sage's own MCP server and nothing else.
+        // Register EXACTLY the runner's own MCP server and nothing else.
         // `--strict-mcp-config` makes claude ignore every auto-discovered
         // `.mcp.json`; `--mcp-config` then points it at the single file
         // claude-install authored under the principal's HOME, whose `sage`
@@ -271,15 +271,15 @@ fn argv(
         // Constrain which on-disk setting tiers load to `local` only —
         // the scope of the `settings.local.json` claude-install authors
         // (`local` = `.claude/settings.local.json`, which under the HOME
-        // redirect resolves to sage's authored file). This excludes the
+        // redirect resolves to the runner's authored file). This excludes the
         // `user` (`~/.claude/settings.json`) and `project`
         // (`.claude/settings.json`) tiers so a stray file in either —
         // dropped into the redirected HOME or the project dir — cannot
-        // dilute sage's posture by injecting allow rules or flipping a
+        // dilute the runner's posture by injecting allow rules or flipping a
         // permission mode. Managed (system/MDM) and CLI flags always
         // load regardless of this list, so this only NARROWS the
         // overridable file surface; it cannot weaken the managed tier.
-        // sage's hooks block has no CLI-flag form, so `local` must stay
+        // the runner's hooks block has no CLI-flag form, so `local` must stay
         // in the list for the `astrid-emit` hook wiring to load.
         "--setting-sources".to_string(),
         "local".to_string(),
@@ -315,7 +315,7 @@ fn argv(
         // enforces capability checks + the argument-level policy gate
         // (`policy::evaluate`) on any `mcp__astrid__*` call.
         // -p only: skip writing claude's own session JSONL. Source of
-        // truth for the conversation is the bus + sage's KV records.
+        // truth for the conversation is the bus + the runner's KV records.
         "--no-session-persistence".to_string(),
         "--append-system-prompt-file".to_string(),
         identity_path.to_string(),
@@ -496,7 +496,7 @@ mod tests {
     #[test]
     fn argv_hash_unchanged_across_auth_modes() {
         let sid = "sid-stable";
-        let path = "home://.claude/.sage-identity-sid-stable";
+        let path = "home://.claude/.claude-identity-sid-stable";
         let args = argv(sid, path, crate::config::ModelPreference::Default, None);
         let hash_api_key = argv_hash(&args);
         let hash_subscription = argv_hash(&args);
@@ -550,14 +550,14 @@ mod tests {
     fn argv_carries_tier_narrowing_enforcement() {
         let args = argv(
             "sid",
-            "home://.claude/.sage-identity-sid",
+            "home://.claude/.claude-identity-sid",
             crate::config::ModelPreference::Default,
             None,
         );
 
         // `--setting-sources local`: the value must be exactly `local`
-        // (the scope of sage's authored settings.local.json). `user` or
-        // `project` would either drop sage's own hook wiring or readmit a
+        // (the scope of the runner's authored settings.local.json). `user` or
+        // `project` would either drop the runner's own hook wiring or readmit a
         // stray settings file — both regressions.
         let ss = args
             .iter()
@@ -566,7 +566,7 @@ mod tests {
         assert_eq!(
             args.get(ss + 1).map(String::as_str),
             Some("local"),
-            "--setting-sources must be `local` — the scope of sage's settings.local.json",
+            "--setting-sources must be `local` — the scope of the runner's settings.local.json",
         );
 
         // Native-tools model: the binding floor is `--permission-mode
@@ -640,7 +640,7 @@ mod tests {
     fn argv_never_emits_untool_gated_escape_flags() {
         let args = argv(
             "sid",
-            "home://.claude/.sage-identity-sid",
+            "home://.claude/.claude-identity-sid",
             crate::config::ModelPreference::Opus,
             Some(10),
         );

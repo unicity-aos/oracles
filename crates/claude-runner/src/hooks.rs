@@ -111,7 +111,7 @@ pub(crate) const HOOK_TOPIC_MAP: &[(&str, &str)] = &[
 /// KV key for a session's hook token. The kernel scopes KV by
 /// `{principal}:capsule:{capsule_id}`, so this key sits inside sage's
 /// per-principal namespace; embedding `principal_id` in the key
-/// nonetheless lets sage's run loop (which runs under sage's own
+/// nonetheless lets the runner's run loop (which runs under the runner's own
 /// principal, not the claimed one) demand-fetch by the envelope's
 /// claimed `(principal, session)` pair.
 pub(crate) fn hook_token_key(principal_id: &str, session_id: &str) -> String {
@@ -226,7 +226,7 @@ fn canonical_topic_for(hook_name: &str) -> Option<&'static str> {
 /// vouched principal claim plus the canonical payload + correlation id.
 ///
 /// `principal_id` rides INSIDE the body (not in kernel attribution
-/// metadata) because the republish is attributed to sage's own capsule
+/// metadata) because the republish is attributed to the runner's own capsule
 /// from the run-loop context — sage acts as a CA, and the principal
 /// claim has no other channel onto the wire.
 ///
@@ -250,7 +250,7 @@ fn build_canonical_body(envelope: &HookEnvelope) -> serde_json::Value {
 /// Truncating before republish bounds 1:1 amplification onto
 /// `claude.v1.audit.hook_spoof_attempt` to ~3*256 + reason overhead per
 /// event regardless of the producer's payload size. 256 is comfortably
-/// above any legitimate id (sage's own `validate_id` caps ids at 128
+/// above any legitimate id (the runner's own `validate_id` caps ids at 128
 /// — see `lib::MAX_ID_LEN`) while leaving headroom for diagnostic
 /// suffixes a future producer might add.
 const AUDIT_FIELD_CAP: usize = 256;
@@ -336,7 +336,7 @@ pub(crate) fn validate_and_route(messages: Vec<ipc::Message>) -> Result<(), SysE
             Ok(e) => e,
             Err(e) => {
                 log::warn(format!(
-                    "sage: hook event parse failed on '{}': {e}",
+                    "claude-runner: hook event parse failed on '{}': {e}",
                     msg.topic
                 ));
                 continue;
@@ -363,7 +363,7 @@ pub(crate) fn validate_and_route(messages: Vec<ipc::Message>) -> Result<(), SysE
         // is what makes the claim trustworthy. The kernel's
         // per-(principal, capsule) KV scoping means we can't read
         // another principal's namespace even if the envelope tries
-        // to claim it, since the lookup runs under sage's own
+        // to claim it, since the lookup runs under the runner's own
         // run-loop principal.
         //
         // KV transport errors are logged + skipped (NOT `?`-bubbled):
@@ -384,7 +384,7 @@ pub(crate) fn validate_and_route(messages: Vec<ipc::Message>) -> Result<(), SysE
             }
             Err(e) => {
                 log::warn(format!(
-                    "sage: hook-token KV lookup failed for hook '{}': {e:?}",
+                    "claude-runner: hook-token KV lookup failed for hook '{}': {e:?}",
                     envelope.hook
                 ));
                 continue;
@@ -418,7 +418,7 @@ pub(crate) fn validate_and_route(messages: Vec<ipc::Message>) -> Result<(), SysE
         // See [`build_canonical_body`] for the field-by-field contract.
         let body = build_canonical_body(&envelope);
         if let Err(e) = ipc::publish_json(canonical, &body) {
-            log::warn(format!("sage: republish to '{canonical}' failed: {e:?}"));
+            log::warn(format!("claude-runner: republish to '{canonical}' failed: {e:?}"));
         }
     }
     Ok(())

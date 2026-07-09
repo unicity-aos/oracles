@@ -34,7 +34,7 @@
 //! responder is the production transport the `astrid-gate` binary drives. The
 //! two never double-fire: the mcp_tool gate answers `astrid.v1.request.mcp.
 //! tool.call`, this answers `hook.v1.event.before_tool_call` — different
-//! topics. When `astrid-gate` lands and sage-install migrates the hook
+//! topics. When `astrid-gate` lands and host install migrates the hook
 //! authoring `mcp_tool → astrid-gate`, the mcp_tool gate retires and this
 //! becomes the live native-tool path.
 
@@ -114,7 +114,7 @@ fn verdict(tool_name: &str, tool_input: &Value) -> Value {
     let decision = crate::policy::evaluate(&crate::policy::load_rules(), tool_name, tool_input);
     if let crate::policy::Decision::Deny { reason } = &decision {
         log::info(format!("{}: before_tool_call denied native tool '{tool_name}': {reason}", crate::profile::log_tag()));
-        // Audit on the same `sage.v1.audit.*` family the other gate uses.
+        // Audit on the same `astrid.v1.audit.*` family the other gate uses.
         // Operator rule id only — never reflected arguments (injection).
         let _ = ipc::publish_json(
             &crate::profile::audit_topic("pretooluse_deny"),

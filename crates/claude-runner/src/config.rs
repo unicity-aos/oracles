@@ -1,4 +1,4 @@
-//! Per-principal sage runtime configuration.
+//! Per-principal Claude host runtime configuration.
 //!
 //! Two orthogonal axes, both serialised in snake_case wire form so the
 //! values match the `[env]` `select` options the operator sees at install
@@ -8,9 +8,9 @@
 //!   `repl` (user runs `claude` directly in the principal folder).
 //! * [`AuthMode`] — `api_key` (kernel-elicited secret, exported to the
 //!   subprocess as `ANTHROPIC_API_KEY`) versus `subscription` (user runs
-//!   `claude /login` manually; sage never sets `ANTHROPIC_API_KEY`).
+//!   `claude /login` manually; the runner never sets `ANTHROPIC_API_KEY`).
 //!
-//! Persisted in sage's per-capsule per-principal KV namespace at the
+//! Persisted in the runner's per-capsule per-principal KV namespace at the
 //! single canonical key [`KV_KEY`]. The `#[astrid::install]` lifecycle
 //! hook is the first writer; the `handle_settings_set` IPC interceptor
 //! is the runtime writer thereafter. Both call
@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 
 /// KV key under which the per-principal config record is stored. The
 /// kernel scopes KV per capsule per principal, so the key needs no
-/// principal suffix — sage's own KV namespace is already
+/// principal suffix — the runner's own KV namespace is already
 /// principal-scoped at the host boundary.
 pub(crate) const KV_KEY: &str = "claude.principal.config";
 
@@ -36,33 +36,21 @@ pub(crate) const KV_KEY: &str = "claude.principal.config";
 /// the fail-secure defaults — see [`classify`]).
 pub(crate) const SCHEMA_VERSION: u32 = 2;
 
-/// How users drive `claude` in this principal.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InteractionMode {
-    /// Sage spawns `claude -p` and owns the loop. Tools restricted to
-    /// `mcp__astrid__*`. Fail-secure default — the more restricted of
-    /// the two interaction paths.
-    #[default]
-    Headless,
-    /// User runs `claude` directly in the principal folder. Sage does
-    /// not spawn the subprocess; tools are the native Claude Code tool
-    /// set (no `mcp__astrid__*` in v1 — pending the native MCP sidecar).
-    Repl,
-}
+/// Shared headless/repl axis.
+pub(crate) use oracle_host::InteractionMode;
 
 /// How `claude` authenticates against Anthropic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
-    /// Sage exports `ANTHROPIC_API_KEY` from the kernel-elicited
+    /// The runner exports `ANTHROPIC_API_KEY` from the kernel-elicited
     /// `[env].api_key` secret on every spawn. Fail-secure default —
     /// fails closed on a missing secret rather than silently joining
     /// the user's keychain OAuth.
     #[default]
     ApiKey,
     /// User runs `claude /login` manually inside the principal folder.
-    /// Sage never sets `ANTHROPIC_API_KEY`. On macOS, OAuth tokens are
+    /// The runner never sets `ANTHROPIC_API_KEY`. On macOS, OAuth tokens are
     /// stored in a keychain entry keyed by service+account, NOT by
     /// `HOME` — two principal folders on the same macOS user share
     /// the credential. Document the caveat to the operator.
@@ -99,7 +87,7 @@ impl ModelPreference {
     }
 }
 
-/// Per-principal sage runtime configuration. Written by sage's install
+/// Per-principal sage runtime configuration. Written by the runner's install
 /// hook on first run, by `handle_settings_set` thereafter. Read by
 /// `handle_spawn` at the top of the spawn pipeline. Crate-private so
 /// the canonical record never leaks across the capsule boundary.
@@ -268,7 +256,7 @@ pub(crate) fn load_status() -> LoadOutcome {
         Ok(None) => LoadOutcome::Current(PrincipalConfig::default()),
         Err(e) => {
             log::warn(format!(
-                "sage: failed to load principal config: {e:?}; using default"
+                "claude-runner: failed to load principal config: {e:?}; using default"
             ));
             LoadOutcome::Current(PrincipalConfig::default())
         }
@@ -330,14 +318,14 @@ pub(crate) fn load_or_default() -> PrincipalConfig {
             previous_version,
         } => {
             log::warn(format!(
-                "sage: principal config schema_version {previous_version} is older than \
+                "claude-runner: principal config schema_version {previous_version} is older than \
                  current {SCHEMA_VERSION}; using migrated record without persistence"
             ));
             patched
         }
         LoadOutcome::Unknown(v) => {
             log::warn(format!(
-                "sage: principal config schema_version {v} is newer than supported \
+                "claude-runner: principal config schema_version {v} is newer than supported \
                  {SCHEMA_VERSION}; using default"
             ));
             PrincipalConfig::default()

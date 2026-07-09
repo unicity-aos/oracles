@@ -81,7 +81,7 @@ fn topic_map_contains_all_known_hooks() {
 }
 
 #[test]
-fn topic_map_notification_uses_sage_namespace() {
+fn topic_map_notification_uses_claude_namespace() {
     let target = HOOK_TOPIC_MAP
         .iter()
         .find(|(n, _)| *n == "notification")
@@ -345,7 +345,7 @@ fn canonical_body_token_substring_check_is_not_a_false_positive() {
 
 /// audit_truncate must pass through short inputs unchanged. Bounds
 /// the audit topic's amplification factor on adversarial input --
-/// but only when needed; legitimate ids (sage's `validate_id`
+/// but only when needed; legitimate ids (the runner's `validate_id`
 /// already caps at 128 bytes) flow through untouched.
 #[test]
 fn audit_truncate_passes_short_strings_through() {
@@ -441,7 +441,7 @@ fn hook_token_key_format_is_stable_for_kv_lookups() {
     assert!(key.ends_with(".s1"));
 
     // Reject empty inputs: format! happily concatenates them, but
-    // that's a caller bug -- sage's `validate_id` rejects empty
+    // that's a caller bug -- the runner's `validate_id` rejects empty
     // ids before they reach this helper. Document the assumption
     // by asserting on a real-world id alphabet.
     let realistic = hook_token_key("user-abc_123", "550e8400-e29b-41d4-a716-446655440000");
@@ -452,13 +452,13 @@ fn hook_token_key_format_is_stable_for_kv_lookups() {
 }
 
 /// Cross-crate sync: the topic table claude-install reads (when
-/// authoring `settings.local.json`) must equal sage's own
+/// authoring `settings.local.json`) must equal the runner's own
 /// validator table byte-for-byte. Right now the table is defined
 /// in both crates because there's no shared sage-common crate; this
 /// test pins the LOCAL table's shape so a drift in claude-install
 /// surfaces in CI (claude-install's own test asserts the same).
 #[test]
-fn topic_map_matches_documented_sage_install_alphabet() {
+fn topic_map_matches_documented_claude_install_alphabet() {
     // The exact ordering matters -- claude-install iterates this
     // table when emitting hook command strings, and the resulting
     // settings.local.json should be deterministic across runs.

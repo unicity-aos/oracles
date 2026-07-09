@@ -63,7 +63,7 @@ pub(crate) fn run() -> Result<(), SysError> {
         "repl" => config::InteractionMode::Repl,
         other => {
             return Err(SysError::ApiError(format!(
-                "sage: unrecognised interaction_mode '{other}' (expected 'headless' or 'repl')"
+                "claude-runner: unrecognised interaction_mode '{other}' (expected 'headless' or 'repl')"
             )));
         }
     };
@@ -74,7 +74,7 @@ pub(crate) fn run() -> Result<(), SysError> {
         "subscription" => config::AuthMode::Subscription,
         other => {
             return Err(SysError::ApiError(format!(
-                "sage: unrecognised auth_mode '{other}' (expected 'api_key' or 'subscription')"
+                "claude-runner: unrecognised auth_mode '{other}' (expected 'api_key' or 'subscription')"
             )));
         }
     };

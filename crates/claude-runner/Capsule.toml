@@ -17,7 +17,7 @@ type = "executable"
 host_process = ["claude"]
 # Persistent-tier sub-grant (astrid#873): `spawn-persistent` requires this
 # in ADDITION to `host_process`. Sage spawns `claude -p` on the persistent
-# tier so the child outlives a sage capsule reload — the supervisor re-
+# tier so the child outlives a runner capsule reload — the supervisor re-
 # `attach`es by ProcessId and keeps driving the same conversation instead of
 # abandoning it. Without this grant the host denies `spawn-persistent` with
 # `capability-denied` and no session could be spawned.
@@ -31,7 +31,7 @@ kv = []
 fs_read = ["home://"]
 fs_write = ["home://.claude/"]
 
-# Per-principal sage configuration. Three orthogonal knobs are
+# Per-principal Claude host configuration. Three orthogonal knobs are
 # elicited at install time and stored by the kernel (typed values land
 # in the per-principal env JSON; secrets land in SecretStore). All
 # three are read back with `astrid_sdk::env::var(...)` — the
@@ -41,11 +41,11 @@ fs_write = ["home://.claude/"]
 #
 # * `interaction_mode` — "headless" (Astrid spawns `claude -p` and
 #   restricts tools to `mcp__astrid__*`) or "repl" (the operator drives
-#   `claude` directly inside the principal folder; sage refuses to
+#   `claude` directly inside the principal folder; the runner refuses to
 #   spawn and only audits via the placeholder hook bridge).
 # * `auth_mode` — "api_key" (read the `api_key` secret and forward as
 #   `ANTHROPIC_API_KEY`) or "subscription" (delegate to `claude /login`
-#   inside the principal folder; sage never sets the env var and omits
+#   inside the principal folder; the runner never sets the env var and omits
 #   the `apiKeyHelper` pin).
 # * `api_key` — kernel walks every `[env]` key unconditionally (no
 #   `when=` semantics today), so the secret is always offered. Empty
@@ -80,7 +80,7 @@ api_key = { type = "secret", request = "Anthropic API key (leave blank for subsc
 # NB: tool-call and approval routing are deliberately absent — claude
 # drives `mcp__astrid__*` tools directly against the registered
 # `astrid mcp serve` MCP server (which owns its own approval/timeout
-# handling), so sage never sees tool calls, results, or approvals.
+# handling), so the runner never sees tool calls, results, or approvals.
 "claude.v1.request.stop.*" = "opaque"
 "claude.v1.install.complete" = "opaque"
 "tool.v1.execute.save_identity.result" = "opaque"
@@ -109,15 +109,15 @@ api_key = { type = "secret", request = "Anthropic API key (leave blank for subsc
 #   `claude.v1.audit.hook_token.minted` / `claude.v1.audit.hook_token.forgotten`
 #     — lifecycle audits emitted by `crate::hooks::{mint_token,forget_token}`.
 "claude.v1.audit.*" = "opaque"
-# Canonical hook-event republish — after sage validates the per-session
+# Canonical hook-event republish — after the runner validates the per-session
 # token on an `claude.v1.hook.<name>` event, it strips the
 # transport fields (principal_id, session_id, token) and re-emits on
-# the canonical Astrid hook topic. Subscribers trust sage's attribution
-# ("sage as a CA") because the kernel attributes the republish from
+# the canonical Astrid hook topic. Subscribers trust the runner's attribution
+# ("runner as a CA") because the kernel attributes the republish from
 # sage's run-loop context; the principal_id rides inside the payload.
 "hook.v1.event.*" = "opaque"
 # Notification republish — Claude's `Notification` hook has no
-# canonical Astrid equivalent yet, so sage republishes validated
+# canonical Astrid equivalent yet, so the runner republishes validated
 # notifications on a sage-namespaced topic. Forward-compatible: once a
 # canonical `notification.v1.*` topic lands, the validator switches.
 "claude.v1.notification" = "opaque"

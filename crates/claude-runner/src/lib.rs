@@ -11,7 +11,7 @@
 //! conversation onto `claude.v1.event.<sid>.*`. The subprocess is long-
 //! lived so Anthropic-side prompt caching stays warm turn-to-turn.
 //!
-//! Tool execution is NOT sage's job. Claude is configured with the
+//! Tool execution is NOT the runner's job. Claude is configured with the
 //! registered `astrid mcp serve` MCP server (`--mcp-config`), so it
 //! invokes `mcp__astrid__*` tools directly against that server over the
 //! MCP protocol. Sage never sees, dispatches, or writes back tool calls
@@ -240,7 +240,7 @@ impl ClaudeRunner {
                         "current": config::SCHEMA_VERSION,
                     }),
                 );
-                // Persist the patched record to sage's own KV namespace
+                // Persist the patched record to the runner's own KV namespace
                 // BEFORE publishing the relink. sage and claude-install live
                 // in separate per-capsule KV namespaces (the canonical
                 // record sage reads on the next handle_spawn lives at
@@ -255,7 +255,7 @@ impl ClaudeRunner {
                 // spawn's repeat-migration is diagnosable.
                 if let Err(e) = config::save(&patched) {
                     log::warn(format!(
-                        "sage: failed to persist migrated principal config \
+                        "claude-runner: failed to persist migrated principal config \
                          for {}: {e:?}; the next spawn will re-trigger \
                          migration",
                         req.principal_id
@@ -393,7 +393,7 @@ impl ClaudeRunner {
         //
         //   * `hook_token_mint_failed` — host CSPRNG unavailable. Fatal:
         //     spawning without a token would let any forged hook
-        //     publish republish under sage's vouching.
+        //     publish republish under the runner's vouching.
         //   * `hook_token_persist_failed` — KV write failed. Also fatal:
         //     without a persisted token the run loop has nothing to
         //     match the envelope against, so every hook fire would be
@@ -401,13 +401,13 @@ impl ClaudeRunner {
         let hook_token = match crate::hooks::mint_token() {
             Ok(t) => t,
             Err(e) => {
-                log::warn(format!("sage: hook token mint failed: {e:?}"));
+                log::warn(format!("claude-runner: hook token mint failed: {e:?}"));
                 publish_spawn_error(&session_id, &principal_id, "hook_token_mint_failed");
                 return Ok(());
             }
         };
         if let Err(e) = crate::hooks::persist_token(&principal_id, &session_id, &hook_token) {
-            log::warn(format!("sage: hook token persist failed: {e:?}"));
+            log::warn(format!("claude-runner: hook token persist failed: {e:?}"));
             publish_spawn_error(&session_id, &principal_id, "hook_token_persist_failed");
             return Ok(());
         }
@@ -424,7 +424,7 @@ impl ClaudeRunner {
         let home_path = resolved_home;
         let prompt =
             identity::fetch_prompt(&principal_id, &session_id, &home_path).unwrap_or_else(|e| {
-                log::warn(format!("sage: identity fetch errored: {e}, using fallback"));
+                log::warn(format!("claude-runner: identity fetch errored: {e}, using fallback"));
                 "You are an agent running inside Astrid OS. Tools are exposed via mcp__astrid__*."
                     .into()
             });
@@ -556,7 +556,7 @@ impl ClaudeRunner {
     }
 
     /// Per-principal install hook: persist the operator's interaction
-    /// + auth choices into sage's KV namespace and emit
+    /// + auth choices into the runner's KV namespace and emit
     /// `claude.v1.audit.install_choices`. Implementation lives in
     /// `install::run`; see that module's doc-comment for the
     /// `[env]` read contract, failure mode, idempotency semantics,
@@ -616,11 +616,11 @@ impl ClaudeRunner {
         // audit on `claude.v1.audit.hook_spoof_attempt`.
         let hook_sub = ipc::subscribe("claude.v1.hook.*")?;
         let _ = runtime::signal_ready();
-        log::info("sage: supervisor loop starting");
+        log::info("claude-runner: supervisor loop starting");
 
         loop {
             if let Err(e) = supervisor::tick(&self.sessions) {
-                log::warn(format!("sage: supervisor tick errored: {e}"));
+                log::warn(format!("claude-runner: supervisor tick errored: {e}"));
             }
 
             if let Ok(poll) = stop_sub.poll() {
@@ -636,11 +636,11 @@ impl ClaudeRunner {
                     // it). Validate before it reaches log lines or
                     // downstream `format!()`s.
                     if validate_id("session_id", &sid).is_err() {
-                        log::warn("sage: stop request with invalid session_id; dropping");
+                        log::warn("claude-runner: stop request with invalid session_id; dropping");
                         continue;
                     }
                     if let Err(e) = shutdown::stop_session(&self.sessions, &sid, "requested") {
-                        log::warn(format!("sage: stop({sid}) failed: {e:?}"));
+                        log::warn(format!("claude-runner: stop({sid}) failed: {e:?}"));
                     }
                 }
             }
@@ -648,7 +648,7 @@ impl ClaudeRunner {
             if let Ok(poll) = identity_sub.poll() {
                 for msg in poll.messages {
                     if let Err(e) = shutdown::handle_identity_refresh(&self.sessions, &msg) {
-                        log::warn(format!("sage: identity-refresh failed: {e:?}"));
+                        log::warn(format!("claude-runner: identity-refresh failed: {e:?}"));
                     }
                 }
             }
@@ -666,7 +666,7 @@ impl ClaudeRunner {
             }
 
             if let Err(e) = shutdown::respawn_pending(&self.sessions) {
-                log::warn(format!("sage: respawn sweep failed: {e:?}"));
+                log::warn(format!("claude-runner: respawn sweep failed: {e:?}"));
             }
 
             if astrid_sdk::time::sleep(supervisor::TICK_INTERVAL).is_err() {

@@ -9,14 +9,14 @@
 //! Anthropic's Messages API. Subscribes to:
 //!
 //! - `llm.v1.request.describe` — replies with a single `ProviderEntry`
-//!   advertising the `sage` id, request topic, and stream topic.
-//! - `llm.v1.request.generate.sage` — builds an Anthropic request body,
+//!   advertising the `claude` id, request topic, and stream topic.
+//! - `llm.v1.request.generate.claude` — builds an Anthropic request body,
 //!   streams the SSE response, and re-publishes the demuxed
-//!   [`astrid_sdk::types::StreamEvent`]s on `llm.v1.stream.sage`.
+//!   [`astrid_sdk::types::StreamEvent`]s on `llm.v1.stream.claude`.
 //!
 //! This is the per-turn completion path. It bills against Anthropic API
 //! usage credits, separate from the Agent SDK credit consumed by
-//! `claude -p` (see the sibling crate `sage`). When `capsule-router`
+//! `claude -p` (see the sibling crate `claude-runner`). When `capsule-router`
 //! picks "Claude" as the model for a turn but doesn't want to spin up
 //! a full Claude Code agent loop, the request lands here.
 
@@ -60,7 +60,7 @@ impl ClaudeCompletion {
                 "id": PROVIDER_ID,
                 "description": "Claude via Anthropic Messages API",
                 "capabilities": ["streaming", "tools", "vision"],
-                "request_topic": "llm.v1.request.generate.sage",
+                "request_topic": "llm.v1.request.generate.claude",
                 "stream_topic": STREAM_TOPIC,
                 "context_window": context_window,
                 "max_output_tokens": max_output_tokens,

@@ -13,4 +13,4 @@ Do this:
 
 1. Show the user the block above.
 2. Offer to add it to `~/.claude/settings.json` for them (read the file, merge the `statusLine` key without clobbering other settings, write it back). Ask first — this edits their personal settings file.
-3. Tell them the HUD appears after the status line refreshes (or on next launch), rendering: `⬡ astrid:<principal> ●  │ <model> │ <dir> ⎇ <branch> │ <context-bar> │ <cost>` — the dot reflects governance health: green ● when governed (daemon up **and** the sage-mcp broker loaded), yellow ◐ when the daemon is up but the broker is missing (native tools run **ungoverned**), dim ○ when the daemon is down.
+3. Tell them the HUD appears after the status line refreshes (or on next launch), rendering: `⬡ astrid:<principal> ●  │ <model> │ <dir> ⎇ <branch> │ <context-bar> │ <cost>` — the dot reflects governance health: green ● when governed (daemon up **and** the astrid-mcp broker loaded), yellow ◐ when the daemon is up but the broker is missing (native tools run **ungoverned**), dim ○ when the daemon is down.

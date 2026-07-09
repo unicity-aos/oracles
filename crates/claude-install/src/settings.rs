@@ -20,7 +20,7 @@ pub(crate) fn write_settings(cfg: &PrincipalConfig) -> Result<(), SysError> {
 }
 
 /// Write the `.claude/.mcp.json` for the invoking principal, shaped by
-/// `cfg`. In headless mode it registers the `sage` MCP server (`astrid mcp
+/// `cfg`. In headless mode it registers the `astrid` MCP server (`astrid mcp
 /// serve --principal <principal_id>`) that claude loads via
 /// `--strict-mcp-config --mcp-config` and discovers `mcp__astrid__*` from;
 /// in repl mode the body is an empty `mcpServers` object (the user wires

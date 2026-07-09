@@ -1,105 +1,32 @@
 #!/bin/sh
+# Codex host entrypoint for Astrid.
+#
+# Binary resolution: plugins/common (lib-astrid-resolve.sh).
+# This file owns Codex launch, principal provisioning, and hook emit.
 set -eu
 
+HERE=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P) || HERE=$(dirname "$0")
+export ASTRID_HOST=codex
+export ASTRID_PLUGIN_ROOT="${ASTRID_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${PLUGIN_ROOT:-$HERE/..}}}"
+export CODEX_PLUGIN_ROOT="${CODEX_PLUGIN_ROOT:-$ASTRID_PLUGIN_ROOT}"
+export PLUGIN_ROOT="${PLUGIN_ROOT:-$ASTRID_PLUGIN_ROOT}"
+
+RESOLVE="$HERE/lib-astrid-resolve.sh"
+if [ ! -f "$RESOLVE" ]; then
+  RESOLVE="$HERE/../../common/bin/lib-astrid-resolve.sh"
+fi
+# shellcheck source=lib-astrid-resolve.sh
+. "$RESOLVE"
+
+if ! astrid_resolve_apply; then
+  echo "astrid-up: could not find executable astrid + astrid-daemon pair" >&2
+  echo "astrid-up: set ASTRID_BIN_ROOT or install Astrid first" >&2
+  exit 127
+fi
+
 plugin_root() {
-  script_dir="$(dirname "$0")"
-  (cd "$script_dir/.." >/dev/null 2>&1 && pwd -P) || printf '%s\n' "$script_dir/.."
+  printf '%s\n' "$ASTRID_PLUGIN_ROOT"
 }
-
-bin_pair_from_root() {
-  root="$1"
-  [ -x "$root/astrid" ] && [ -x "$root/astrid-daemon" ] || return 1
-  printf '%s|%s\n' "$root/astrid" "$root/astrid-daemon"
-}
-
-mcp_config_bin_root() {
-  config="$(plugin_root)/.mcp.json"
-  [ -f "$config" ] || return 1
-  sed -n 's/.*"ASTRID_BIN_ROOT"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$config" | sed -n '1p'
-}
-
-dev_bin_roots() {
-  for base in "$(pwd -P 2>/dev/null || pwd)" "$(plugin_root)"; do
-    dir="$base"
-    while [ "$dir" != "/" ] && [ -n "$dir" ]; do
-      printf '%s\n' "$dir/core/target/debug"
-      printf '%s\n' "$dir/core/target/release"
-      printf '%s\n' "$dir/target/debug"
-      printf '%s\n' "$dir/target/release"
-      dir="$(dirname "$dir")"
-    done
-  done
-}
-
-resolve_astrid_pair() {
-  if [ -n "${ASTRID_BIN:-}" ] || [ -n "${ASTRID_DAEMON:-}" ]; then
-    if [ -x "${ASTRID_BIN:-}" ] && [ -x "${ASTRID_DAEMON:-}" ]; then
-      printf 'direct|%s|%s\n' "$ASTRID_BIN" "$ASTRID_DAEMON"
-      return 0
-    fi
-    echo "astrid-up: ASTRID_BIN and ASTRID_DAEMON must both point to executable files" >&2
-    return 127
-  fi
-
-  if [ -n "${ASTRID_BIN_ROOT:-}" ]; then
-    pair="$(bin_pair_from_root "$ASTRID_BIN_ROOT")" || {
-      echo "astrid-up: ASTRID_BIN_ROOT is set but does not contain executable astrid and astrid-daemon:" >&2
-      echo "astrid-up:   $ASTRID_BIN_ROOT" >&2
-      return 127
-    }
-    printf 'bin-root|%s\n' "$pair"
-    return 0
-  fi
-
-  config_root="$(mcp_config_bin_root || true)"
-  if [ -n "$config_root" ]; then
-    pair="$(bin_pair_from_root "$config_root")" || {
-      echo "astrid-up: .mcp.json ASTRID_BIN_ROOT does not contain executable astrid and astrid-daemon:" >&2
-      echo "astrid-up:   $config_root" >&2
-      return 127
-    }
-    printf 'mcp-config|%s\n' "$pair"
-    return 0
-  fi
-
-  for root in $(dev_bin_roots); do
-    if pair="$(bin_pair_from_root "$root")"; then
-      printf 'dev|%s\n' "$pair"
-      return 0
-    fi
-  done
-
-  for root in \
-    "${CARGO_HOME:-$HOME/.cargo}/bin" \
-    "$HOME/.cargo/bin" \
-    "$HOME/.astrid/bin" \
-    /opt/homebrew/bin \
-    /usr/local/bin; do
-    if pair="$(bin_pair_from_root "$root")"; then
-      printf 'installed|%s\n' "$pair"
-      return 0
-    fi
-  done
-
-  if command -v astrid >/dev/null 2>&1; then
-    cli="$(command -v astrid)"
-    daemon="$(dirname "$cli")/astrid-daemon"
-    if [ -x "$daemon" ]; then
-      printf 'path|%s|%s\n' "$cli" "$daemon"
-      return 0
-    fi
-  fi
-
-  echo "astrid-up: could not find executable astrid and astrid-daemon pair" >&2
-  echo "astrid-up: set ASTRID_BIN_ROOT=/path/to/bin or install Astrid first" >&2
-  return 127
-}
-
-astrid_pair="$(resolve_astrid_pair)" || exit $?
-ASTRID_SOURCE="${astrid_pair%%|*}"
-astrid_pair="${astrid_pair#*|}"
-ASTRID="${astrid_pair%%|*}"
-ASTRID_DAEMON="${astrid_pair#*|}"
 
 ensure_principal() {
   principal_id="${ASTRID_PRINCIPAL_ID:-codex-code}"
@@ -168,7 +95,7 @@ launch_codex() {
   export ASTRID_WORKSPACE_ID="$workspace_id"
   export ASTRID_HOOK_TOKEN="$hook_token"
 
-  profile="${CODEX_PROFILE:-codex}"
+  profile="${CODEX_PROFILE:-astrid}"
   exec codex --profile "$profile" "$@"
 }
 
@@ -188,7 +115,7 @@ launch_codex_exec() {
   export ASTRID_WORKSPACE_ID="$workspace_id"
   export ASTRID_HOOK_TOKEN="$hook_token"
 
-  profile="${CODEX_PROFILE:-codex}"
+  profile="${CODEX_PROFILE:-astrid}"
   exec codex exec --profile "$profile" --json "$@"
 }
 
@@ -204,7 +131,7 @@ emit_hook() {
   cat >"$tmp" || true
 
   ensure_principal || {
-    if [ "${ASTRID_SIBYL_HOOK_FAIL_CLOSED:-${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}}" = "1" ]; then
+    if [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}}" = "1" ]; then
       exit 1
     fi
     exit 0
@@ -236,7 +163,7 @@ emit_hook() {
     "$(json_id "$token")")"
 
   if "$ASTRID" emit --help >/dev/null 2>&1; then
-    if [ "${ASTRID_SIBYL_HOOK_FAIL_CLOSED:-${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}}" = "1" ]; then
+    if [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}}" = "1" ]; then
       printf '%s' "$envelope" | "$ASTRID" emit --topic "$topic" --stdin
       return $?
     fi

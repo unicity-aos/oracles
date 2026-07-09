@@ -51,7 +51,7 @@ if [ -z "$GATE" ]; then
     st="$( { if command -v timeout >/dev/null 2>&1; then timeout 2 "$ASTRID" status; \
              else "$ASTRID" status; fi; } 2>/dev/null || true )"
     if ! printf '%s' "$st" | grep -q '(PID'; then GATE="down"
-    elif printf '%s' "$st" | sed -n 's/^[[:space:]]*-[[:space:]]*//p' | grep -qiE 'sage-mcp'; then GATE="up"
+    elif printf '%s' "$st" | sed -n 's/^[[:space:]]*-[[:space:]]*//p' | grep -qiE 'astrid-mcp'; then GATE="up"
     else GATE="degraded"; fi
   else
     GATE="down"

@@ -1,7 +1,7 @@
 # Shared Astrid binary resolution for the Claude Code plugin scripts.
 #
 # Sourced by astrid-up, astrid-doctor, and the HUD status lines so every surface
-# picks the same CLI/daemon pair. Mirrors the Sibyl/Codex plugin's resolution
+# picks the same CLI/daemon pair. Mirrors the Codex plugin's resolution
 # order so a nearby worktree debug build wins over a stale Homebrew install.
 #
 # Resolution order (first matching executable pair wins):

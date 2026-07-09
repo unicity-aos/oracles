@@ -221,16 +221,19 @@ check_updates() {
   fi
 
   # --- Plugin staleness ----------------------------------------------------
-  # Compare our own plugin.json version against the latest sage release tag.
+  # Compare our own plugin.json version against the latest oracles release tag.
   # Offline / rate-limited / no-releases-yet all fail silently (curl -f + short
   # --max-time). The plugin.json sits one level up from this bin/ dir.
   _plugin_new=""; _plugin_cur=""
-  _cu_pjson="$(dirname "$0")/../.claude-plugin/plugin.json"
+  _cu_pjson=""
+  for _cand in       "$ASTRID_PLUGIN_ROOT/.claude-plugin/plugin.json"       "$ASTRID_PLUGIN_ROOT/.grok-plugin/plugin.json"       "$ASTRID_PLUGIN_ROOT/.codex-plugin/plugin.json"       "$(dirname "$0")/../.claude-plugin/plugin.json"       "$(dirname "$0")/../.grok-plugin/plugin.json"       "$(dirname "$0")/../.codex-plugin/plugin.json"; do
+    if [ -f "$_cand" ]; then _cu_pjson="$_cand"; break; fi
+  done
   if [ -f "$_cu_pjson" ] && command -v curl >/dev/null 2>&1; then
     _plugin_cur="$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$_cu_pjson" 2>/dev/null \
       | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
     _cu_rel="$(curl -fsL --max-time 5 \
-      https://api.github.com/repos/unicity-astrid/sage/releases/latest 2>/dev/null || true)"
+      https://api.github.com/repos/unicity-astrid/oracles/releases/latest 2>/dev/null || true)"
     _cu_tag="$(printf '%s' "$_cu_rel" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
       | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
     if [ -n "$_plugin_cur" ] && [ -n "$_cu_tag" ] && version_gt "$_cu_tag" "$_plugin_cur"; then
@@ -257,7 +260,7 @@ check_updates() {
   - Update the Astrid runtime:  astrid update -y
     (On a Homebrew install that command defers to Homebrew — tell the user to run: brew upgrade astrid.)
   - Then re-provision this principal's capsules against the new runtime:
-    astrid init --distro sage -y && astrid init --distro sage --principal $PRINCIPAL -y"
+    astrid init --distro $ASTRID_DISTRO -y && astrid init --distro $ASTRID_DISTRO --principal $PRINCIPAL -y"
     fi
     if [ -n "$_plugin_new" ]; then
       _cu_ctx="$_cu_ctx
@@ -295,6 +298,29 @@ if [ -z "$PRINCIPAL" ] && [ -x "$ASTRID" ]; then
 fi
 [ -n "$PRINCIPAL" ] || PRINCIPAL="default"
 
+# Host adapter (claude|grok|codex). Wrappers may export ASTRID_HOST; fall back
+# to sensible defaults per plugin env.
+if [ -z "${ASTRID_HOST:-}" ]; then
+  if [ -n "${CLAUDE_PLUGIN_ROOT:-}${CLAUDE_PLUGIN_OPTION_PRINCIPAL:-}" ]; then
+    ASTRID_HOST=claude
+  elif [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
+    ASTRID_HOST=grok
+  elif [ -n "${CODEX_PLUGIN_ROOT:-}${PLUGIN_ROOT:-}" ]; then
+    ASTRID_HOST=codex
+  else
+    ASTRID_HOST=claude
+  fi
+fi
+case "$ASTRID_HOST" in
+  grok)  ASTRID_DISTRO="${ASTRID_DISTRO:-grok}";  DEFAULT_PRINCIPAL=grok-code ;;
+  codex) ASTRID_DISTRO="${ASTRID_DISTRO:-codex}"; DEFAULT_PRINCIPAL=codex-code ;;
+  *)     ASTRID_DISTRO="${ASTRID_DISTRO:-claude}"; DEFAULT_PRINCIPAL=claude-code ;;
+esac
+# Prefer configured principal; if still default and host has a family default, use it.
+if [ "$PRINCIPAL" = "default" ] && [ -n "${DEFAULT_PRINCIPAL:-}" ]; then
+  : # keep operator default unless host plugin option set
+fi
+
 # Best-effort, rate-limited update nudge. Placed AFTER the not-installed guard
 # (a missing binary is covered by the installer guidance above, and must not
 # nudge) and after PRINCIPAL is known (the re-provision playbook names it). Sets
@@ -306,7 +332,7 @@ check_updates
 # Capsules install PER PRINCIPAL under
 #   $ASTRID_HOME/home/<principal>/.local/capsules/<capsule-name>/
 # (the CLI's resolve_target_dir_for: home.principal_home(p).capsules_dir()/<id>,
-# where <id> is the capsule's bare Capsule.toml package name). The sage-mcp
+# where <id> is the capsule's bare Capsule.toml package name). The astrid-mcp
 # broker is the tool backplane: absent for THIS principal ⇒ 'tools/list' is
 # empty and the session has no Astrid tools. We check the filesystem directly
 # rather than parsing `astrid status`, whose capsule list reflects the
@@ -315,11 +341,11 @@ check_updates
 # even during the cold-start race before the daemon is reachable — exactly when
 # a fresh plugin user most needs to be told their tools aren't provisioned yet.
 ASTRID_HOME_DIR="${ASTRID_HOME:-$HOME/.astrid}"
-BROKER_DIR="$ASTRID_HOME_DIR/home/$PRINCIPAL/.local/capsules/sage-mcp"
+BROKER_DIR="$ASTRID_HOME_DIR/home/$PRINCIPAL/.local/capsules/astrid-mcp"
 
 if [ ! -d "$BROKER_DIR" ]; then
   # Not provisioned for this principal. Provisioning is
-  #   astrid init --distro sage --principal <p>
+  #   astrid init --distro $ASTRID_DISTRO --principal <p>
   # which landed in astrid 0.9.0. On <= 0.8 that command IGNORES --principal and
   # installs under `default` (the wrong identity), so the offer is version-gated:
   # >= 0.9.0 offers init; older tells the user to upgrade first. This is the
@@ -347,17 +373,27 @@ if [ ! -d "$BROKER_DIR" ]; then
   #    calls stall on one consent round-trip per capsule.
   #
   # SYNC: the --add-capsule list mirrors the [capsules] set in Distro.toml.
-  PREGRANT="astrid agent modify $PRINCIPAL --add-capsule sage --add-capsule sage-mcp --add-capsule sage-install --add-capsule astrid-capsule-cli --add-capsule astrid-capsule-forge --add-capsule astrid-capsule-fs --add-capsule astrid-capsule-http --add-capsule astrid-capsule-shell --add-capsule astrid-capsule-skills --add-capsule astrid-capsule-system"
+  case "$ASTRID_HOST" in
+    codex)
+      PREGRANT="astrid agent modify $PRINCIPAL --add-capsule codex-runner --add-capsule astrid-mcp --add-capsule codex-install --add-capsule astrid-capsule-cli --add-capsule astrid-capsule-forge --add-capsule astrid-capsule-fs --add-capsule astrid-capsule-http --add-capsule astrid-capsule-shell --add-capsule astrid-capsule-skills --add-capsule astrid-capsule-system"
+      ;;
+    grok)
+      PREGRANT="astrid agent modify $PRINCIPAL --add-capsule astrid-mcp --add-capsule astrid-capsule-cli --add-capsule astrid-capsule-forge --add-capsule astrid-capsule-fs --add-capsule astrid-capsule-http --add-capsule astrid-capsule-shell --add-capsule astrid-capsule-skills --add-capsule astrid-capsule-system"
+      ;;
+    *)
+      PREGRANT="astrid agent modify $PRINCIPAL --add-capsule claude-runner --add-capsule astrid-mcp --add-capsule claude-install --add-capsule astrid-capsule-cli --add-capsule astrid-capsule-forge --add-capsule astrid-capsule-fs --add-capsule astrid-capsule-http --add-capsule astrid-capsule-shell --add-capsule astrid-capsule-skills --add-capsule astrid-capsule-system"
+      ;;
+  esac
   if astrid_version_ge_090 "$VER_RAW"; then
     emit "Astrid agent — principal '$PRINCIPAL'.
 
-Astrid tools are NOT provisioned for this principal. The sage-mcp broker (the
+Astrid tools are NOT provisioned for this principal. The astrid-mcp broker (the
 MCP tool backplane) is not installed under '$PRINCIPAL', so 'tools/list' comes
 back empty and this session has no Astrid tools yet.
 
 Fix, step 1 — provision 'default' first, then this session's principal:
 
-    astrid init --distro sage -y && astrid init --distro sage --principal $PRINCIPAL -y
+    astrid init --distro $ASTRID_DISTRO -y && astrid init --distro $ASTRID_DISTRO --principal $PRINCIPAL -y
 
 (Both installs matter on a fresh machine: the daemon finds its CLI uplink —
 the capsule that serves the socket every session connects through — only in
@@ -389,7 +425,7 @@ Fix: upgrade Astrid first —
 then provision 'default' (the daemon boots its socket only from 'default's
 registry) followed by this session's principal:
 
-    astrid init --distro sage -y && astrid init --distro sage --principal $PRINCIPAL -y
+    astrid init --distro $ASTRID_DISTRO -y && astrid init --distro $ASTRID_DISTRO --principal $PRINCIPAL -y
 
 then smooth the first run by granting the distro's capsules to '$PRINCIPAL'
 up front (otherwise the first tool calls stall on one consent prompt per
@@ -432,11 +468,11 @@ CAPCOUNT="$(printf '%s' "$STATUS" | grep -i 'Capsules:' | head -n1 | sed 's/^[[:
 # authoritative for THIS principal; reaching here means it is provisioned. We
 # deliberately do NOT read the broker's load state from `astrid status`, whose
 # capsule list is the operator's default-context view, not this principal's.
-BROKER_NOTE="MCP broker:  sage-mcp provisioned for '$PRINCIPAL' — Astrid tools are served."
+BROKER_NOTE="MCP broker:  astrid-mcp provisioned for '$PRINCIPAL' — Astrid tools are served."
 
-INGRESS_NOTE="First-call note: tool *calls* are confused-deputy gated by sage-mcp's
+INGRESS_NOTE="First-call note: tool *calls* are confused-deputy gated by astrid-mcp's
              trusted_ingress_ids allow-set (tools/list is ungated). If calls come
-             back denied, add this session's CLI uplink source_id to sage-mcp's
+             back denied, add this session's CLI uplink source_id to astrid-mcp's
              trusted_ingress_ids (one-time, single-tenant = your own machine)."
 
 REPORT="Astrid — you are running as a governed Astrid agent.

@@ -47,7 +47,7 @@ Get a complete, *compiling* skeleton one of three ways, then build → install �
 call:
 
 - **Forge tool (available when the Astrid daemon is running with the forge
-  capsule installed — it ships in the Mimir distro):** call
+  capsule installed — it ships in the Grok distro):** call
   `scaffold_capsule { "name": "my-capsule" }`. It returns a JSON map of
   `path -> file content` for a complete skeleton — write each file out.
 - **CLI:** `astrid capsule new my-capsule` scaffolds the same full project
@@ -831,7 +831,7 @@ domains (files *and* network *and* process), that's the smell, not the feature.
 
 ## 15. The Forge Tools
 
-The Astrid daemon's **forge** capsule — bundled in the Mimir distro and bridged to
+The Astrid daemon's **forge** capsule — bundled in the Grok distro and bridged to
 this Grok Build session over MCP when the daemon is running — gives you tools to
 do all of the above without leaving the chat:
 

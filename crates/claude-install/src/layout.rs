@@ -38,7 +38,7 @@ pub(crate) fn settings_path() -> String {
     "home://.claude/settings.local.json".to_string()
 }
 
-/// Path to `.claude/.mcp.json` — registers the `sage` MCP server
+/// Path to `.claude/.mcp.json` — registers the `astrid` MCP server
 /// (`astrid mcp serve --principal <id>`) that claude calls `mcp__astrid__*`
 /// tools against. See [`mcp_json`] for the body.
 pub(crate) fn mcp_path() -> String {
@@ -54,7 +54,7 @@ pub(crate) fn mcp_path() -> String {
 /// (`/Library/Application Support/ClaudeCode/managed-settings.json` on macOS,
 /// `/etc/claude-code/managed-settings.json` on Linux), which this WASM
 /// capsule cannot write. So this file is INERT until the host mounts it —
-/// the mount is the out-of-sage half, filed as core #881. Sage authors only
+/// the mount is the out-of-process half, filed as core #881. Sage authors only
 /// the body (see [`managed_settings_json`]); the host owns placement.
 ///
 /// SECURITY NOTE for the mount (core #881): this staging file lives under the
@@ -66,7 +66,7 @@ pub(crate) fn managed_settings_path() -> String {
     "home://.claude/managed-settings.json".to_string()
 }
 
-/// Name of the MCP server sage registers for the supervised `claude`
+/// Name of the MCP server Astrid registers for the supervised `claude`
 /// session — the `astrid mcp serve` stdio shim onto the daemon's astrid-mcp
 /// broker. Claude prefixes its tools `mcp__astrid__*` and references it as the
 /// `server` of the PreToolUse `mcp_tool` gate hook. Single source of truth
@@ -90,9 +90,10 @@ const PRETOOLUSE_GATE_TOOL: &str = "astrid_pretooluse_gate";
 
 /// KV key marking a completed install for `principal_id`.
 ///
-/// Namespaced under `sage.` so the prefix can't collide with another
+/// Namespaced under `claude.` so the prefix can't collide with another
 /// capsule's "install.complete.*" markers — every capsule sharing the KV
 /// surface keeps its own top-level bucket.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn install_complete_key(sanitized_id: &str) -> String {
     format!("claude.install.complete.{sanitized_id}")
 }
@@ -103,6 +104,7 @@ pub(crate) fn install_complete_key(sanitized_id: &str) -> String {
 /// `[A-Za-z0-9._-]`. The accepted alphabet matches every other
 /// per-principal VFS resolver in the Astrid stack; this is the only
 /// untrusted-input gate in the install path.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn sanitize_principal_id(id: &str) -> Result<String, SysError> {
     Ok(oracle_host::PrincipalId::parse(id)?.to_string())
 }
@@ -127,7 +129,7 @@ pub(crate) fn sanitize_principal_id(id: &str) -> Result<String, SysError> {
 /// redundant second layer, not the primary enforcement boundary.
 ///
 /// SYNC (load-bearing): every name here MUST also appear in
-/// `claude_runner::spawn::DENIED_TOOLS` (sage/src/spawn.rs), the copy hoisted into
+/// `claude_runner::spawn::DENIED_TOOLS` (claude-runner/src/spawn.rs), the copy hoisted into
 /// the binding `--disallowedTools` CLI tier. The two crates have no
 /// dependency edge, so the list is mirrored, not shared. A name present
 /// HERE but absent THERE is denied only in the overridable tier — a
@@ -172,7 +174,7 @@ const REQUIRED_DENIES: &[&str] = &[
     "TeamCreate",
     "TeamDelete",
     // Scheduling / control flow — queue a future prompt, reschedule a loop,
-    // or drive plan-mode / worktree transitions outside sage's run loop.
+    // or drive plan-mode / worktree transitions outside the runner's run loop.
     "CronCreate",
     "CronDelete",
     "CronList",
@@ -195,7 +197,7 @@ const REQUIRED_DENIES: &[&str] = &[
     // misses. Egress OFF by default until a controlled allow-list lands.
     "WebFetch",
     "WebSearch",
-    // External / exfiltration surfaces — off-host channels sage does not
+    // External / exfiltration surfaces — off-host channels Astrid does not
     // mediate.
     "PushNotification",
     "RemoteTrigger",
@@ -243,10 +245,10 @@ const NATIVE_ALLOW: &[&str] = &[
     "mcp__astrid__*",
 ];
 
-/// The Claude hook events sage declares in `settings.local.json`. Each
+/// The Claude hook events the runner declares in `settings.local.json`. Each
 /// event is wired through the `astrid-emit` native helper, which
 /// publishes the Claude-side hook payload on the sage-namespaced
-/// `claude.v1.hook.*` topic so sage's run-loop validator can
+/// `claude.v1.hook.*` topic so the runner's run-loop validator can
 /// authenticate the spawn-token and republish on the canonical
 /// `hook.v1.event.*` (or sage-namespaced `claude.v1.notification`) topic.
 /// See [`HOOK_TOPIC_MAP`] for the per-event topic.
@@ -307,7 +309,7 @@ const HOOK_EVENTS: &[&str] = &[
 /// Per-event mapping from Claude's hook name to the sage-namespaced
 /// `claude.v1.hook.*` topic that `astrid-emit` publishes on.
 ///
-/// Sage's run-loop validator subscribes to `claude.v1.hook.*`,
+/// The runner's run-loop validator subscribes to `claude.v1.hook.*`,
 /// authenticates the per-(principal, session) spawn token carried in
 /// the envelope, and republishes on the canonical `hook.v1.event.<name>`
 /// topic (or `claude.v1.notification` for the one event without a
@@ -319,8 +321,8 @@ const HOOK_EVENTS: &[&str] = &[
 /// actually terminates — is what carries `session_end`. Conflating the
 /// two would make any session-lifecycle subscriber fire on every turn.
 ///
-/// SYNC: keep aligned with claude_runner::hooks::HOOK_TOPIC_MAP (sage/src/hooks.rs).
-/// sage-install cannot import from the sage crate (separate workspace
+/// SYNC: keep aligned with claude_runner::hooks::HOOK_TOPIC_MAP (claude-runner/src/hooks.rs).
+/// claude-install cannot import from claude-runner (separate workspace
 /// crate, no dependency edge), so the table is mirrored here. Any edit
 /// to one side must mirror to the other. Order must match HOOK_EVENTS.
 const HOOK_TOPIC_MAP: &[(&str, &str)] = &[
@@ -369,7 +371,7 @@ fn hook_topic(event: &str) -> &'static str {
 /// Each event invokes the `astrid-emit` native helper with the
 /// sage-namespaced `claude.v1.hook.*` topic. `astrid-emit`
 /// reads Claude's stdin hook payload, packages it into the envelope
-/// shape sage's validator expects (hook, payload, correlation_id,
+/// shape the runner's validator expects (hook, payload, correlation_id,
 /// principal_id, session_id, token), and publishes on the bus.
 ///
 /// Forward-compatible: `astrid-emit` ships separately in the core
@@ -379,7 +381,7 @@ fn hook_topic(event: &str) -> &'static str {
 /// No change to this file is needed once the helper lands.
 ///
 /// Unix assumption: this assumes a Unix `PATH` lookup for `astrid-emit`;
-/// sage is Unix-only today (the `claude` binary, the HOME redirect, and
+/// Claude integration is Unix-only today (the `claude` binary, the HOME redirect, and
 /// the `/bin/false` `apiKeyHelper` all assume Unix).
 fn hooks_block() -> serde_json::Value {
     let mut hooks = serde_json::Map::new();
@@ -407,7 +409,7 @@ fn hooks_block() -> serde_json::Value {
     serde_json::Value::Object(hooks)
 }
 
-/// The PreToolUse `mcp_tool` hook handler — sage's native-tool policy gate.
+/// The PreToolUse `mcp_tool` hook handler — Astrid's native-tool policy gate.
 ///
 /// Calls the reserved [`PRETOOLUSE_GATE_TOOL`] on the already-connected
 /// [`MCP_SERVER_NAME`] server with the name + input of the native tool about
@@ -455,7 +457,7 @@ fn pretooluse_gate_handler() -> serde_json::Value {
 /// So nothing in this file is binding on its own.
 ///
 /// The BINDING tool/permission gate is the spawn argv, which sits above
-/// every on-disk file tier (only Managed, a fixed SYSTEM-path tier sage
+/// every on-disk file tier (only Managed, a fixed SYSTEM-path tier the runner
 /// cannot author, outranks it). See `claude_runner::spawn::argv`: `--permission-mode
 /// dontAsk` auto-denies any tool not allow-listed (fail-secure, no prompt),
 /// `--sandbox` bounds Claude's native tools (under the Astrid host
@@ -501,7 +503,7 @@ fn pretooluse_gate_handler() -> serde_json::Value {
 /// disabled. Each event invokes `astrid-emit <topic>` (the native
 /// helper shipping separately in core per astrid#814) so claude's
 /// stdin-JSON subprocess hook protocol is bridged onto the
-/// `claude.v1.hook.*` IPC topic. Sage's run-loop validator
+/// `claude.v1.hook.*` IPC topic. The runner's run-loop validator
 /// then authenticates the per-(principal, session) spawn token and
 /// republishes on canonical `hook.v1.event.*` (or
 /// `claude.v1.notification` for the one event without a canonical
@@ -1030,7 +1032,7 @@ mod tests {
     fn settings_declares_hook_placeholders() {
         // The hooks block must be present, identical across all four
         // (mode, auth) combinations, and wire each event through
-        // `astrid-emit <topic>` with timeout=10 so sage's run-loop
+        // `astrid-emit <topic>` with timeout=10 so the runner's run-loop
         // validator receives the per-event hook envelope.
         for im in [InteractionMode::Headless, InteractionMode::Repl] {
             for am in [AuthMode::ApiKey, AuthMode::Subscription] {
@@ -1332,7 +1334,7 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn install_complete_key_is_sage_namespaced() {
+    fn install_complete_key_is_claude_namespaced() {
         assert_eq!(install_complete_key("alice"), "claude.install.complete.alice");
     }
 
@@ -1343,7 +1345,7 @@ mod tests {
     #[test]
     fn required_denies_equal_canonical_binding_mirror() {
         // Drift guard for the mirror with `claude_runner::spawn::DENIED_TOOLS`
-        // (sage/src/spawn.rs). No dependency edge exists between the two
+        // (claude-runner/src/spawn.rs). No dependency edge exists between the two
         // crates (each is a `cdylib`-only workspace member, so neither can
         // import the other's const as a library), so the lists cannot be
         // `assert_eq!`d directly. Instead this pins `REQUIRED_DENIES`
@@ -1362,7 +1364,7 @@ mod tests {
         //
         // SYNC: this canonical set MUST match the `CANONICAL` set in
         // claude_runner::spawn::tests::denied_tools_equal_canonical_required_denies
-        // (sage/src/spawn.rs) exactly.
+        // (claude-runner/src/spawn.rs) exactly.
         const CANONICAL: &[&str] = &[
             "PowerShell",
             "Agent",

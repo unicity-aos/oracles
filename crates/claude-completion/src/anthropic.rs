@@ -2,7 +2,7 @@
 //!
 //! Builds the request body from an Astrid `LlmRequest`, drives a streaming
 //! HTTP call via `http::stream_start`, and translates Anthropic SSE events
-//! into `astrid_sdk` `StreamEvent`s published on `llm.v1.stream.sage`.
+//! into `astrid_sdk` `StreamEvent`s published on `llm.v1.stream.claude`.
 
 use astrid_sdk::prelude::*;
 use astrid_sdk::types::{
@@ -15,7 +15,7 @@ use crate::schemas::{AnthropicUsage, ContentBlock, Delta, StreamingEvent};
 use crate::sse::SseParser;
 
 /// Topic the LLM provider contract requires us to publish stream events on.
-pub(crate) const STREAM_TOPIC: &str = "llm.v1.stream.sage";
+pub(crate) const STREAM_TOPIC: &str = "llm.v1.stream.claude";
 
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -274,7 +274,7 @@ fn emit_usage_if_any(request_id: Uuid, state: &StreamState) -> Result<(), SysErr
     Ok(())
 }
 
-/// Publish one stream event on `llm.v1.stream.sage` keyed by `request_id`.
+/// Publish one stream event on `llm.v1.stream.claude` keyed by `request_id`.
 pub(crate) fn publish_stream(request_id: Uuid, event: StreamEvent) -> Result<(), SysError> {
     ipc::publish_json(
         STREAM_TOPIC,

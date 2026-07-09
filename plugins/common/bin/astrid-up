@@ -23,7 +23,7 @@
 # BINARY RESOLUTION: shared with the doctor and HUD via lib-astrid-resolve.sh.
 # Prefers ASTRID_BIN{,_ROOT} / .mcp.json / a nearby core/target/{debug,release}
 # pair over PATH/Homebrew, so dev worktrees are not silently pinned to a stale
-# release install. Ported from the Sibyl (Codex) plugin.
+# release install. Ported from the Codex plugin.
 #
 # stdout DISCIPLINE: the MCP transport owns stdout — only the JSON-RPC
 # stream produced by `astrid mcp serve` may go there. Everything this

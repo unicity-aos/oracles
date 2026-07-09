@@ -495,14 +495,14 @@ mod tests {
     #[test]
     fn grant_auto_approve_reply_names_capsule_and_asks_retry() {
         install_test_profile();
-        let reply = grant_auto_approve_reply("req-a", "sage");
+        let reply = grant_auto_approve_reply("req-a", "fs");
         // Access granted -> not an error; a retry converges.
         assert_eq!(
             reply.pointer("/isError").and_then(Value::as_bool),
             Some(false)
         );
         let text = reply_text(&reply);
-        assert!(text.contains("'sage'"), "text was {text:?}");
+        assert!(text.contains("'fs'"), "text was {text:?}");
         assert!(text.contains("already approved"), "text was {text:?}");
         assert!(text.contains("Retry"), "text was {text:?}");
     }

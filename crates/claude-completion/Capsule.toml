@@ -17,12 +17,12 @@ type = "executable"
 "astrid:llm" = "1.0.0"
 
 [publish]
-"llm.v1.stream.sage" = { wit = "@unicity-astrid/wit/llm/stream-event" }
+"llm.v1.stream.claude" = { wit = "@unicity-astrid/wit/llm/stream-event" }
 "llm.v1.response.describe" = { wit = "@unicity-astrid/wit/llm/describe-response" }
 
 [subscribe]
 "llm.v1.request.describe" = { wit = "@unicity-astrid/wit/llm/describe-request", handler = "llm_describe" }
-"llm.v1.request.generate.sage" = { wit = "@unicity-astrid/wit/llm/generate-request", handler = "handle_llm_request" }
+"llm.v1.request.generate.claude" = { wit = "@unicity-astrid/wit/llm/generate-request", handler = "handle_llm_request" }
 
 [capabilities]
 net = ["api.anthropic.com"]

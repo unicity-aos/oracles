@@ -10,7 +10,7 @@ usage() {
   cat <<'EOF'
 usage: ./install.sh [--bin-root PATH] [--skip-grok-install]
 
-Installs the Mimir Grok plugin against a matched Astrid CLI/daemon pair.
+Installs the Astrid Grok plugin against a matched Astrid CLI/daemon pair.
 
 Resolution order:
   1. --bin-root PATH or ASTRID_BIN_ROOT
@@ -154,7 +154,7 @@ EOF
 root="$(resolve_bin_root)"
 write_mcp_config "$root"
 
-echo "Mimir configured with ASTRID_BIN_ROOT=$root"
+echo "Astrid (Grok) configured with ASTRID_BIN_ROOT=$root"
 
 if [ "$skip_grok_install" = "0" ]; then
   if ! command -v grok >/dev/null 2>&1; then
@@ -163,5 +163,5 @@ if [ "$skip_grok_install" = "0" ]; then
   fi
   plugin="$(plugin_root)"
   grok plugin install "$plugin" --trust
-  grok plugin enable mimir 2>/dev/null || true
+  grok plugin enable astrid 2>/dev/null || true
 fi

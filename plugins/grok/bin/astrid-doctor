@@ -6,6 +6,7 @@ HERE=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P) || HERE=$(dirname 
 export ASTRID_PLUGIN_ROOT="${ASTRID_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-$HERE/..}}"
 # shellcheck disable=SC1091
 # Make CLAUDE_PLUGIN_ROOT / GROK_PLUGIN_ROOT also point at this plugin for legacy lines.
+export ASTRID_HOST=grok
 export GROK_PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-$ASTRID_PLUGIN_ROOT}"
 COMMON="$HERE/../../common/bin/astrid-doctor"
 if [ ! -x "$COMMON" ]; then

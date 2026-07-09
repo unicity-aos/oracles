@@ -83,7 +83,7 @@ the same `astrid mcp serve` surface.
   }
   ```
 
-- The **sage-mcp broker** capsule loaded in the daemon (it answers
+- The **astrid-mcp broker** capsule loaded in the daemon (it answers
   `astrid.v1.request.mcp.*`). Without it, the server connects but lists no
   tools. `/astrid:doctor` tells you if it's missing.
 
@@ -104,7 +104,7 @@ starts on first launch;
 
 ```sh
 # the marketplace manifest lives at this repo's root
-claude plugin marketplace add unicity-astrid/sage       # or a local path
+claude plugin marketplace add unicity-astrid/oracles       # or a local path
 claude plugin install astrid@astrid
 ```
 
@@ -128,7 +128,7 @@ Claude offer to add it:
 
 Renders: `⬡ astrid:<principal> ●  │ <model> │ <dir> ⎇ <branch> │ <context-bar> │ <cost>`
 — the dot reflects governance health: green ● when governed (daemon up **and** the
-sage-mcp broker loaded), yellow ◐ when the daemon is up but the broker is missing
+astrid-mcp broker loaded), yellow ◐ when the daemon is up but the broker is missing
 (native tools run **ungoverned**), dim ○ when the daemon is down. It is a cached
 round-trip check (`astrid status`), not a socket-exists test — cooperative plugin
 mode has no sandbox floor under a dead gate, so the dot must not claim governance
@@ -137,10 +137,10 @@ it can't back.
 ## Caveat: tool *calls* need a trusted ingress (one-time)
 
 `tools/list` is ungated — Claude Code will **see** the Astrid tools immediately.
-`tools/call` is confused-deputy gated by the sage-mcp broker: it only dispatches
+`tools/call` is confused-deputy gated by the astrid-mcp broker: it only dispatches
 for a `source_id` listed in the broker's `trusted_ingress_ids`. Until that's
 set to the CLI uplink's id, calls are denied (fail-closed). Set it once when
-installing/configuring the sage-mcp capsule. (Single-tenant: you the operator
+installing/configuring the astrid-mcp capsule. (Single-tenant: you the operator
 are admin via `default`, so authorizing your own session's ingress is a
 self-stamp — fine on your own machine. The session itself runs as the scoped
 `claude-code` principal, and per-connection auth has since landed: `agent create`

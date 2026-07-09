@@ -1,0 +1,26 @@
+[package]
+name = "codex-install"
+version = "0.1.0"
+description = "Per-principal Codex config provisioner for Astrid"
+authors = [
+    "Joshua J. Bouw <dev@joshuajbouw.com>",
+    "Unicity Labs <info@unicity-labs.com>",
+]
+astrid-version = ">=0.7.0"
+
+[[component]]
+id = "codex-install"
+file = "codex_install.wasm"
+type = "executable"
+
+[capabilities]
+kv = []
+fs = ["home://"]
+
+[subscribe]
+"codex.v1.install.run" = { wit = "opaque", handler = "handle_install" }
+"codex.v1.install.relink" = { wit = "opaque", handler = "handle_relink" }
+
+[publish]
+"codex.v1.install.status" = "opaque"
+"codex.v1.install.complete" = "opaque"

@@ -1,10 +1,11 @@
 //! Concrete writers for `.claude/settings.local.json` and
-//! `.claude/.mcp.json`. Both go through [`crate::atomic::write_atomic`]
+//! `.claude/.mcp.json`. Both go through [`oracle_host::fs::write_atomic`]
 //! so a crashed install never leaves a half-written config file.
 
 use astrid_sdk::prelude::*;
+use oracle_host::fs as atomic;
 
-use crate::{atomic, claude_md, config::PrincipalConfig, layout};
+use crate::{claude_md, config::PrincipalConfig, layout};
 
 /// Write the `.claude/settings.local.json` for the invoking principal,
 /// shaped by `cfg` (interaction × auth axes — see
@@ -51,7 +52,7 @@ pub(crate) fn write_managed_settings(cfg: &PrincipalConfig) -> Result<(), SysErr
 /// standalone Astrid grounding (what Astrid OS is and the role it runs
 /// the agent in), branched on interaction mode. User-tier memory Claude
 /// loads every session; authored as plain UTF-8 markdown through
-/// [`crate::atomic::write_atomic`].
+/// [`oracle_host::fs::write_atomic`].
 pub(crate) fn write_claude_md(cfg: &PrincipalConfig) -> Result<(), SysError> {
     let path = claude_md::claude_md_path();
     atomic::write_atomic(&path, claude_md::claude_md(cfg).as_bytes())

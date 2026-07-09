@@ -95,7 +95,6 @@ pub(crate) const PENDING_RESTART_PREFIX: &str = "sage.pending_restart";
 
 /// Maximum accepted length for `principal_id` or `session_id` read off
 /// the IPC bus. Mirrors `sage-install::layout::sanitize_principal_id`.
-const MAX_ID_LEN: usize = 128;
 
 /// Validate an untrusted id (principal_id or session_id) from an IPC
 /// payload before it flows into path construction, KV keys, or topic
@@ -103,7 +102,7 @@ const MAX_ID_LEN: usize = 128;
 ///
 /// Rejects:
 ///   * empty / pure-`.` / pure-`..` reserved segments,
-///   * anything longer than [`MAX_ID_LEN`],
+///   * anything longer than [`oracle_host::MAX_ID_LEN`],
 ///   * any character outside `[A-Za-z0-9._-]` (catches `/`, `\`, NUL,
 ///     quotes, whitespace, and topic delimiters all in one rule).
 ///
@@ -112,28 +111,7 @@ const MAX_ID_LEN: usize = 128;
 /// successfully provisions a principal home is also a valid spawn
 /// input. `field` is the logical name (used only in error text).
 pub(crate) fn validate_id(field: &str, id: &str) -> Result<(), SysError> {
-    if id.is_empty() {
-        return Err(SysError::ApiError(format!("{field} must not be empty")));
-    }
-    if id == "." || id == ".." {
-        return Err(SysError::ApiError(format!(
-            "{field} '{id}' is a reserved path segment"
-        )));
-    }
-    if id.len() > MAX_ID_LEN {
-        return Err(SysError::ApiError(format!(
-            "{field} exceeds {MAX_ID_LEN} characters"
-        )));
-    }
-    for c in id.chars() {
-        let ok = c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
-        if !ok {
-            return Err(SysError::ApiError(format!(
-                "{field} contains disallowed character '{c}' (allowed: [A-Za-z0-9._-])"
-            )));
-        }
-    }
-    Ok(())
+    oracle_host::ids::validate_id(field, id)
 }
 
 /// Sage agent runner — capsule singleton.

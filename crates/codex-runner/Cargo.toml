@@ -1,21 +1,20 @@
 [package]
-name = "sibyl-install"
+name = "codex-runner"
 version.workspace = true
-edition = "2024"
-authors = [
-    "Joshua J. Bouw <dev@joshuajbouw.com>",
-    "Unicity Labs <info@unicity-labs.com>",
-]
+edition.workspace = true
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Per-principal Codex provisioner for Astrid OS"
+description = "Codex host runner on Astrid"
 publish = false
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
+oracle-host.workspace = true
+oracle-core.workspace = true
 astrid-sdk.workspace = true
 serde.workspace = true
 serde_json.workspace = true

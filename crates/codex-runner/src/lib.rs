@@ -3,20 +3,20 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! Sibyl — OpenAI Codex runner on Astrid OS.
+//! Codex host runner on Astrid OS.
 //!
-//! This capsule is the Codex counterpart to Sage's agent runner. The first
+//! Host adapter: bounded `codex exec` turns under Astrid. The first
 //! slice uses bounded `codex exec` calls rather than pretending Codex has the
 //! same long-lived stdin/stdout contract as `claude -p`.
 
 use astrid_sdk::prelude::*;
+use oracle_host::ids::validate_id as host_validate_id;
 use serde::{Deserialize, Serialize};
 use std::time::UNIX_EPOCH;
 
-const MAX_ID_LEN: usize = 128;
-const SETTINGS_KEY: &str = "sibyl.principal.config";
-const SESSION_KEY_PREFIX: &str = "sibyl.session";
-const HOOK_TOKEN_KEY_PREFIX: &str = "sibyl.hook_token";
+const SETTINGS_KEY: &str = "codex.principal.config";
+const SESSION_KEY_PREFIX: &str = "codex.session";
+const HOOK_TOKEN_KEY_PREFIX: &str = "codex.hook_token";
 const MAX_CODEX_EVENT_LINES: usize = 512;
 
 /// How the user drives Codex.
@@ -120,7 +120,7 @@ fn default_sandbox_mode() -> String {
 }
 
 fn default_profile() -> Option<String> {
-    Some("sibyl".to_string())
+    Some("astrid".to_string())
 }
 
 fn default_mirror_json_events() -> bool {
@@ -214,9 +214,9 @@ fn save_config(cfg: &PrincipalConfig) -> Result<(), SysError> {
 
 /// Runner capsule singleton.
 #[derive(Default)]
-pub struct Sibyl;
+pub struct CodexRunner;
 
-/// `sibyl.v1.request.spawn` payload.
+/// `codex.v1.request.spawn` payload.
 #[derive(Debug, Deserialize)]
 pub struct SpawnRequest {
     /// Astrid principal this turn belongs to.
@@ -235,7 +235,7 @@ pub struct SpawnRequest {
     pub initial_message: Option<String>,
 }
 
-/// `sibyl.v1.request.send.<sid>` payload.
+/// `codex.v1.request.send.<sid>` payload.
 #[derive(Debug, Deserialize)]
 pub struct SendRequest {
     /// Target session id.
@@ -244,7 +244,7 @@ pub struct SendRequest {
     pub text: String,
 }
 
-/// `sibyl.v1.hook.<sid>.<event>` payload emitted by the Codex plugin shim.
+/// `codex.v1.hook.<sid>.<event>` payload emitted by the Codex plugin shim.
 #[derive(Debug, Deserialize)]
 pub struct HookEnvelope {
     /// Wire-format version.
@@ -276,7 +276,7 @@ pub struct HookEnvelope {
     pub token: Option<String>,
 }
 
-/// `sibyl.v1.request.settings.set` payload.
+/// `codex.v1.request.settings.set` payload.
 #[derive(Debug, Deserialize)]
 pub struct SettingsSetRequest {
     /// Principal whose settings are being changed.
@@ -401,14 +401,14 @@ struct HookAudit {
 }
 
 #[capsule]
-impl Sibyl {
+impl CodexRunner {
     /// Spawn a Codex headless turn.
     #[astrid::interceptor("handle_spawn")]
     pub fn handle_spawn(&self, req: SpawnRequest) -> Result<(), SysError> {
         validate_principal_id("principal_id", &req.principal_id)?;
         let session_id = req
             .session_id
-            .unwrap_or_else(|| generated_segment_id("sibyl-session"));
+            .unwrap_or_else(|| generated_segment_id("codex-session"));
         validate_topic_segment("session_id", &session_id)?;
         if let Some(workspace_id) = req.workspace_id.as_deref() {
             validate_topic_segment("workspace_id", workspace_id)?;
@@ -432,7 +432,7 @@ impl Sibyl {
         )?;
 
         ipc::publish_json(
-            &format!("sibyl.v1.event.{session_id}.spawned"),
+            &format!("codex.v1.event.{session_id}.spawned"),
             &Spawned {
                 principal_id: req.principal_id.clone(),
                 session_id: session_id.clone(),
@@ -513,7 +513,7 @@ impl Sibyl {
             cfg.mirror_json_events = mirror_json_events;
         }
         save_config(&cfg)?;
-        ipc::publish_json("sibyl.v1.settings.changed", &cfg)
+        ipc::publish_json("codex.v1.settings.changed", &cfg)
     }
 
     /// Record a Codex hook emitted by the native/plugin shim.
@@ -529,7 +529,7 @@ impl Sibyl {
         let mut session = load_session(&env.session_id)?.unwrap_or_else(|| AgentSession {
             schema_version: 1,
             principal_id: env.principal_id.clone(),
-            agent_kind: "sibyl".to_string(),
+            agent_kind: "codex".to_string(),
             session_id: env.session_id.clone(),
             workspace_id: env.workspace_id.clone(),
             cwd: None,
@@ -542,7 +542,7 @@ impl Sibyl {
 
         let (verified, reason) = verify_hook_token(&env)?;
         ipc::publish_json(
-            "sibyl.v1.audit.hook_received",
+            "codex.v1.audit.hook_received",
             &HookAudit {
                 principal_id: env.principal_id,
                 session_id: env.session_id,
@@ -620,10 +620,10 @@ fn run_codex_turn(
     };
     let topic = if output.exit.success() {
         mark_session_status(&session.session_id, SessionStatus::Finished)?;
-        format!("sibyl.v1.event.{}.done", session.session_id)
+        format!("codex.v1.event.{}.done", session.session_id)
     } else {
         mark_session_status(&session.session_id, SessionStatus::Error)?;
-        format!("sibyl.v1.event.{}.error", session.session_id)
+        format!("codex.v1.event.{}.error", session.session_id)
     };
     ipc::publish_json(&topic, &event)
 }
@@ -650,7 +650,7 @@ fn mirror_codex_json_events(
                 let topic_segment = codex_event_topic_segment(&event_type);
                 ipc::publish_json(
                     &format!(
-                        "sibyl.v1.event.{}.codex.{}",
+                        "codex.v1.event.{}.codex.{}",
                         session.session_id, topic_segment
                     ),
                     &MirroredCodexEvent {
@@ -667,7 +667,7 @@ fn mirror_codex_json_events(
             Err(err) => {
                 summary.malformed += 1;
                 ipc::publish_json(
-                    "sibyl.v1.audit.codex_json_event_malformed",
+                    "codex.v1.audit.codex_json_event_malformed",
                     &CodexEventParseError {
                         principal_id: session.principal_id.clone(),
                         session_id: session.session_id.clone(),
@@ -730,8 +730,8 @@ fn publish_error(
     reason: &str,
 ) -> Result<(), SysError> {
     let topic = session_id
-        .map(|sid| format!("sibyl.v1.event.{sid}.error"))
-        .unwrap_or_else(|| "sibyl.v1.event.session_rejected".to_string());
+        .map(|sid| format!("codex.v1.event.{sid}.error"))
+        .unwrap_or_else(|| "codex.v1.event.session_rejected".to_string());
     ipc::publish_json(
         &topic,
         &ErrorEvent {
@@ -743,25 +743,7 @@ fn publish_error(
 }
 
 fn validate_principal_id(field: &str, id: &str) -> Result<(), SysError> {
-    if id.is_empty() {
-        return Err(SysError::ApiError(format!("{field} must not be empty")));
-    }
-    if id == "." || id == ".." {
-        return Err(SysError::ApiError(format!("{field} is reserved")));
-    }
-    if id.len() > MAX_ID_LEN {
-        return Err(SysError::ApiError(format!(
-            "{field} exceeds {MAX_ID_LEN} characters"
-        )));
-    }
-    for c in id.chars() {
-        if !(c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-') {
-            return Err(SysError::ApiError(format!(
-                "{field} contains disallowed character '{c}'"
-            )));
-        }
-    }
-    Ok(())
+    host_validate_id(field, id)
 }
 
 fn validate_topic_segment(field: &str, id: &str) -> Result<(), SysError> {
@@ -809,7 +791,7 @@ fn register_session(
     let session = AgentSession {
         schema_version: 1,
         principal_id: principal_id.to_string(),
-        agent_kind: "sibyl".to_string(),
+        agent_kind: "codex".to_string(),
         session_id: session_id.to_string(),
         workspace_id,
         cwd,
@@ -932,9 +914,9 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_to_sibyl_profile_and_event_mirroring() {
+    fn config_defaults_to_astrid_profile_and_event_mirroring() {
         let cfg = PrincipalConfig::default();
-        assert_eq!(cfg.profile.as_deref(), Some("sibyl"));
+        assert_eq!(cfg.profile.as_deref(), Some("astrid"));
         assert!(cfg.mirror_json_events);
         assert!(!cfg.ignore_user_config);
     }

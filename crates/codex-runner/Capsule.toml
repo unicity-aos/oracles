@@ -1,5 +1,5 @@
 [package]
-name = "sibyl"
+name = "codex-runner"
 version = "0.1.0"
 description = "Codex headless agent runner"
 authors = [
@@ -9,8 +9,8 @@ authors = [
 astrid-version = ">=0.9.1"
 
 [[component]]
-id = "sibyl"
-file = "sibyl.wasm"
+id = "codex-runner"
+file = "codex_runner.wasm"
 type = "executable"
 
 [capabilities]
@@ -32,13 +32,13 @@ skip_git_repo_check = { type = "select", enum_values = ["false", "true"], defaul
 mirror_json_events = { type = "select", enum_values = ["true", "false"], default = "true", request = "Mirror codex exec JSONL records onto Astrid events" }
 
 [subscribe]
-"sibyl.v1.request.spawn" = { wit = "opaque", handler = "handle_spawn" }
-"sibyl.v1.request.send.*" = { wit = "opaque", handler = "handle_send" }
-"sibyl.v1.request.settings.set" = { wit = "opaque", handler = "handle_settings_set" }
-"sibyl.v1.hook.*.*" = { wit = "opaque", handler = "handle_hook" }
+"codex.v1.request.spawn" = { wit = "opaque", handler = "handle_spawn" }
+"codex.v1.request.send.*" = { wit = "opaque", handler = "handle_send" }
+"codex.v1.request.settings.set" = { wit = "opaque", handler = "handle_settings_set" }
+"codex.v1.hook.*.*" = { wit = "opaque", handler = "handle_hook" }
 
 [publish]
-"sibyl.v1.event.*" = "opaque"
-"sibyl.v1.event.*.*" = "opaque"
-"sibyl.v1.audit.*" = "opaque"
-"sibyl.v1.settings.changed" = "opaque"
+"codex.v1.event.*" = "opaque"
+"codex.v1.event.*.*" = "opaque"
+"codex.v1.audit.*" = "opaque"
+"codex.v1.settings.changed" = "opaque"

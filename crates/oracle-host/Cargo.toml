@@ -1,21 +1,19 @@
 [package]
-name = "sibyl"
+name = "oracle-host"
 version.workspace = true
-edition = "2024"
-authors = [
-    "Joshua J. Bouw <dev@joshuajbouw.com>",
-    "Unicity Labs <info@unicity-labs.com>",
-]
+edition.workspace = true
+authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Codex headless agent runner on Astrid OS"
+description = "Shared host-adapter primitives for Astrid oracles (ids, install, atomic fs)"
 publish = false
 
-[lib]
-crate-type = ["cdylib"]
-
 [dependencies]
+oracle-core.workspace = true
 astrid-sdk.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[lib]
+path = "src/lib.rs"

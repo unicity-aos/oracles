@@ -1,22 +1,20 @@
 [package]
-name = "sage"
+name = "codex-install"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Claude headless (claude -p) agent runner on Astrid OS"
+description = "Per-principal Codex home provisioner (HostProvisioner adapter)"
 publish = false
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-oracle-host.workspace = true
 oracle-core.workspace = true
+oracle-host.workspace = true
 astrid-sdk.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
-uuid.workspace = true

@@ -19,14 +19,14 @@ version = "0.2.0"
 role = "uplink"
 
 [[capsule]]
-name = "sibyl"
+name = "codex-runner"
 source = "@unicity-astrid/oracles"
 version = "0.1.0"
 [capsule.env]
 interaction_mode = "repl"
 approval_policy = "on-request"
 sandbox_mode = "workspace-write"
-profile = "codex"
+profile = "astrid"
 ephemeral = "false"
 ignore_user_config = "false"
 ignore_rules = "false"
@@ -39,7 +39,7 @@ source = "@unicity-astrid/oracles"
 version = "0.1.0"
 
 [[capsule]]
-name = "sibyl-install"
+name = "codex-install"
 source = "@unicity-astrid/oracles"
 version = "0.1.0"
 

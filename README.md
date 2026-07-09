@@ -1,49 +1,45 @@
 # Astrid Oracles
 
-External coding runtimes bound into **Astrid**. The backend is always Astrid —
-one broker, one MCP namespace (`mcp__astrid__*`). Hosts only differ where the
-host product forces it (hooks, principal family, optional supervisor).
+External coding runtimes bound into **Astrid**. One backend, host adapters
+only where the host product forces difference.
 
-| Host plugin | Principal | Distro |
-|-------------|-----------|--------|
-| Claude Code | `claude-code` | `distros/claude.toml` |
-| Grok Build  | `grok-code`   | `distros/grok.toml` |
-| Codex       | `codex-code`  | `distros/codex.toml` |
+## Shared vs host-specific
 
-Retired brand names (Sage / Mimir / Sibyl) still resolve as aliases on
-`Host::from_id` for migration. New paths use host names or plain **Astrid**.
+| Crate | Role |
+|-------|------|
+| `oracle-core` | `Host`, `HostProfile`, singleton `OracleIdentity` (wire: `mcp__astrid__*`) |
+| `oracle-broker` | Shared MCP broker (discovery, policy, approval, execute) |
+| `oracle-host` | Shared host primitives: `PrincipalId`, atomic fs, `HostProvisioner` install loop, topics |
+| `astrid-mcp` | The only broker capsule |
+| `codex-install` | Thin `HostProvisioner` for `.codex/` |
+| `sage-install` | Claude provisioner — uses shared ids/fs; richer config-aware loop still host-local |
+| `sage` | Claude `claude -p` supervisor (protocol-specific) |
+| `codex-runner` | Codex bounded-exec runner (protocol-specific) |
+| `sage-completion` | Optional Anthropic API completion provider |
 
-## Layout
+Claude stream-json and Codex `exec` are **different host protocols** — those
+runners cannot be one codec. What they **must** share is already shared:
+identity, install loop, ids, atomic writes, MCP broker.
 
 ```
-crates/
-  oracle-core/      # Host, HostProfile, OracleIdentity (singleton Astrid wire id)
-  oracle-broker/    # Shared MCP broker
-  astrid-mcp/       # The only broker capsule
-  sage/             # Claude supervisor (crate name legacy; ships Claude -p)
-  sage-install/     # Claude home provisioner
-  sage-completion/  # Anthropic API completion (optional)
-  sibyl/            # Codex supervisor (crate name legacy)
-  sibyl-install/    # Codex provisioner
-plugins/
-  claude/           # Claude Code host plugin
-  grok/             # Grok Build host plugin
-  codex/            # Codex host plugin
-distros/
-  claude.toml | grok.toml | codex.toml
+plugins/{claude,grok,codex}  →  astrid-mcp (OracleIdentity::ASTRID)
+                             →  host provisioner (HostProvisioner)
+                             →  host runner (if supervised)
 ```
 
-## Why not three product brands?
+## Distros
 
-The myth names existed to avoid looking like co-branded Claude/Grok/Codex
-products. Shipping as **Astrid** is cleaner and still not a third-party
-trademark claim — it's your OS, with host adapters.
+```bash
+astrid init --distro ./distros/claude.toml --principal claude-code
+astrid init --distro ./distros/grok.toml   --principal grok-code
+astrid init --distro ./distros/codex.toml  --principal codex-code
+```
 
 ## Build
 
 ```bash
-cargo test -p oracle-core -p oracle-broker --lib
-cargo build -p astrid-mcp
+cargo test -p oracle-core -p oracle-broker -p oracle-host --lib
+cargo build -p astrid-mcp -p codex-install -p codex-runner -p sage -p sage-install
 ```
 
 ## License

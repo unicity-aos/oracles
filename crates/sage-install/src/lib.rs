@@ -92,7 +92,6 @@
 //! credential under `[env]` in the consuming capsule's manifest
 //! instead.
 
-mod atomic;
 mod claude_md;
 mod config;
 mod layout;
@@ -100,10 +99,12 @@ mod settings;
 
 use astrid_sdk::prelude::*;
 use serde::{Deserialize, Serialize};
+use oracle_host::fs as atomic;
+use oracle_host::PrincipalId;
 
 use crate::config::{InteractionMode, PrincipalConfig};
 use crate::layout::{
-    claude_dir, install_complete_key, principal_home, projects_dir, sanitize_principal_id,
+    claude_dir, install_complete_key, principal_home, projects_dir,
 };
 
 /// Install-time IPC payload (`sage.v1.install.run`).
@@ -360,7 +361,7 @@ impl SageInstall {
 /// so the writer here and the success-echo envelope cannot disagree
 /// about the shape that landed on disk.
 fn run_install(req: &InstallRequest, cfg: PrincipalConfig) -> Result<String, SysError> {
-    let sanitized = sanitize_principal_id(&req.principal_id)?;
+    let sanitized = PrincipalId::parse(&req.principal_id)?.to_string();
     let home = principal_home();
 
     publish_status(&sanitized, "begin", "starting install");
@@ -470,7 +471,7 @@ fn run_install(req: &InstallRequest, cfg: PrincipalConfig) -> Result<String, Sys
 /// handler boundary and threaded in by value — symmetric with
 /// [`run_install`].
 fn run_relink(req: &RelinkRequest, cfg: PrincipalConfig) -> Result<String, SysError> {
-    let sanitized = sanitize_principal_id(&req.principal_id)?;
+    let sanitized = PrincipalId::parse(&req.principal_id)?.to_string();
     let home = principal_home();
 
     publish_status(&sanitized, "relink_begin", "rewriting configs");

@@ -104,28 +104,7 @@ pub(crate) fn install_complete_key(sanitized_id: &str) -> String {
 /// per-principal VFS resolver in the Astrid stack; this is the only
 /// untrusted-input gate in the install path.
 pub(crate) fn sanitize_principal_id(id: &str) -> Result<String, SysError> {
-    if id.is_empty() {
-        return Err(SysError::ApiError("principal_id must not be empty".into()));
-    }
-    if id == "." || id == ".." {
-        return Err(SysError::ApiError(format!(
-            "principal_id '{id}' is a reserved path segment"
-        )));
-    }
-    if id.len() > 128 {
-        return Err(SysError::ApiError(
-            "principal_id exceeds 128 characters".into(),
-        ));
-    }
-    for c in id.chars() {
-        let ok = c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-';
-        if !ok {
-            return Err(SysError::ApiError(format!(
-                "principal_id contains disallowed character '{c}' (allowed: [A-Za-z0-9._-])"
-            )));
-        }
-    }
-    Ok(id.to_string())
+    Ok(oracle_host::PrincipalId::parse(id)?.to_string())
 }
 
 /// Source-of-truth deny list for the headless NATIVE-TOOLS model — the

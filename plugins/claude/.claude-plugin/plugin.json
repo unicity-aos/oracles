@@ -1,12 +1,21 @@
 {
   "name": "astrid",
   "displayName": "Astrid",
-  "version": "0.2.2",
+  "version": "0.1.0",
   "description": "Run Claude Code as a governed Astrid agent: capsule tools over MCP, an ephemeral self-cleaning daemon, a SessionStart readiness doctor, an Astrid HUD status line, /astrid:* operator commands, and an Astrid-agent identity. Installing this plugin turns a vanilla `claude` REPL into an Astrid-integrated session.",
-  "author": { "name": "Unicity Labs", "email": "info@unicity-labs.com" },
+  "author": {
+    "name": "Unicity Labs",
+    "email": "info@unicity-labs.com"
+  },
   "homepage": "https://github.com/unicity-astrid/astrid",
   "license": "MIT OR Apache-2.0",
-  "keywords": ["astrid", "mcp", "agent", "runtime", "capsule"],
+  "keywords": [
+    "astrid",
+    "mcp",
+    "agent",
+    "runtime",
+    "capsule"
+  ],
   "mcpServers": "./.mcp.json",
   "hooks": "./hooks/hooks.json",
   "outputStyles": "./output-styles",
@@ -15,7 +24,7 @@
     "principal": {
       "type": "string",
       "title": "Astrid principal",
-      "description": "The Astrid principal this Claude Code session acts as. Scopes tool execution, capability checks, and audit to this identity. Defaults to 'claude-code' — a least-authority agent in the 'claude' family group (self-scoped only, NOT the admin 'default'), auto-provisioned on first launch. Set to 'default' to run with admin authority, or any name to run as that scoped agent. Run `astrid agent list` to see principals.",
+      "description": "The Astrid principal this Claude Code session acts as. Scopes tool execution, capability checks, and audit to this identity. Defaults to 'claude-code' \u2014 a least-authority agent in the 'claude' family group (self-scoped only, NOT the admin 'default'), auto-provisioned on first launch. Set to 'default' to run with admin authority, or any name to run as that scoped agent. Run `astrid agent list` to see principals.",
       "required": true,
       "default": "claude-code"
     }

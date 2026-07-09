@@ -1,6 +1,6 @@
 {
   "name": "codex",
-  "version": "0.1.0+codex.20260708205824",
+  "version": "0.1.0",
   "description": "Run Codex as Astrid, a governed Astrid agent with Astrid docs, MCP, and hooks.",
   "author": {
     "name": "Unicity Labs",

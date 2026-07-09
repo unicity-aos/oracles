@@ -9,5 +9,13 @@
   "homepage": "https://github.com/unicity-astrid/mimir",
   "repository": "https://github.com/unicity-astrid/mimir",
   "license": "MIT OR Apache-2.0",
-  "keywords": ["astrid", "mimir", "mcp", "agent", "runtime", "capsule", "grok"]
+  "keywords": [
+    "astrid",
+    "mimir",
+    "mcp",
+    "agent",
+    "runtime",
+    "capsule",
+    "grok"
+  ]
 }

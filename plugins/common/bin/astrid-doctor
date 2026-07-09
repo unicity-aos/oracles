@@ -205,12 +205,12 @@ check_updates() {
   touch "$_cu_stamp" 2>/dev/null || true
 
   _cu_tmp="$(mktemp 2>/dev/null || printf '%s' "$_cu_home/var/.doctor-update-check.tmp")"
+  _distro_base="${ASTRID_ORACLES_DISTRO_BASE:-https://raw.githubusercontent.com/unicity-astrid/oracles/main/distros}"
+  _oracles_repo="${ASTRID_ORACLES_REPO:-unicity-astrid/oracles}"
 
-  # --- Astrid runtime staleness -------------------------------------------
-  # `astrid update --check` prints "Update available: vCUR → vNEW. ..." to
-  # stdout ONLY when a newer self-managed release exists. (A Homebrew install
-  # prints a brew-upgrade note instead, so no astrid nudge fires there — brew
-  # users upgrade via `brew upgrade`.) Parse that line for the two versions.
+  # --- 1) Astrid runtime (GitHub Releases via `astrid update --check`) ------
+  # Self-managed (~/.astrid/bin) and release installs report "Update available".
+  # Homebrew installs usually print a brew-upgrade note instead.
   _astrid_new=""; _astrid_cur=""
   : > "$_cu_tmp" 2>/dev/null || true
   run_bounded "$_cu_tmp" 5 "$ASTRID" update --check || true
@@ -218,55 +218,165 @@ check_updates() {
     _cu_line="$(grep 'Update available' "$_cu_tmp" 2>/dev/null | head -n1)"
     _astrid_cur="$(printf '%s' "$_cu_line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)"
     _astrid_new="$(printf '%s' "$_cu_line" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tail -n1)"
+  elif grep -qi 'brew upgrade' "$_cu_tmp" 2>/dev/null; then
+    _astrid_new="brew"
+    _astrid_cur="brew"
   fi
 
-  # --- Plugin staleness ----------------------------------------------------
-  # Compare our own plugin.json version against the latest oracles release tag.
-  # Offline / rate-limited / no-releases-yet all fail silently (curl -f + short
-  # --max-time). The plugin.json sits one level up from this bin/ dir.
+  # --- 2) Plugin package (oracles release tag vs local plugin.json) --------
   _plugin_new=""; _plugin_cur=""
   _cu_pjson=""
-  for _cand in       "$ASTRID_PLUGIN_ROOT/.claude-plugin/plugin.json"       "$ASTRID_PLUGIN_ROOT/.grok-plugin/plugin.json"       "$ASTRID_PLUGIN_ROOT/.codex-plugin/plugin.json"       "$(dirname "$0")/../.claude-plugin/plugin.json"       "$(dirname "$0")/../.grok-plugin/plugin.json"       "$(dirname "$0")/../.codex-plugin/plugin.json"; do
+  for _cand in \
+      "$ASTRID_PLUGIN_ROOT/.claude-plugin/plugin.json" \
+      "$ASTRID_PLUGIN_ROOT/.grok-plugin/plugin.json" \
+      "$ASTRID_PLUGIN_ROOT/.codex-plugin/plugin.json" \
+      "$(dirname "$0")/../.claude-plugin/plugin.json" \
+      "$(dirname "$0")/../.grok-plugin/plugin.json" \
+      "$(dirname "$0")/../.codex-plugin/plugin.json"
+  do
     if [ -f "$_cand" ]; then _cu_pjson="$_cand"; break; fi
   done
   if [ -f "$_cu_pjson" ] && command -v curl >/dev/null 2>&1; then
     _plugin_cur="$(grep -oE '"version"[[:space:]]*:[[:space:]]*"[^"]+"' "$_cu_pjson" 2>/dev/null \
       | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
+    # Semver-ish: strip build metadata (+…) for comparison
+    _plugin_cur_base="$(printf '%s' "$_plugin_cur" | sed 's/+.*//')"
     _cu_rel="$(curl -fsL --max-time 5 \
-      https://api.github.com/repos/unicity-astrid/oracles/releases/latest 2>/dev/null || true)"
-    _cu_tag="$(printf '%s' "$_cu_rel" | grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]+"' \
-      | head -n1 | sed -E 's/.*"([^"]+)"$/\1/')"
-    if [ -n "$_plugin_cur" ] && [ -n "$_cu_tag" ] && version_gt "$_cu_tag" "$_plugin_cur"; then
+      ${GITHUB_TOKEN:+-H "Authorization: Bearer ${GITHUB_TOKEN}"} \
+      "https://api.github.com/repos/${_oracles_repo}/releases/latest" 2>/dev/null || true)"
+    _cu_tag="$(printf '%s' "$_cu_rel" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+    if [ -n "$_plugin_cur_base" ] && [ -n "$_cu_tag" ] && version_gt "$_cu_tag" "$_plugin_cur_base"; then
       _plugin_new="$_cu_tag"
+    fi
+  fi
+
+  # --- 3) Distro lock vs remote Distro.toml version -----------------------
+  # Lock lives at ~/.astrid/home/<principal>/.config/distro.lock (TOML).
+  # Freshness is distro id + version (see astrid init is_lock_fresh).
+  _distro_new=""; _distro_cur=""; _distro_id=""
+  _lock="$_cu_home/home/${PRINCIPAL}/.config/distro.lock"
+  if [ -f "$_lock" ]; then
+    _distro_id="$(sed -n '/^\[distro\]/,/^\[/{ s/^id = "\([^"]*\)"/\1/p; }' "$_lock" | head -n1)"
+    _distro_cur="$(sed -n '/^\[distro\]/,/^\[/{ s/^version = "\([^"]*\)"/\1/p; }' "$_lock" | head -n1)"
+  fi
+  # Prefer ASTRID_DISTRO (set by host adapter); fall back to lock id; map legacy.
+  _want_distro="${ASTRID_DISTRO:-}"
+  if [ -z "$_want_distro" ] && [ -n "$_distro_id" ]; then
+    case "$_distro_id" in
+      sage) _want_distro=claude ;;
+      mimir) _want_distro=grok ;;
+      sibyl) _want_distro=codex ;;
+      *) _want_distro="$_distro_id" ;;
+    esac
+  fi
+  # Legacy product distros (sage/mimir/sibyl) should re-init onto claude/grok/codex.
+  case "$_distro_id" in
+    sage|mimir|sibyl)
+      if [ -z "$_want_distro" ]; then
+        case "$_distro_id" in
+          sage) _want_distro=claude ;;
+          mimir) _want_distro=grok ;;
+          sibyl) _want_distro=codex ;;
+        esac
+      fi
+      # Ensure we announce even if remote version looks "lower" semver than old brand.
+      _legacy_distro=1
+      ;;
+    *) _legacy_distro=0 ;;
+  esac
+
+  if [ -n "$_want_distro" ] && command -v curl >/dev/null 2>&1; then
+    _remote_toml="$(curl -fsL --max-time 5 \
+      "${_distro_base}/${_want_distro}.toml" 2>/dev/null || true)"
+    if [ -n "$_remote_toml" ]; then
+      _distro_remote_ver="$(printf '%s\n' "$_remote_toml" | sed -n '/^\[distro\]/,/^\[/{ s/^version = "\([^"]*\)"/\1/p; }' | head -n1)"
+      if [ -n "$_distro_remote_ver" ]; then
+        if [ -z "$_distro_cur" ]; then
+          _distro_new="$_distro_remote_ver"
+          _distro_cur="(none)"
+        elif [ "$_legacy_distro" = "1" ]; then
+          _distro_new="$_distro_remote_ver"
+        elif [ "$_distro_cur" != "$_distro_remote_ver" ]; then
+          if version_gt "$_distro_remote_ver" "$_distro_cur"; then
+            _distro_new="$_distro_remote_ver"
+          elif ! version_gt "$_distro_cur" "$_distro_remote_ver"; then
+            # incomparable labels — still surface re-apply
+            _distro_new="$_distro_remote_ver"
+          fi
+        fi
+      fi
     fi
   fi
 
   [ -n "${_cu_tmp:-}" ] && rm -f "$_cu_tmp" 2>/dev/null || true
 
-  # --- Compose the user-facing nudge --------------------------------------
-  if [ -n "$_astrid_new" ] && [ -n "$_plugin_new" ]; then
-    NUDGE_MSG="🔔 Updates available: Astrid v$_astrid_new (you have v$_astrid_cur) and the Astrid plugin $_plugin_new (you have $_plugin_cur) — just ask me to update and I'll handle the rest."
-  elif [ -n "$_astrid_new" ]; then
-    NUDGE_MSG="🔔 Astrid v$_astrid_new is available (you have v$_astrid_cur) — just ask me to update Astrid and I'll handle the rest."
-  elif [ -n "$_plugin_new" ]; then
-    NUDGE_MSG="🔔 The Astrid plugin $_plugin_new is available (you have $_plugin_cur) — just ask me to update it and I'll take care of it."
+  # --- Compose user-facing nudge ------------------------------------------
+  _parts=""
+  if [ -n "$_astrid_new" ] && [ "$_astrid_new" != "brew" ]; then
+    _parts="${_parts}Astrid v${_astrid_new} (you have v${_astrid_cur}); "
+  elif [ "$_astrid_new" = "brew" ]; then
+    _parts="${_parts}Astrid (Homebrew has an upgrade); "
+  fi
+  if [ -n "$_plugin_new" ]; then
+    _parts="${_parts}plugin ${_plugin_new} (you have ${_plugin_cur}); "
+  fi
+  if [ -n "$_distro_new" ]; then
+    _parts="${_parts}distro ${_want_distro} ${_distro_new} (lock has ${_distro_cur}); "
+  fi
+  if [ -n "$_parts" ]; then
+    NUDGE_MSG="🔔 Updates available: ${_parts}just ask me to update and I'll handle the rest."
   fi
 
-  # --- Model-facing playbook (only the steps that apply) ------------------
+  # --- Model-facing playbook (host-aware) ---------------------------------
   if [ -n "$NUDGE_MSG" ]; then
-    _cu_ctx="UPDATE AVAILABLE — when the user asks you to update, run only the applicable steps below, in order, and report the result. Do not run them without the user's go-ahead."
+    _cu_ctx="UPDATE AVAILABLE — when the user asks you to update, run only the applicable steps below, in order, and report the result. Do not run them without the user's go-ahead.
+
+Update clocks (do not conflate them):
+  1) Runtime CLI/daemon — GitHub Releases via \`astrid update -y\` (or brew upgrade astrid if installed via Homebrew)
+  2) Distro/capsules — re-apply with \`astrid init --distro …\`
+  3) Editor plugin — host-specific plugin update / reinstall"
+
     if [ -n "$_astrid_new" ]; then
-      _cu_ctx="$_cu_ctx
+      if [ "$_astrid_new" = "brew" ]; then
+        _cu_ctx="$_cu_ctx
+  - Update the Astrid runtime:  brew upgrade astrid
+    (This install is Homebrew-managed. Self-managed installs under ~/.astrid/bin use: astrid update -y)"
+      else
+        _cu_ctx="$_cu_ctx
   - Update the Astrid runtime:  astrid update -y
-    (Self-managed installs under ~/.astrid/bin pull GitHub Releases — same as install.sh.
-     Homebrew installs: brew upgrade astrid. Linux without brew: astrid update -y only.)
-  - Then re-provision this principal's capsules against the new runtime:
-    astrid init --distro $ASTRID_DISTRO -y && astrid init --distro $ASTRID_DISTRO --principal $PRINCIPAL -y"
+    (Pulls GitHub Releases into the managed bin dir, same as https://astridos.org/install.sh.
+     If that defers to Homebrew, run: brew upgrade astrid)"
+      fi
     fi
-    if [ -n "$_plugin_new" ]; then
+
+    if [ -n "$_distro_new" ] || [ -n "$_astrid_new" ]; then
+      _d="${ASTRID_DISTRO:-${_want_distro:-claude}}"
       _cu_ctx="$_cu_ctx
-  - Update this plugin:  claude plugin update astrid@astrid
-    (The user must restart Claude Code for the new plugin version to load.)"
+  - Re-provision capsules for this principal (distro apply):
+    astrid init --distro ${_distro_base}/${_d}.toml -y
+    astrid init --distro ${_distro_base}/${_d}.toml --principal ${PRINCIPAL} -y
+    (Or: curl -fsSL https://astridos.org/install.sh | sh -s -- --upgrade --host ${_d})"
+    fi
+
+    if [ -n "$_plugin_new" ]; then
+      case "${ASTRID_HOST:-claude}" in
+        grok)
+          _cu_ctx="$_cu_ctx
+  - Update the Grok plugin: reinstall from the oracles repo plugins/grok (or your marketplace entry), then restart Grok.
+    Version target: ${_plugin_new}"
+          ;;
+        codex)
+          _cu_ctx="$_cu_ctx
+  - Update the Codex plugin: reinstall plugins/codex from unicity-astrid/oracles (or marketplace), then restart Codex.
+    Version target: ${_plugin_new}"
+          ;;
+        *)
+          _cu_ctx="$_cu_ctx
+  - Update the Claude Code plugin:  claude plugin update astrid@astrid
+    (If that fails: marketplace add unicity-astrid/oracles, reinstall, restart Claude Code.)
+    Version target: ${_plugin_new}"
+          ;;
+      esac
     fi
     NUDGE_CTX="$_cu_ctx"
   fi
@@ -279,10 +389,12 @@ check_updates() {
 if [ ! -x "$ASTRID" ]; then
   INSTALLER="$(dirname "$0")/astrid-install"
   emit "Astrid is not installed (no executable astrid + astrid-daemon pair found via ASTRID_BIN/ASTRID_BIN_ROOT, nearby core/target/{debug,release}, ~/.astrid/bin, Homebrew, or PATH), so this session has no Astrid tools yet.
-Fix (release): run the plugin's bootstrapper, which installs the Astrid runtime via Homebrew or a prebuilt release binary, then start a new session:
+Fix (recommended): one-command install from GitHub Releases (macOS + Linux):
+    curl -fsSL https://astridos.org/install.sh | sh
+Or run the plugin bootstrapper if present:
     $INSTALLER
-(Manual alternative: brew install unicity-astrid/tap/astrid)
-Fix (dev worktree): build core, then pin the pair with ASTRID_BIN_ROOT=<repo>/core/target/debug (or put that key in this plugin's .mcp.json env block). Launching Claude from a checkout that already has core/target/debug also auto-selects it.
+(Optional: brew install unicity-astrid/tap/astrid — macOS convenience only.)
+Fix (dev worktree): cargo build -p astrid-cli -p astrid-daemon, then ASTRID_BIN_ROOT=<repo>/core/target/debug.
 The user can run that, or you may offer to run the installer for them."
   exit 0
 fi

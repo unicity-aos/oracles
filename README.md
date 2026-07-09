@@ -98,6 +98,20 @@ cargo build -p astrid-mcp -p claude-runner -p claude-install -p claude-completio
 
 WASM target is selected per capsule via `crates/*/.cargo/config.toml`.
 
+
+## Updates (three clocks)
+
+Do not conflate these — each has its own source of truth:
+
+| Clock | What | How the user/agent applies it |
+|-------|------|-------------------------------|
+| **Runtime** | `astrid` + `astrid-daemon` | GitHub Releases via `astrid update -y` (install.sh puts binaries in `~/.astrid/bin`). Homebrew only if installed that way: `brew upgrade astrid`. |
+| **Distro** | Capsule set per principal | Bump Distro.toml `version` upstream; apply with `astrid init --distro …` or `install.sh --upgrade`. Lock: `~/.astrid/home/<principal>/.config/distro.lock`. |
+| **Plugin** | Editor marketplace package | Host-specific reinstall/update. SessionStart doctor nudges Claude, Grok, and Codex when `oracles` has a newer GitHub release than local `plugin.json`. |
+| **install.sh** | This script | Always re-fetched from **https://astridos.org/install.sh** on each `curl \| sh`. |
+
+Doctor (`astrid-doctor --format hook` on SessionStart) rate-limits checks to ~24h and, when something is stale, announces to the user and gives the model a host-aware playbook.
+
 ## Migration
 
 Retired product brands (Sage / Mimir / Sibyl) still parse on `Host::from_id`

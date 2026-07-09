@@ -1,0 +1,10 @@
+#!/usr/bin/env sh
+# Host thin wrapper → plugins/common/bin/astrid-doctor
+set -eu
+HERE=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P) || HERE=$(dirname "$0")
+export ASTRID_HOST=codex
+export ASTRID_PLUGIN_ROOT="${ASTRID_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${PLUGIN_ROOT:-$HERE/..}}}"
+export CODEX_PLUGIN_ROOT="${CODEX_PLUGIN_ROOT:-$ASTRID_PLUGIN_ROOT}"
+export PLUGIN_ROOT="${PLUGIN_ROOT:-$ASTRID_PLUGIN_ROOT}"
+COMMON=$(CDPATH= cd -- "$HERE/../../common/bin" 2>/dev/null && pwd -P)/astrid-doctor
+exec "$COMMON" "$@"

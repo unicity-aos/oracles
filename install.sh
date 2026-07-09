@@ -14,6 +14,7 @@
 #   3. Detect Claude Code / Grok / Codex on this machine
 #   4. Wire only those hosts (shared astrid-mcp + host distro) — never force all
 #   5. If none detected → stop at base Astrid (success, not a half-install)
+#   6. --upgrade re-applies base + host distros (does not auto-poll)
 #
 # Flags:
 #   --host claude|grok|codex   wire only this host (repeatable)
@@ -93,6 +94,7 @@ NO_BREW=0
 SKIP_INIT=0
 ALL_HOSTS=0
 BASE_ONLY=0
+UPGRADE=0
 BIN_ROOT="${ASTRID_BIN_ROOT:-}"
 # space-separated list of hosts requested via --host
 REQUESTED_HOSTS=""
@@ -114,6 +116,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --all) ALL_HOSTS=1 ;;
     --base-only) BASE_ONLY=1 ;;
+    --upgrade) UPGRADE=1 ;;
     --yes|-y) YES=1 ;;
     --no-brew) NO_BREW=1 ;;
     --bin-root)
@@ -403,11 +406,15 @@ ensure_base_astrid() {
     warn "skipping base init (--skip-init)"
     return 0
   fi
-  if base_already_initialized; then
+  if base_already_initialized && [ "${UPGRADE:-0}" -eq 0 ]; then
     ok "runtime home present (${ASTRID_HOME:-$HOME/.astrid})"
     return 0
   fi
-  info "initializing default principal (base install)…"
+  if [ "${UPGRADE:-0}" -eq 1 ]; then
+    info "re-applying base init (--upgrade)…"
+  else
+    info "initializing default principal (base install)…"
+  fi
   if "$ASTRID" init -y 2>&1; then
     ok "base Astrid initialized"
   else
@@ -610,6 +617,12 @@ main() {
   say ""
   say "Verify:  ${C_BOLD}astrid doctor${C_RESET}"
   say "Docs:    https://github.com/${ORACLES_REPO}"
+  say ""
+  say "${C_DIM}Update clocks:${C_RESET}"
+  say "  runtime  →  astrid update -y   (GitHub Releases → ~/.astrid/bin)"
+  say "  distro   →  re-run with --upgrade or astrid init --distro …"
+  say "  plugin   →  host marketplace / reinstall plugins/<host>"
+  say "  script   →  curl -fsSL https://astridos.org/install.sh | sh"
   say ""
 }
 

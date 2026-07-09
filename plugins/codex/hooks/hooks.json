@@ -6,6 +6,17 @@
         "hooks": [
           {
             "type": "command",
+            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/astrid-doctor\" --format hook",
+            "timeout": 15,
+            "statusMessage": "Checking Astrid updates"
+          }
+        ]
+      },
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
             "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/astrid-up\" codex session-start",
             "timeout": 15,
             "statusMessage": "Registering Astrid with Astrid"

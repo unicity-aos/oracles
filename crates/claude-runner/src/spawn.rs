@@ -425,7 +425,12 @@ fn argv_hash(args: &[String]) -> String {
         hasher.update(a.as_bytes());
         hasher.update([0x00]);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    let digest = hasher.finalize();
+    let hex = digest
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{hex}")
 }
 
 #[cfg(test)]
@@ -448,6 +453,7 @@ mod tests {
         let b = argv_hash(&args);
         assert_eq!(a, b);
         assert!(a.starts_with("sha256:"));
+        assert_eq!(a.len(), "sha256:".len() + 64);
         // SHA-256 hex is 64 chars; plus the "sha256:" prefix = 71.
         assert_eq!(a.len(), "sha256:".len() + 64);
     }

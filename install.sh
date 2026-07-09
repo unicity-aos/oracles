@@ -510,6 +510,12 @@ pretty_host() {
   esac
 }
 
+# Set once in main before the host loop. First host also seeds the default
+# principal (daemon uplink); later hosts only provision their own principal —
+# re-initing default per host multiplies GitHub API calls and hits the 60/hr
+# anonymous ceiling mid-install.
+DEFAULT_SEEDED=0
+
 wire_host() {
   host="$1"
   principal="$(principal_for "$host")"
@@ -525,15 +531,24 @@ wire_host() {
 
   info "distro: $distro"
 
-  # default first (daemon uplink lives there), then per-principal
-  info "provisioning default principal (daemon uplink)..."
-  if ! "$ASTRID" init --distro "$distro" -y 2>&1; then
-    warn "init for default failed — continuing with principal $principal"
+  # Seed default principal once (daemon uplink lives there).
+  if [ "$DEFAULT_SEEDED" -eq 0 ]; then
+    info "provisioning default principal (daemon uplink)..."
+    if ! "$ASTRID" init --distro "$distro" -y 2>&1; then
+      warn "init for default failed — continuing with principal $principal"
+    fi
+    DEFAULT_SEEDED=1
   fi
 
   info "provisioning ${principal}..."
-  "$ASTRID" init --distro "$distro" --principal "$principal" -y \
-    || die "astrid init failed for $principal"
+  if ! "$ASTRID" init --distro "$distro" --principal "$principal" -y 2>&1; then
+    die "astrid init failed for $principal
+Capsule installs hit GitHub Releases over the API (60 req/hr without a token).
+Export a token and re-run:
+  export GH_TOKEN=\$(gh auth token)   # if you use gh
+  # or: export GITHUB_TOKEN=ghp_...
+  curl -fsSL https://astridos.org/install.sh | sh"
+  fi
 
   # Best-effort pre-grant of common capsules (matches doctor guidance)
   case "$host" in
@@ -582,6 +597,25 @@ plugin_hint() {
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+# Capsule installs call api.github.com (60/hr anonymous). Prefer an existing
+# GH_TOKEN/GITHUB_TOKEN; else lift one from `gh auth token` when available.
+ensure_github_token() {
+  if [ -n "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ]; then
+    info "GitHub API: using GH_TOKEN/GITHUB_TOKEN from environment"
+    return 0
+  fi
+  if have_cmd gh; then
+    _tok="$(gh auth token 2>/dev/null || true)"
+    if [ -n "$_tok" ]; then
+      export GH_TOKEN="$_tok"
+      ok "GitHub API: using token from gh auth (avoids 60/hr anonymous limit)"
+      return 0
+    fi
+  fi
+  warn "no GH_TOKEN/GITHUB_TOKEN — capsule installs use anonymous GitHub API (60/hr)."
+  warn "Multi-host setups can exhaust that mid-run. Fix: export GH_TOKEN=\$(gh auth token)"
+}
+
 main() {
   say ""
   say "${C_BOLD}Astrid${C_RESET}"
@@ -590,6 +624,7 @@ main() {
 
   resolve_astrid
   info "version: $(astrid_version)"
+  ensure_github_token
   ensure_base_astrid
 
   # Build host list

@@ -27,8 +27,6 @@ astrid init --distro /path/to/oracles/distros/grok.toml -y
 astrid init --distro /path/to/oracles/distros/grok.toml --principal grok-code -y
 astrid agent modify grok-code --add-capsule astrid-mcp \
   --add-capsule astrid-capsule-cli --add-capsule astrid-capsule-forge \
-  --add-capsule astrid-capsule-fs --add-capsule astrid-capsule-http \
-  --add-capsule astrid-capsule-shell --add-capsule astrid-capsule-skills \
   --add-capsule astrid-capsule-system
 ```
 

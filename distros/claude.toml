@@ -5,13 +5,16 @@ schema-version = 1
 id = "claude"
 name = "claude"
 pretty-name = "Astrid for Claude Code"
-version = "0.1.0"
+version = "0.2.0"
 description = "Claude Code, governed by Astrid — shared oracle broker plus Claude supervisor/provisioner."
 maintainers = ["Joshua J. Bouw <dev@joshuajbouw.com>"]
 repository = "https://github.com/unicity-astrid/oracles"
 license = "MIT OR Apache-2.0"
 astrid-version = ">=0.9.1"
 
+# Tool capsules (fs/http/shell/skills) are intentionally absent: the host app
+# already brings its own file, web, shell, and skills tools. Astrid ships only
+# what the host lacks — system introspection and forge capsule authoring.
 [[capsule]]
 name = "astrid-capsule-cli"
 source = "@unicity-astrid/capsule-cli"
@@ -42,26 +45,7 @@ source = "@unicity-astrid/capsule-forge"
 version = "0.1.0"
 
 [[capsule]]
-name = "astrid-capsule-fs"
-source = "@unicity-astrid/capsule-fs"
-version = "0.1.0"
-
-[[capsule]]
-name = "astrid-capsule-http"
-source = "@unicity-astrid/capsule-http"
-version = "0.1.1"
-
-[[capsule]]
 name = "astrid-capsule-system"
 source = "@unicity-astrid/capsule-system"
-version = "0.1.0"
-
-[[capsule]]
-name = "astrid-capsule-skills"
-source = "@unicity-astrid/capsule-skills"
 version = "0.2.0"
 
-[[capsule]]
-name = "astrid-capsule-shell"
-source = "@unicity-astrid/capsule-shell"
-version = "0.2.0"

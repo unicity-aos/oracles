@@ -1,18 +1,18 @@
 #!/usr/bin/env sh
-# install.sh — one-command Astrid installer (base OS + optional oracles)
+# install.sh — one-command Astrid installer (base OS + optional host plugins)
 #
 # Website / GitHub Pages / raw:
 #   curl -fsSL https://astridos.org/install.sh | sh
 #
 # Product model:
 #   * Base Astrid is a complete install (daemon, CLI, default principal).
-#   * Oracles (Claude / Grok / Codex) are optional host adapters on top.
+#   * Host plugins (Claude / Grok / Codex) are optional on top of base Astrid.
 #
 # Behaviour (least surprise):
 #   1. Ensure the Astrid CLI (GitHub Releases → ~/.astrid/bin; brew last-resort)
 #   2. Ensure base runtime is initialized (astrid init -y when needed)
 #   3. Detect Claude Code / Grok / Codex on this machine
-#   4. Wire only those hosts (shared astrid-mcp + host distro) — never force all
+#   4. Install only those host plugins (shared astrid-mcp + host distro) — never force all
 #   5. If none detected → stop at base Astrid (success, not a half-install)
 #   6. --upgrade re-applies base + host distros (does not auto-poll)
 #
@@ -65,7 +65,7 @@ header() {
 
 usage() {
   cat <<'EOF'
-Astrid Oracles installer
+Astrid installer (base + optional host plugins)
 
   curl -fsSL https://astridos.org/install.sh | sh
 
@@ -392,7 +392,7 @@ astrid_version() {
 
 
 # ---------------------------------------------------------------------------
-# Base Astrid (complete product without any oracle host)
+# Base Astrid (complete product without any host plugin)
 # ---------------------------------------------------------------------------
 base_already_initialized() {
   # Heuristic: default principal home or local capsules dir exists.
@@ -423,7 +423,7 @@ ensure_base_astrid() {
 }
 
 # ---------------------------------------------------------------------------
-# Oracle hosts (optional)
+# Host plugins (optional)
 # ---------------------------------------------------------------------------
 # Prefer local checkout distros when this script lives in a clone.
 script_dir() {
@@ -537,7 +537,7 @@ plugin_hint() {
 main() {
   say ""
   say "${C_BOLD}Astrid${C_RESET}"
-  say "${C_DIM}secure OS for AI agents · optional oracles for Claude · Grok · Codex${C_RESET}"
+  say "${C_DIM}secure OS for AI agents · optional plugins for Claude · Grok · Codex${C_RESET}"
   say ""
 
   resolve_astrid
@@ -559,15 +559,15 @@ main() {
     detect_codex  && detected="${detected} codex"
     hosts="$detected"
     if [ -n "$hosts" ]; then
-      info "detected oracles:$(printf '%s' "$hosts" | sed 's/ /, /g')"
+      info "detected hosts:$(printf '%s' "$hosts" | sed 's/ /, /g')"
     else
-      info "no coding-host oracle detected (base Astrid is enough to start)"
+      info "no coding-host plugin detected (base Astrid is enough to start)"
     fi
   fi
 
   if [ "$BASE_ONLY" -eq 1 ]; then
     hosts=""
-    info "mode: --base-only (skip oracle hosts)"
+    info "mode: --base-only (skip host plugins)"
   fi
 
   # Interactive confirm when multiple detected and TTY
@@ -589,13 +589,13 @@ main() {
 
   if [ -z "$hosts" ]; then
     header "Base Astrid ready"
-    ok "You have a full Astrid install — no coding-host oracle required"
+    ok "You have a full Astrid install — no host plugin required"
     say ""
     say "Try:"
     say "  ${C_BOLD}astrid doctor${C_RESET}     health check"
     say "  ${C_BOLD}astrid chat${C_RESET}       session (if your distro includes a model)"
     say ""
-    say "Optional — wire a coding host when you use one:"
+    say "Optional — install a host plugin when you use one:"
     say "  curl -fsSL https://astridos.org/install.sh | sh -s -- --host claude"
     say "  ${C_DIM}(or re-run this installer after installing Claude / Grok / Codex)${C_RESET}"
     say ""
@@ -607,9 +607,9 @@ main() {
   done
 
   header "Done"
-  ok "Base Astrid + oracle host(s)"
+  ok "Base Astrid + host plugin(s)"
   say "Shared tool backend: ${C_BOLD}astrid-mcp${C_RESET}"
-  say "Oracles wired:"
+  say "Plugins installed:"
   for h in $hosts; do
     say "  • $(pretty_host "$h")  →  $(principal_for "$h")"
     plugin_hint "$h"

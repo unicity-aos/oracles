@@ -836,11 +836,11 @@ fn persist_hook_token(principal_id: &str, session_id: &str, token: &str) -> Resu
 fn verify_hook_token(env: &HookEnvelope) -> Result<(bool, Option<String>), SysError> {
     let Some(expected) = kv::get_bytes_opt(&hook_token_key(&env.principal_id, &env.session_id))?
     else {
-        if env.event == "session_start" {
-            if let Some(token) = env.token.as_deref().filter(|t| !t.is_empty()) {
-                persist_hook_token(&env.principal_id, &env.session_id, token)?;
-                return Ok((true, Some("registered_session_token".to_string())));
-            }
+        if env.event == "session_start"
+            && let Some(token) = env.token.as_deref().filter(|t| !t.is_empty())
+        {
+            persist_hook_token(&env.principal_id, &env.session_id, token)?;
+            return Ok((true, Some("registered_session_token".to_string())));
         }
         return Ok((false, Some("no_registered_token".to_string())));
     };

@@ -93,9 +93,6 @@ pub(crate) const GRACEFUL_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// supervisor loop by [`shutdown::respawn_pending`].
 pub(crate) const PENDING_RESTART_PREFIX: &str = "claude.pending_restart";
 
-/// Maximum accepted length for `principal_id` or `session_id` read off
-/// the IPC bus. Mirrors `claude-install::layout::sanitize_principal_id`.
-
 /// Validate an untrusted id (principal_id or session_id) from an IPC
 /// payload before it flows into path construction, KV keys, or topic
 /// formatting.

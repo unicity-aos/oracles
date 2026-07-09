@@ -8,17 +8,19 @@
 #   * Base Astrid is a complete install (daemon, CLI, default principal).
 #   * Host plugins (Claude / Grok / Codex) are optional on top of base Astrid.
 #
-# Behaviour (least surprise):
-#   1. Ensure the Astrid CLI (GitHub Releases → ~/.astrid/bin; brew last-resort)
+# Behaviour (least surprise) — same command installs *and* upgrades:
+#   1. Ensure / refresh the Astrid CLI (GitHub Releases → ~/.astrid/bin; brew last-resort)
 #   2. Ensure base runtime is initialized (astrid init -y when needed)
 #   3. Detect Claude Code / Grok / Codex on this machine
-#   4. Install only those host plugins (shared astrid-mcp + host distro) — never force all
+#   4. Wire only those hosts (shared astrid-mcp + host distro) — never force all
 #   5. If none detected → stop at base Astrid (success, not a half-install)
-#   6. --upgrade re-applies base + host distros (does not auto-poll)
+#   6. Re-run after adding Grok (etc.) → detects the new host and wires it
 #
 # Flags:
 #   --host claude|grok|codex   wire only this host (repeatable)
 #   --all                      wire every host (power users / demos)
+#   --base-only                skip host plugins
+#   --upgrade                  force re-apply base init (re-run already refreshes CLI + hosts)
 #   --yes / -y                 non-interactive (default when not a TTY)
 #   --no-brew                  never invoke Homebrew
 #   --bin-root PATH            use this directory for astrid + astrid-daemon
@@ -69,9 +71,14 @@ Astrid installer (base + optional host plugins)
 
   curl -fsSL https://astridos.org/install.sh | sh
 
+Same one command installs and upgrades: refreshes the CLI when managed under
+~/.astrid/bin, re-detects hosts, and wires any new ones (e.g. you installed Grok).
+
 Options:
   --host NAME     Wire claude | grok | codex (repeatable)
   --all           Wire every host (not the default)
+  --base-only     Base Astrid only (skip host plugins)
+  --upgrade       Force re-apply base init (re-run already refreshes CLI + hosts)
   --yes, -y       Non-interactive (auto-yes; default when stdin is not a TTY)
   --no-brew       Do not fall back to Homebrew if GitHub Releases install fails
   --bin-root DIR  Prefer astrid + astrid-daemon from DIR
@@ -325,6 +332,57 @@ install_astrid_from_brew() {
   return 0
 }
 
+# True when this astrid binary looks Homebrew-managed.
+is_brew_astrid() {
+  case "${1:-}" in
+    */Cellar/astrid/*|*/homebrew/*|*/linuxbrew/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Refresh an existing install (idempotent). Managed bin → re-fetch release;
+# Homebrew → brew upgrade; anything else left alone (dev / cargo / explicit bin).
+refresh_existing_astrid() {
+  if [ -n "$BIN_ROOT" ] || [ -n "${ASTRID_BIN:-}" ]; then
+    return 0
+  fi
+
+  if has_pair "$ASTRID_MANAGED_BIN"; then
+    header "Upgrade Astrid (GitHub Releases)"
+    if install_astrid_from_github; then
+      export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
+      ASTRID="$ASTRID_MANAGED_BIN/astrid"
+      export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
+      ok "managed install refreshed at $ASTRID_MANAGED_BIN"
+    else
+      export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
+      ASTRID="$ASTRID_MANAGED_BIN/astrid"
+      export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
+      warn "could not refresh release; keeping existing managed install"
+    fi
+    return 0
+  fi
+
+  if have_cmd astrid; then
+    ASTRID="$(command -v astrid)"
+    if is_brew_astrid "$ASTRID" && [ "$NO_BREW" -eq 0 ] && have_cmd brew; then
+      header "Upgrade Astrid (Homebrew)"
+      if brew upgrade "${BREW_TAP}/${BREW_FORMULA}" 2>/dev/null \
+        || brew upgrade "$BREW_FORMULA" 2>/dev/null; then
+        ASTRID="$(command -v astrid)"
+        ok "Homebrew upgrade: $ASTRID"
+      else
+        warn "brew upgrade skipped or failed; keeping $ASTRID"
+      fi
+    else
+      ok "using existing astrid on PATH: $ASTRID"
+    fi
+    return 0
+  fi
+
+  return 1
+}
+
 resolve_astrid() {
   if [ -n "$BIN_ROOT" ]; then
     has_pair "$BIN_ROOT" || die "--bin-root missing astrid + astrid-daemon: $BIN_ROOT"
@@ -340,22 +398,12 @@ resolve_astrid() {
     return 0
   fi
 
-  # Prefer managed install dir even if something else is on PATH later
-  if has_pair "$ASTRID_MANAGED_BIN"; then
-    export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
-    ASTRID="$ASTRID_MANAGED_BIN/astrid"
-    export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
-    ok "using managed install at $ASTRID_MANAGED_BIN"
+  # Existing install → upgrade path (same one command as first install)
+  if refresh_existing_astrid; then
     return 0
   fi
 
-  if have_cmd astrid; then
-    ASTRID="$(command -v astrid)"
-    ok "found astrid on PATH: $ASTRID"
-    return 0
-  fi
-
-  # Dev trees near cwd
+  # Dev trees near cwd (never auto-upgrade these)
   dir="$(pwd -P 2>/dev/null || pwd)"
   while [ "$dir" != "/" ] && [ -n "$dir" ]; do
     for sub in core/target/debug core/target/release target/debug target/release; do
@@ -369,7 +417,7 @@ resolve_astrid() {
     dir="$(dirname "$dir")"
   done
 
-  # Primary: GitHub Releases (macOS + Linux; matches astrid update / setup-astrid)
+  # Fresh install: GitHub Releases (macOS + Linux; matches astrid update)
   header "Install Astrid from GitHub Releases"
   if install_astrid_from_github; then
     return 0
@@ -618,11 +666,8 @@ main() {
   say "Verify:  ${C_BOLD}astrid doctor${C_RESET}"
   say "Docs:    https://github.com/${ORACLES_REPO}"
   say ""
-  say "${C_DIM}Update clocks:${C_RESET}"
-  say "  runtime  →  astrid update -y   (GitHub Releases → ~/.astrid/bin)"
-  say "  distro   →  re-run with --upgrade or astrid init --distro …"
-  say "  plugin   →  host marketplace / reinstall plugins/<host>"
-  say "  script   →  curl -fsSL https://astridos.org/install.sh | sh"
+  say "${C_DIM}Re-run the same command anytime to upgrade + pick up new hosts:${C_RESET}"
+  say "  curl -fsSL https://astridos.org/install.sh | sh"
   say ""
 }
 

@@ -6,7 +6,7 @@
 
 use std::sync::OnceLock;
 
-use agent_core::ProductProfile;
+use oracle_core::ProductProfile;
 
 static PROFILE: OnceLock<&'static ProductProfile> = OnceLock::new();
 
@@ -21,7 +21,7 @@ pub fn install(profile: &'static ProductProfile) {
         Err(existing) => {
             assert_eq!(
                 existing.product, profile.product,
-                "agent-broker: product profile already installed as {:?}, cannot reinstall as {:?}",
+                "oracle-broker: product profile already installed as {:?}, cannot reinstall as {:?}",
                 existing.product, profile.product
             );
         }
@@ -38,7 +38,7 @@ pub(crate) fn profile() -> &'static ProductProfile {
     PROFILE
         .get()
         .copied()
-        .expect("agent-broker: ProductProfile not installed; call agent_broker::install first")
+        .expect("oracle-broker: ProductProfile not installed; call oracle_broker::install first")
 }
 
 /// Log-line tag for the active product (`sage-mcp`, …).
@@ -72,12 +72,12 @@ pub(crate) fn audit_topic(event: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_core::ProductProfile;
+    use oracle_core::ProductProfile;
 
     #[test]
     fn install_is_idempotent_for_same_product() {
         install(&ProductProfile::SAGE);
         install(&ProductProfile::SAGE);
-        assert_eq!(profile().product, agent_core::Product::Sage);
+        assert_eq!(profile().product, oracle_core::Product::Sage);
     }
 }

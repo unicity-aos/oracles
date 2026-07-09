@@ -37,7 +37,7 @@ pretty-name = "Sage (Claude on Astrid)"
 version = "0.2.3"            # bump to force re-provision (is_lock_fresh keys on id + version)
 description = "Claude Code, governed by Astrid — capsule tool broker, native-tool policy gate, and per-principal provisioning."
 maintainers = ["Joshua J. Bouw <dev@joshuajbouw.com>"]
-repository = "https://github.com/unicity-astrid/agents"
+repository = "https://github.com/unicity-astrid/oracles"
 license = "MIT OR Apache-2.0"
 astrid-version = ">=0.9.1"  # 0.9.0 shipped a broken astrid:process@1.0.0 host ABI (sage supervisor + shell fail to instantiate); fixed in 0.9.1
 
@@ -49,7 +49,7 @@ source = "@unicity-astrid/capsule-cli"
 version = "0.2.0"
 role = "uplink"
 
-# --- The governed-Claude-Code stack (all live in @unicity-astrid/agents). ---
+# --- The governed-Claude-Code stack (all live in @unicity-astrid/oracles). ---
 
 # Supervisor: owns kv://sage.principal.config; handles spawn / send / settings.
 # The distro flips the capsule's own defaults (headless / api_key) to the
@@ -57,7 +57,7 @@ role = "uplink"
 # distro uses to configure its capsules.
 [[capsule]]
 name = "sage"
-source = "@unicity-astrid/agents"
+source = "@unicity-astrid/oracles"
 version = "0.2.2"
 [capsule.env]
 interaction_mode = "repl"          # you run `claude` directly (the plugin), not Astrid-driven headless
@@ -66,7 +66,7 @@ auth_mode = "subscription"         # Claude Code uses your subscription; no API 
 # Broker + native-tool PreToolUse policy gate + tool discovery.
 [[capsule]]
 name = "sage-mcp"
-source = "@unicity-astrid/agents"
+source = "@unicity-astrid/oracles"
 version = "0.2.2"
 # policy_rules defaults to "" (no extra per-principal rules); the managed
 # settings gate is the primary policy plane. Set a JSON array of capsule-side
@@ -76,7 +76,7 @@ version = "0.2.2"
 # .mcp.json, CLAUDE.md, and the hook block for the governed agent.
 [[capsule]]
 name = "sage-install"
-source = "@unicity-astrid/agents"
+source = "@unicity-astrid/oracles"
 version = "0.2.2"
 
 # Capsule-authoring forge: the self-contained authoring Skill + tools so a

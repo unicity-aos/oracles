@@ -1,4 +1,4 @@
-//! Shared product identity for Astrid-governed agent hosts.
+//! Shared product identity for Astrid-governed oracles.
 //!
 //! Three products live in one monorepo:
 //! - **Sage** — Claude Code

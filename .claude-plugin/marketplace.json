@@ -1,10 +1,10 @@
 {
-  "name": "astrid-agents",
+  "name": "astrid-oracles",
   "owner": {
     "name": "Unicity Labs"
   },
   "metadata": {
-    "description": "Astrid-governed agent plugins (Sage / Mimir / Sibyl)"
+    "description": "Astrid-governed oracle plugins (Sage / Mimir / Sibyl)"
   },
   "plugins": [
     {

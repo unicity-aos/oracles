@@ -1,16 +1,16 @@
 [package]
-name = "agent-broker"
+name = "oracle-broker"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared MCP tool broker for Astrid-governed agent products"
+description = "Shared MCP tool broker for Astrid oracles (Sage/Mimir/Sibyl)"
 publish = false
 
 [dependencies]
-agent-core.workspace = true
+oracle-core.workspace = true
 astrid-sdk.workspace = true
 serde.workspace = true
 serde_json.workspace = true

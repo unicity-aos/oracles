@@ -3,7 +3,7 @@
 #![deny(unsafe_code)]
 #![deny(clippy::all)]
 
-use agent_broker::{handlers, ProductProfile};
+use oracle_broker::{handlers, ProductProfile};
 use astrid_sdk::prelude::*;
 
 /// mimir MCP broker capsule.
@@ -11,7 +11,7 @@ use astrid_sdk::prelude::*;
 pub struct MimirMcp;
 
 fn ensure_product() {
-    agent_broker::install(&ProductProfile::MIMIR);
+    oracle_broker::install(&ProductProfile::MIMIR);
 }
 
 #[capsule]

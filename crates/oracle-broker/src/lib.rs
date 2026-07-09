@@ -1,4 +1,4 @@
-//! Shared MCP broker for Astrid-governed agent products.
+//! Shared MCP broker for Astrid-governed oracle products.
 //!
 //! Product identity (Sage / Mimir / Sibyl) is injected via
 //! [`install`](profile::install). Thin product capsules call `install` then
@@ -6,7 +6,7 @@
 //!
 //! The live execution door is the product-neutral `astrid.v1.request.mcp.*`
 //! surface. Product-local topics (`{product}.v1.tools.*`, audit) are derived
-//! from the installed [`agent_core::ProductProfile`].
+//! from the installed [`oracle_core::ProductProfile`].
 
 #![deny(unsafe_code)]
 #![deny(clippy::all)]
@@ -23,7 +23,7 @@ mod hook_gate;
 mod policy;
 mod profile;
 
-pub use agent_core::{Product, ProductProfile};
+pub use oracle_core::{Product, ProductProfile};
 pub use profile::install;
 
 /// Capsule entry points — product-agnostic once [`install`] has run.

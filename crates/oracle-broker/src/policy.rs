@@ -328,7 +328,7 @@ fn audit_load_failure(reason: &str) {
 #[cfg(test)]
 mod tests {
     fn install_test_profile() {
-        crate::profile::install(&::agent_core::ProductProfile::SAGE);
+        crate::profile::install(&::oracle_core::ProductProfile::SAGE);
     }
 
     use super::*;

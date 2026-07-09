@@ -3,7 +3,7 @@
 #![deny(unsafe_code)]
 #![deny(clippy::all)]
 
-use agent_broker::{handlers, ProductProfile};
+use oracle_broker::{handlers, ProductProfile};
 use astrid_sdk::prelude::*;
 
 /// sibyl MCP broker capsule.
@@ -11,7 +11,7 @@ use astrid_sdk::prelude::*;
 pub struct SibylMcp;
 
 fn ensure_product() {
-    agent_broker::install(&ProductProfile::SIBYL);
+    oracle_broker::install(&ProductProfile::SIBYL);
 }
 
 #[capsule]

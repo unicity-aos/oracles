@@ -1,12 +1,12 @@
 [package]
-name = "agent-core"
+name = "oracle-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared product identity types for Astrid-governed agent plugins"
+description = "Shared product identity types for Astrid-governed oracle plugins"
 publish = false
 
 [dependencies]

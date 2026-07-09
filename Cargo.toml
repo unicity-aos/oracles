@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-default-members = ["crates/agent-core", "crates/agent-broker"]
+default-members = ["crates/oracle-core", "crates/oracle-broker"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,12 +11,12 @@ authors = [
     "Unicity Labs <info@unicity-labs.com>",
 ]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/unicity-astrid/agents"
+repository = "https://github.com/unicity-astrid/oracles"
 rust-version = "1.94"
 
 [workspace.dependencies]
-agent-core = { path = "crates/agent-core" }
-agent-broker = { path = "crates/agent-broker" }
+oracle-core = { path = "crates/oracle-core" }
+oracle-broker = { path = "crates/oracle-broker" }
 astrid-sdk = { version = "0.7", features = ["derive"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

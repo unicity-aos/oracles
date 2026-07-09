@@ -305,7 +305,7 @@ fn grant_reply(req_id: &str, message: String, is_error: bool) -> Value {
 #[cfg(test)]
 mod tests {
     fn install_test_profile() {
-        crate::profile::install(&::agent_core::ProductProfile::SAGE);
+        crate::profile::install(&::oracle_core::ProductProfile::SAGE);
     }
 
     use super::*;

@@ -1,6 +1,8 @@
-# Astrid Agents
+# Astrid Oracles
 
-Monorepo for every Astrid-governed host agent: **Sage** (Claude Code), **Mimir** (Grok Build), **Sibyl** (Codex).
+Monorepo for every Astrid-governed oracle — external coding runtimes under Astrid: **Sage** (Claude Code), **Mimir** (Grok Build), **Sibyl** (Codex).
+
+Oracles are not Astrid's own agents (those live elsewhere). These are Claude Code, Grok Build, and Codex bound into Astrid: plugin + distro + broker + optional supervisor.
 
 One shared MCP broker. Product identity is typed. Host plugins keep different hooks and install paths.
 
@@ -8,8 +10,8 @@ One shared MCP broker. Product identity is typed. Host plugins keep different ho
 
 ```
 crates/
-  agent-core/       # Product, ProductProfile, NewTypes (DistroId, PrincipalFamily, …)
-  agent-broker/     # Shared MCP broker (discovery, policy, approval, execute)
+  oracle-core/       # Product, ProductProfile, NewTypes (DistroId, PrincipalFamily, …)
+  oracle-broker/     # Shared MCP broker (discovery, policy, approval, execute)
   sage-mcp/         # Thin capsule → ProductProfile::SAGE
   mimir-mcp/        # Thin capsule → ProductProfile::MIMIR
   sibyl-mcp/        # Thin capsule → ProductProfile::SIBYL
@@ -31,8 +33,8 @@ distros/
 ## Design
 
 - **Kernel stays dumb.** Broker is a capsule; policy/approval are PDP at the edge.
-- **One broker implementation.** `agent-broker` is the only place tool discovery, confused-deputy gating, grants, and PreToolUse logic live.
-- **Product identity is data.** `agent_core::ProductProfile` holds every wire string (`mcp__sage__`, `sage.v1.audit.*`, principal family, …). Thin capsules call `agent_broker::install(&ProductProfile::…)` then forward interceptors.
+- **One broker implementation.** `oracle-broker` is the only place tool discovery, confused-deputy gating, grants, and PreToolUse logic live.
+- **Product identity is data.** `oracle_core::ProductProfile` holds every wire string (`mcp__sage__`, `sage.v1.audit.*`, principal family, …). Thin capsules call `oracle_broker::install(&ProductProfile::…)` then forward interceptors.
 - **NewTypes, not string soup.** `DistroId`, `PrincipalFamily`, `McpToolPrefix`, `BusNamespace`, `LogTag`, …
 - **Host plugins differ on purpose.** Claude, Grok, and Codex have different hook surfaces; plugins stay separate under `plugins/`.
 
@@ -40,7 +42,7 @@ distros/
 
 ```bash
 # Shared libraries + unit tests (native)
-cargo test -p agent-core -p agent-broker
+cargo test -p oracle-core -p oracle-broker
 
 # Product MCP capsules (wasm32-unknown-unknown via per-crate .cargo/config.toml)
 cargo build -p sage-mcp -p mimir-mcp -p sibyl-mcp
@@ -57,7 +59,7 @@ astrid init --distro ./distros/mimir.toml --principal grok-code
 astrid init --distro ./distros/sibyl.toml --principal sibyl-code
 ```
 
-Capsule sources in the distros point at `@unicity-astrid/agents`; the installer picks the release asset by capsule name.
+Capsule sources in the distros point at `@unicity-astrid/oracles`; the installer picks the release asset by capsule name.
 
 ## Principals
 

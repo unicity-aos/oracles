@@ -22,7 +22,7 @@ pretty-name = "Mimir (Grok on Astrid)"
 version = "0.1.0"
 description = "Grok Build, governed by Astrid — capsule tool broker and per-principal provisioning."
 maintainers = ["Joshua J. Bouw <dev@joshuajbouw.com>"]
-repository = "https://github.com/unicity-astrid/agents"
+repository = "https://github.com/unicity-astrid/oracles"
 license = "MIT OR Apache-2.0"
 astrid-version = ">=0.9.1"
 
@@ -35,7 +35,7 @@ role = "uplink"
 # Broker + policy gate + tool discovery for `astrid mcp serve`.
 [[capsule]]
 name = "mimir-mcp"
-source = "@unicity-astrid/agents"
+source = "@unicity-astrid/oracles"
 version = "0.1.0"
 
 [[capsule]]

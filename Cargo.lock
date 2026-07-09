@@ -3,24 +3,6 @@
 version = 4
 
 [[package]]
-name = "agent-broker"
-version = "0.1.0"
-dependencies = [
- "agent-core",
- "astrid-sdk",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
-name = "agent-core"
-version = "0.1.0"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "anyhow"
 version = "1.0.103"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -334,9 +316,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "mimir-mcp"
 version = "0.1.0"
 dependencies = [
- "agent-broker",
- "agent-core",
  "astrid-sdk",
+ "oracle-broker",
+ "oracle-core",
  "serde",
  "serde_json",
 ]
@@ -355,6 +337,24 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
+
+[[package]]
+name = "oracle-broker"
+version = "0.1.0"
+dependencies = [
+ "astrid-sdk",
+ "oracle-core",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
+name = "oracle-core"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "pin-project-lite"
@@ -446,9 +446,9 @@ dependencies = [
 name = "sage-mcp"
 version = "0.1.0"
 dependencies = [
- "agent-broker",
- "agent-core",
  "astrid-sdk",
+ "oracle-broker",
+ "oracle-core",
  "serde",
  "serde_json",
 ]
@@ -576,9 +576,9 @@ dependencies = [
 name = "sibyl-mcp"
 version = "0.1.0"
 dependencies = [
- "agent-broker",
- "agent-core",
  "astrid-sdk",
+ "oracle-broker",
+ "oracle-core",
  "serde",
  "serde_json",
 ]

@@ -1,6 +1,6 @@
 {
   "name": "astrid",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run Codex as a governed Astrid agent: capsule tools over MCP, SessionStart update doctor, host policy hooks, and a codex-code principal.",
   "author": {
     "name": "Unicity Labs",

@@ -163,5 +163,7 @@ if [ "$skip_codex_install" = "0" ]; then
     echo "install.sh: codex CLI not found; wrote .mcp.json but did not install the plugin" >&2
     exit 0
   fi
-  codex plugin add codex@codex-local
+  codex plugin marketplace add unicity-astrid/oracles || true
+  codex plugin marketplace upgrade astrid-oracles || true
+  codex plugin add astrid@astrid-oracles
 fi

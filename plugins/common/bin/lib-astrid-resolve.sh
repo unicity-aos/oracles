@@ -8,11 +8,12 @@
 #   1. ASTRID_BIN + ASTRID_DAEMON (both must be executable)
 #   2. ASTRID_BIN_ROOT env (must contain astrid + astrid-daemon)
 #   3. ASTRID_BIN_ROOT from this plugin's .mcp.json env block
-#   4. Nearby dev checkout: walk up from cwd and the plugin root looking for
+#   4. The CLI/daemon pair recorded by the Astrid run marker
+#   5. Nearby dev checkout: walk up from cwd and the plugin root looking for
 #      core/target/{debug,release} or target/{debug,release}
-#   5. Installed locations: $CARGO_HOME/bin, ~/.cargo/bin, ~/.astrid/bin,
+#   6. Installed locations: $CARGO_HOME/bin, ~/.cargo/bin, ~/.astrid/bin,
 #      Homebrew, /usr/local/bin
-#   6. PATH (`command -v astrid`) with sibling astrid-daemon
+#   7. PATH (`command -v astrid`) with sibling astrid-daemon
 #
 # Exports via stdout (for capture) or sets ASTRID / ASTRID_DAEMON / ASTRID_SOURCE
 # when astrid_resolve_apply is called.
@@ -67,6 +68,17 @@ _astrid_mcp_config_bin_root() {
   sed -n 's/.*"ASTRID_BIN_ROOT"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$config" | sed -n '1p'
 }
 
+_astrid_running_daemon_pair() {
+  astrid_home="${ASTRID_HOME:-$HOME/.astrid}"
+  pid_file="$astrid_home/run/system.pid"
+  [ -f "$pid_file" ] || return 1
+
+  pid="$(sed -n '1p' "$pid_file" 2>/dev/null | sed 's/[^0-9].*$//')"
+  daemon="$(sed -n '2p' "$pid_file" 2>/dev/null)"
+  [ -n "$pid" ] && [ -x "$daemon" ] || return 1
+  _astrid_bin_pair_from_root "$(dirname "$daemon")"
+}
+
 _astrid_dev_bin_roots() {
   plugin_root="$1"
   for base in "$(pwd -P 2>/dev/null || pwd)" "$plugin_root"; do
@@ -82,7 +94,7 @@ _astrid_dev_bin_roots() {
 }
 
 # Print: <source>|<cli-path>|<daemon-path>
-# source is one of: direct|bin-root|mcp-config|dev|installed|path
+# source is one of: direct|bin-root|mcp-config|running|dev|installed|path
 # Exit 127 when nothing is found (no stdout).
 astrid_resolve_pair() {
   plugin_root="$(_astrid_resolve_plugin_root)"
@@ -114,6 +126,14 @@ astrid_resolve_pair() {
       return 127
     }
     printf 'mcp-config|%s\n' "$pair"
+    return 0
+  fi
+
+  # Astrid pins its own CLI/daemon pair in system.pid. Reuse that pair before
+  # choosing a nearby worktree so host plugins reconnect rather than reject a
+  # daemon started from another checkout. astrid-up validates stale markers.
+  if pair="$(_astrid_running_daemon_pair)"; then
+    printf 'running|%s\n' "$pair"
     return 0
   fi
 

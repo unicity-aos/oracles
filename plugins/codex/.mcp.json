@@ -1,8 +1,9 @@
 {
   "mcpServers": {
     "astrid": {
-      "command": "${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT}}/bin/astrid-up",
+      "command": "./bin/astrid-up",
       "args": ["--principal", "codex-code"],
+      "cwd": ".",
       "env": {}
     }
   }

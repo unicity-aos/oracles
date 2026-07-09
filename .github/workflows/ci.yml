@@ -85,7 +85,8 @@ jobs:
             plugins/common/bin/* \
             plugins/claude/bin/astrid-* \
             plugins/grok/bin/astrid-* \
-            plugins/codex/bin/astrid-up
+            plugins/codex/bin/astrid-up \
+            plugins/codex/bin/lib-astrid-resolve.sh
           do
             [ -e "$f" ] || continue
             [ -L "$f" ] && continue
@@ -95,3 +96,26 @@ jobs:
             sh -n "$f"
             echo "ok $f"
           done
+
+      - name: Verify Codex plugin is self-contained
+        run: |
+          set -euo pipefail
+          jq -e '.mcpServers.astrid.command == "./bin/astrid-up" and .mcpServers.astrid.cwd == "."' plugins/codex/.mcp.json
+          test -f plugins/codex/bin/lib-astrid-resolve.sh
+          test ! -L plugins/codex/bin/lib-astrid-resolve.sh
+          test -f plugins/codex/bin/astrid-doctor
+          test ! -L plugins/codex/bin/astrid-doctor
+
+      - name: Verify Codex resolver environment overrides
+        run: |
+          set -euo pipefail
+          bin_root="$(mktemp -d)"
+          trap 'rm -rf "$bin_root"' EXIT
+          touch "$bin_root/astrid" "$bin_root/astrid-daemon"
+          chmod +x "$bin_root/astrid" "$bin_root/astrid-daemon"
+
+          resolved="$(ASTRID_PLUGIN_ROOT="$PWD/plugins/codex" ASTRID_BIN_ROOT="$bin_root" sh -c '. "$ASTRID_PLUGIN_ROOT/bin/lib-astrid-resolve.sh"; astrid_resolve_pair')"
+          test "$resolved" = "bin-root|$bin_root/astrid|$bin_root/astrid-daemon"
+
+          resolved="$(ASTRID_PLUGIN_ROOT="$PWD/plugins/codex" ASTRID_BIN="$bin_root/astrid" ASTRID_DAEMON="$bin_root/astrid-daemon" sh -c '. "$ASTRID_PLUGIN_ROOT/bin/lib-astrid-resolve.sh"; astrid_resolve_pair')"
+          test "$resolved" = "direct|$bin_root/astrid|$bin_root/astrid-daemon"

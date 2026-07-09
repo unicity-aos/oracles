@@ -246,26 +246,79 @@ pretty() {
   esac
 }
 
-# Best-effort marketplace install. Host CLIs differ; failures are soft.
+# --- Plugin present? / install or update ------------------------------------
+# Re-run must not reinstall blindly: check → update if present, else install.
+
+claude_bin() {
+  if have claude; then command -v claude
+  elif [ -x "${HOME}/.claude/local/claude" ]; then printf '%s\n' "${HOME}/.claude/local/claude"
+  else printf ''
+  fi
+}
+
+# Any astrid marketplace install counts (astrid@astrid-oracles or legacy astrid@astrid).
+claude_plugin_id() {
+  bin="$1"
+  list="$("$bin" plugin list 2>/dev/null || true)"
+  if printf '%s' "$list" | grep -qE 'astrid@astrid-oracles'; then
+    printf 'astrid@astrid-oracles\n'
+  elif printf '%s' "$list" | grep -qE 'astrid@astrid\b'; then
+    printf 'astrid@astrid\n'
+  else
+    printf ''
+  fi
+}
+
+grok_plugin_present() {
+  list="$(grok plugin list 2>/dev/null || true)"
+  # name can be astrid, astrid-plugin-*, or legacy mimir
+  printf '%s' "$list" | grep -qiE '(^|[[:space:]])astrid([@-]|[[:space:]]|$)|mimir'
+}
+
+codex_plugin_installed() {
+  # codex plugin list: "astrid@…  installed|not installed" — avoid matching "not installed"
+  list="$(codex plugin list 2>/dev/null || true)"
+  printf '%s\n' "$list" | grep -E 'astrid@' | grep -v 'not installed' | grep -q 'installed'
+}
+
+ensure_marketplace() {
+  host="$1"
+  case "$host" in
+    claude)
+      bin="$(claude_bin)"
+      [ -n "$bin" ] && "$bin" plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 || true
+      ;;
+    grok)  grok plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 || true ;;
+    codex) codex plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 || true ;;
+  esac
+}
+
 install_plugin() {
   host="$1"
   label="$(pretty "$host")"
   case "$host" in
     claude)
-      if ! have claude && [ ! -x "${HOME}/.claude/local/claude" ]; then
+      bin="$(claude_bin)"
+      if [ -z "$bin" ]; then
         fail "$label plugin (no claude CLI)"
         return 1
       fi
-      claude_bin="$(command -v claude 2>/dev/null || true)"
-      [ -n "$claude_bin" ] || claude_bin="${HOME}/.claude/local/claude"
-      if "$claude_bin" plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 \
-        && "$claude_bin" plugin install astrid@astrid-oracles >/dev/null 2>&1; then
-        ok "$label plugin"
-      elif "$claude_bin" plugin install astrid@astrid-oracles >/dev/null 2>&1; then
-        ok "$label plugin"
+      ensure_marketplace claude
+      id="$(claude_plugin_id "$bin")"
+      if [ -n "$id" ]; then
+        if "$bin" plugin update "$id" >/dev/null 2>&1; then
+          ok "$label plugin (updated $id)"
+        else
+          ok "$label plugin (already $id)"
+        fi
       else
-        fail "$label plugin"
-        return 1
+        if "$bin" plugin install astrid@astrid-oracles >/dev/null 2>&1 \
+          || "$bin" plugin install astrid@astrid >/dev/null 2>&1; then
+          ok "$label plugin (installed)"
+        else
+          fail "$label plugin"
+          return 1
+        fi
       fi
       ;;
     grok)
@@ -273,14 +326,22 @@ install_plugin() {
         fail "$label plugin (no grok CLI)"
         return 1
       fi
-      if grok plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 \
-        && grok plugin install astrid@astrid-oracles >/dev/null 2>&1; then
-        ok "$label plugin"
-      elif grok plugin install astrid@astrid-oracles >/dev/null 2>&1; then
-        ok "$label plugin"
+      ensure_marketplace grok
+      if grok_plugin_present; then
+        if grok plugin update astrid >/dev/null 2>&1 \
+          || grok plugin update >/dev/null 2>&1; then
+          ok "$label plugin (updated)"
+        else
+          ok "$label plugin (already present)"
+        fi
       else
-        fail "$label plugin"
-        return 1
+        if grok plugin install astrid@astrid-oracles >/dev/null 2>&1 \
+          || grok plugin install "https://github.com/${ORACLES_REPO}" >/dev/null 2>&1; then
+          ok "$label plugin (installed)"
+        else
+          fail "$label plugin"
+          return 1
+        fi
       fi
       ;;
     codex)
@@ -288,17 +349,32 @@ install_plugin() {
         fail "$label plugin (no codex CLI)"
         return 1
       fi
-      if codex plugin marketplace add "$ORACLES_REPO" >/dev/null 2>&1 \
-        && codex plugin install astrid@astrid-oracles >/dev/null 2>&1; then
-        ok "$label plugin"
-      elif codex plugin install astrid@astrid-oracles >/dev/null 2>&1; then
-        ok "$label plugin"
+      ensure_marketplace codex
+      if codex_plugin_installed; then
+        # Codex has no dedicated "plugin update"; re-add marketplace + add is upgrade path
+        if codex plugin marketplace upgrade astrid-oracles >/dev/null 2>&1 \
+          || codex plugin add astrid@astrid-oracles >/dev/null 2>&1; then
+          ok "$label plugin (checked)"
+        else
+          ok "$label plugin (already present)"
+        fi
       else
-        fail "$label plugin"
-        return 1
+        if codex plugin add astrid@astrid-oracles >/dev/null 2>&1 \
+          || codex plugin install astrid@astrid-oracles >/dev/null 2>&1; then
+          ok "$label plugin (installed)"
+        else
+          fail "$label plugin"
+          return 1
+        fi
       fi
       ;;
   esac
+}
+
+principal_has_lock() {
+  p="$1"
+  home="${ASTRID_HOME:-$HOME/.astrid}"
+  [ -f "$home/home/${p}/.config/distro.lock" ] || [ -f "$home/home/${p}/.config/Distro.lock" ]
 }
 
 install_capsules() {
@@ -306,11 +382,26 @@ install_capsules() {
   p="$(principal_for "$host")"
   d="$(distro_url "$host")"
   label="$(pretty "$host")"
-  "$ASTRID" init --distro "$d" -y >/dev/null 2>&1 || true
-  if "$ASTRID" init --distro "$d" --principal "$p" -y >/dev/null 2>&1; then
-    ok "$label capsules ($p)"
+  # Seed default once if empty (daemon uplink); init is a no-op when lock fresh.
+  if ! principal_has_lock default; then
+    "$ASTRID" init --distro "$d" -y >/dev/null 2>&1 || true
+  fi
+
+  out="$("$ASTRID" init --distro "$d" --principal "$p" -y 2>&1)" && rc=0 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    if printf '%s' "$out" | grep -qi 'already installed\|up to date'; then
+      ok "$label capsules (up to date · $p)"
+    elif principal_has_lock "$p"; then
+      ok "$label capsules (up to date · $p)"
+    else
+      ok "$label capsules (installed · $p)"
+    fi
   else
-    fail "$label capsules ($p) — need GH_TOKEN=\$(gh auth token)?"
+    if principal_has_lock "$p"; then
+      ok "$label capsules (kept · $p)"
+    else
+      fail "$label capsules ($p) — need GH_TOKEN?"
+    fi
   fi
 }
 

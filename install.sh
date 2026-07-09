@@ -9,12 +9,14 @@
 #   * Host plugins (Claude / Grok / Codex) are optional on top of base Astrid.
 #
 # Behaviour (least surprise) — same command installs *and* upgrades:
-#   1. Ensure / refresh the Astrid CLI (GitHub Releases → ~/.astrid/bin; brew last-resort)
-#   2. Ensure base runtime is initialized (astrid init -y when needed)
-#   3. Detect Claude Code / Grok / Codex on this machine
-#   4. Wire only those hosts (shared astrid-mcp + host distro) — never force all
-#   5. If none detected → stop at base Astrid (success, not a half-install)
-#   6. Re-run after adding Grok (etc.) → detects the new host and wires it
+#   1. Existing CLI → `astrid update -y` (Astrid's own updater: brew/cargo/managed)
+#      Fresh machine → GitHub Releases → ~/.astrid/bin (brew last-resort)
+#   2. Base home when needed (`astrid init -y`)
+#   3. Detect Claude Code / Grok / Codex
+#   4. Per host: `astrid init --distro … --principal …` — idempotent via Distro.lock
+#      (fresh lock = no-op; no lock / distro version bump = provision)
+#   5. If none detected → stop at base Astrid (success)
+#   6. Re-run after adding Grok → detects + first-time init for that principal only
 #
 # Flags:
 #   --host claude|grok|codex   wire only this host (repeatable)
@@ -340,47 +342,51 @@ is_brew_astrid() {
   esac
 }
 
-# Refresh an existing install (idempotent). Managed bin → re-fetch release;
-# Homebrew → brew upgrade; anything else left alone (dev / cargo / explicit bin).
+# Prefer Astrid's own update path when a binary already exists.
+# `astrid update -y` knows brew vs cargo vs ~/.astrid/bin, swaps the CLI
+# correctly, then syncs the *default* principal's distro/capsules (idempotent
+# via Distro.lock). Host principals are handled separately by wire_host → init.
 refresh_existing_astrid() {
   if [ -n "$BIN_ROOT" ] || [ -n "${ASTRID_BIN:-}" ]; then
     return 0
   fi
 
   if has_pair "$ASTRID_MANAGED_BIN"; then
-    header "Upgrade Astrid (GitHub Releases)"
-    if install_astrid_from_github; then
-      export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
-      ASTRID="$ASTRID_MANAGED_BIN/astrid"
-      export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
-      ok "managed install refreshed at $ASTRID_MANAGED_BIN"
-    else
-      export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
-      ASTRID="$ASTRID_MANAGED_BIN/astrid"
-      export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
-      warn "could not refresh release; keeping existing managed install"
-    fi
-    return 0
-  fi
-
-  if have_cmd astrid; then
+    export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
+    ASTRID="$ASTRID_MANAGED_BIN/astrid"
+    export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
+  elif have_cmd astrid; then
     ASTRID="$(command -v astrid)"
-    if is_brew_astrid "$ASTRID" && [ "$NO_BREW" -eq 0 ] && have_cmd brew; then
-      header "Upgrade Astrid (Homebrew)"
-      if brew upgrade "${BREW_TAP}/${BREW_FORMULA}" 2>/dev/null \
-        || brew upgrade "$BREW_FORMULA" 2>/dev/null; then
-        ASTRID="$(command -v astrid)"
-        ok "Homebrew upgrade: $ASTRID"
-      else
-        warn "brew upgrade skipped or failed; keeping $ASTRID"
-      fi
-    else
-      ok "using existing astrid on PATH: $ASTRID"
-    fi
-    return 0
+  else
+    return 1
   fi
 
-  return 1
+  header "Upgrade Astrid (astrid update)"
+  info "using Astrid's own updater (not a raw reinstall)…"
+  if "$ASTRID" update -y 2>&1; then
+    # Re-resolve after swap (managed path may have a new binary).
+    if has_pair "$ASTRID_MANAGED_BIN"; then
+      export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
+      ASTRID="$ASTRID_MANAGED_BIN/astrid"
+      export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
+    elif have_cmd astrid; then
+      ASTRID="$(command -v astrid)"
+    fi
+    ok "astrid update: $(astrid_version)"
+  else
+    warn "astrid update reported an error — continuing with $(astrid_version)"
+    # Managed fallback only if self-update failed (e.g. very old binary).
+    if has_pair "$ASTRID_MANAGED_BIN" && ! is_brew_astrid "$ASTRID"; then
+      warn "falling back to re-fetch of managed release tarball…"
+      install_astrid_from_github || true
+      if has_pair "$ASTRID_MANAGED_BIN"; then
+        export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
+        ASTRID="$ASTRID_MANAGED_BIN/astrid"
+        export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
+      fi
+    fi
+  fi
+  return 0
 }
 
 resolve_astrid() {
@@ -510,10 +516,14 @@ pretty_host() {
   esac
 }
 
-# Set once in main before the host loop. First host also seeds the default
-# principal (daemon uplink); later hosts only provision their own principal —
-# re-initing default per host multiplies GitHub API calls and hits the 60/hr
-# anonymous ceiling mid-install.
+# True if this principal already has a Distro.lock (init would short-circuit).
+principal_has_lock() {
+  p="$1"
+  home="${ASTRID_HOME:-$HOME/.astrid}"
+  [ -f "$home/home/${p}/.config/distro.lock" ] || [ -f "$home/home/${p}/.config/Distro.lock" ]
+}
+
+# Set once: seed default principal at most once per run (daemon uplink).
 DEFAULT_SEEDED=0
 
 wire_host() {
@@ -531,16 +541,29 @@ wire_host() {
 
   info "distro: $distro"
 
-  # Seed default principal once (daemon uplink lives there).
+  # Seed default once if it has no lock yet. astrid init is idempotent when
+  # Distro.lock id+version matches the remote manifest ("already installed").
   if [ "$DEFAULT_SEEDED" -eq 0 ]; then
-    info "provisioning default principal (daemon uplink)..."
-    if ! "$ASTRID" init --distro "$distro" -y 2>&1; then
-      warn "init for default failed — continuing with principal $principal"
+    if principal_has_lock default; then
+      info "default principal already has Distro.lock — skip re-seed"
+    else
+      info "provisioning default principal (daemon uplink, first time)..."
+      if ! "$ASTRID" init --distro "$distro" -y 2>&1; then
+        warn "init for default failed — continuing with principal $principal"
+      fi
     fi
     DEFAULT_SEEDED=1
   fi
 
-  info "provisioning ${principal}..."
+  # Host principal: astrid init does the right thing —
+  #   * no lock / stale distro version → install/upgrade capsules
+  #   * Distro.lock fresh              → no-op ("already installed")
+  # Do NOT raw-reinstall or agent-modify as a substitute for init.
+  if principal_has_lock "$principal"; then
+    info "ensuring ${principal} is current (init is a no-op when Distro.lock is fresh)..."
+  else
+    info "first-time provision for ${principal}..."
+  fi
   if ! "$ASTRID" init --distro "$distro" --principal "$principal" -y 2>&1; then
     die "astrid init failed for $principal
 Capsule installs hit GitHub Releases over the API (60 req/hr without a token).
@@ -550,7 +573,8 @@ Export a token and re-run:
   curl -fsSL https://astridos.org/install.sh | sh"
   fi
 
-  # Best-effort pre-grant of common capsules (matches doctor guidance)
+  # Best-effort: ensure the agent profile may *use* the distro capsules.
+  # This is a grant list, not an install — init already wrote the files.
   case "$host" in
     claude)
       grants="claude-runner astrid-mcp claude-install astrid-capsule-cli astrid-capsule-forge astrid-capsule-fs astrid-capsule-http astrid-capsule-shell astrid-capsule-skills astrid-capsule-system"
@@ -568,9 +592,9 @@ Export a token and re-run:
   done
   # shellcheck disable=SC2086
   if "$ASTRID" agent modify "$principal" $add_args 2>/dev/null; then
-    ok "granted distro capsules to $principal"
+    ok "ensured agent grants for $principal"
   else
-    warn "could not pre-grant capsules (ok if astrid agent modify is unavailable)"
+    warn "could not update agent grants (ok if astrid agent modify is unavailable)"
   fi
 
   ok "$pretty ready under principal ${C_BOLD}$principal${C_RESET}"

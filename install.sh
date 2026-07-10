@@ -489,14 +489,25 @@ install_capsules() {
   d="$(distro_url "$host")"
   label="$(pretty "$host")"
   spin_start "$label capsules"
+
+  # Forward-compat: a newer CLI grants the target principal access to the
+  # capsules the distro installs (`astrid init --grant-capsules`). Feature-detect
+  # it so older CLIs keep their exact current behaviour (empty flag = no arg).
+  grant_flag=""
+  if "$ASTRID" init --help 2>/dev/null | grep -q -- --grant-capsules; then
+    grant_flag="--grant-capsules"
+  fi
+
   # Seed default once if empty (daemon uplink); init is a no-op when lock fresh.
   if ! principal_has_lock default; then
-    q "$ASTRID" init --distro "$d" -y || true
+    # shellcheck disable=SC2086 # grant_flag is one token or empty; must not quote
+    q "$ASTRID" init --distro "$d" $grant_flag -y || true
   fi
 
   had_lock=0
   if principal_has_lock "$p"; then had_lock=1; fi
-  iout="$("$ASTRID" init --distro "$d" --principal "$p" -y </dev/null 2>&1)" && rc=0 || rc=$?
+  # shellcheck disable=SC2086 # grant_flag is one token or empty; must not quote
+  iout="$("$ASTRID" init --distro "$d" $grant_flag --principal "$p" -y </dev/null 2>&1)" && rc=0 || rc=$?
   if [ "$VERBOSE" -eq 1 ]; then say "$iout"; fi
   if [ "$rc" -eq 0 ]; then
     if [ "$had_lock" -eq 1 ]; then

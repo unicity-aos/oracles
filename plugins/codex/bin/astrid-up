@@ -458,7 +458,7 @@ provision_mcp_principal() {
 codex_bundle_capsules() {
   printf '%s\n' \
     codex \
-    codex-mcp \
+    astrid-mcp \
     codex-install \
     astrid-capsule-a2a \
     astrid-capsule-cron \
@@ -487,7 +487,7 @@ local_codex_capsules_ready() {
 
 codex_mcp_live() {
   case "$("$ASTRID" status 2>/dev/null || true)" in
-    *" - codex-mcp"*) return 0 ;;
+    *" - astrid-mcp"*) return 0 ;;
     *) return 1 ;;
   esac
 }

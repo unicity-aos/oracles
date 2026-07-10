@@ -62,7 +62,7 @@ use serde_json::Value;
 /// Manifest `[env]` key holding the per-principal policy rule set (a JSON
 /// array of [`Rule`]). Read via [`astrid_sdk::env::var_opt`] at decision
 /// time, so it resolves the invoking principal's overlay — per-principal
-/// rules with no cross-capsule KV write, mirroring `trusted_ingress_ids`.
+/// rules with no cross-capsule KV write.
 const POLICY_RULES_ENV: &str = "policy_rules";
 
 /// Cap on the number of rules accepted from the `[env]` value. A fat-

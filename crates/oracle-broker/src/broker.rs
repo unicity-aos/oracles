@@ -334,12 +334,23 @@ pub(crate) fn handle_mcp_call(payload: Value) -> Result<(), SysError> {
         // echo `source_id` for display/diagnostics only; the trust write
         // keys on the kernel-stamped caller of the `ingress.respond`, never
         // this body field. No tool is dispatched.
+        //
+        // Carry actionable guidance as `message` + MCP `content` so the denial
+        // is never a dead end: an elicit-capable shim honours the
+        // `ingress_approval_required` signal and ignores this text, but a
+        // client that cannot render the prompt still surfaces WHICH session was
+        // withheld, WHY, and HOW to proceed instead of a bare "not authorized".
+        // Additive only — the trust model is unchanged; nothing here grants
+        // trust.
+        let guidance = ingress_consent_guidance(&source_id);
         let reply = json!({
             "kind": "tool.call",
             "req_id": req.req_id,
             "ingress_approval_required": true,
             "source_id": source_id,
             "tool_name": req.name,
+            "message": guidance,
+            "content": mcp_content(Value::String(guidance.clone())),
             "isError": false,
         });
         publish_reply(&reply_topic, &reply);
@@ -790,6 +801,35 @@ pub(crate) fn mcp_content(content: Value) -> Value {
     json!([{ "type": "text", "text": text }])
 }
 
+/// Human-readable, actionable guidance for an untrusted-ingress denial.
+///
+/// The confused-deputy gate in [`handle_mcp_call`] withholds a state-mutating
+/// tool call from an ingress `source_id` the user has not yet consented to, and
+/// asks the shim to raise a one-time interactive consent prompt. On a client
+/// that cannot render elicitation, that prompt never appears and the call would
+/// otherwise dead-end as a bare "not authorized" with no path forward. This
+/// text is carried on the `ingress_approval_required` reply so any surface that
+/// renders it tells the user WHICH session was withheld (`source_id`), WHY (the
+/// one-time consent gate), and HOW to proceed.
+///
+/// Trust is granted EXCLUSIVELY by accepting the interactive prompt — there is
+/// deliberately no operator allow-list, config key, env var, or CLI flag that
+/// grants it. Any such non-interactive path would reopen the confused-deputy
+/// hole this gate exists to close, so the guidance must never imply one.
+pub(crate) fn ingress_consent_guidance(source_id: &str) -> String {
+    format!(
+        "Astrid withheld this tool call: the ingress session (source_id: {source_id}) \
+         is not yet trusted. The first tool call from a new client session opens a \
+         one-time interactive consent prompt; approving it records trust for this \
+         source_id so later calls dispatch without re-prompting. Approve the prompt \
+         in your MCP client. If your client cannot display interactive prompts (no \
+         MCP elicitation support), the call fails closed by design — retry from a \
+         client that can, such as the Astrid CLI uplink. This interactive prompt is \
+         the only way to grant trust: there is no operator allow-list or config key \
+         to set."
+    )
+}
+
 /// Publish the broker reply, logging (not erroring) on host failure —
 /// the proxy times out on its side if delivery fails.
 fn publish_reply(topic: &str, reply: &Value) {
@@ -897,6 +937,74 @@ mod tests {
         assert_eq!(req.req_id, "x");
         assert_eq!(req.name, "fs.read");
         assert_eq!(req.arguments, Value::Null);
+    }
+
+    #[test]
+    fn ingress_denial_guidance_is_actionable() {
+        install_test_profile();
+        // Regression: an untrusted-ingress denial must NOT dead-end. The
+        // guidance the `ingress_approval_required` reply carries has to name
+        // the withheld session's source_id and tell the user how to proceed,
+        // so a client that cannot render the elicitation still shows a path
+        // forward instead of a bare "not authorized".
+        let source_id = "cap-0191f3a2b4c74d8e9f01234567890abc";
+        let guidance = ingress_consent_guidance(source_id);
+
+        // Names the exact session that was withheld.
+        assert!(
+            guidance.contains(source_id),
+            "guidance must echo the source_id: {guidance}"
+        );
+        // Explains the one-time interactive consent gate.
+        assert!(
+            guidance.contains("consent") && guidance.contains("one-time"),
+            "guidance must explain the one-time consent gate: {guidance}"
+        );
+        // Tells the user to approve the interactive prompt.
+        assert!(
+            guidance.to_lowercase().contains("approve"),
+            "guidance must instruct the user to approve the prompt: {guidance}"
+        );
+        // Truthful about the fail-closed model: no operator allow-list / config
+        // key grants trust (only the interactive prompt does). Guards against a
+        // regression that reintroduces the confused-deputy escape hatch in text.
+        assert!(
+            guidance.contains("no operator allow-list"),
+            "guidance must state there is no non-interactive grant path: {guidance}"
+        );
+
+        // And the reply the gate publishes actually carries it, on both the
+        // human-readable `message` field and the MCP `content` block, while
+        // keeping the `ingress_approval_required` signal and NOT flipping to an
+        // error (which would suppress an elicit-capable shim's prompt).
+        let reply = json!({
+            "kind": "tool.call",
+            "req_id": "req1",
+            "ingress_approval_required": true,
+            "source_id": source_id,
+            "tool_name": "fs.write",
+            "message": guidance,
+            "content": mcp_content(Value::String(guidance.clone())),
+            "isError": false,
+        });
+        assert_eq!(
+            reply
+                .pointer("/ingress_approval_required")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            reply.pointer("/isError").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            reply.pointer("/message").and_then(Value::as_str),
+            Some(guidance.as_str())
+        );
+        assert_eq!(
+            reply.pointer("/content/0/text").and_then(Value::as_str),
+            Some(guidance.as_str())
+        );
     }
 
     // ------------------------------------------------------------------

@@ -137,10 +137,16 @@ it can't back.
 ## Caveat: tool *calls* need a trusted ingress (one-time)
 
 `tools/list` is ungated — Claude Code will **see** the Astrid tools immediately.
-`tools/call` is confused-deputy gated by the astrid-mcp broker: it only dispatches
-for a `source_id` listed in the broker's `trusted_ingress_ids`. Until that's
-set to the CLI uplink's id, calls are denied (fail-closed). Set it once when
-installing/configuring the astrid-mcp capsule. (Single-tenant: you the operator
+`tools/call` is confused-deputy gated by the astrid-mcp broker: the **first** tool
+call from a new client session opens a one-time interactive consent prompt. Approving
+it records trust for that session's `source_id` (under the per-principal KV key
+`mcp.ingress.trust.<source_id>`), and every later call in the session dispatches
+without re-prompting. There is deliberately **no** operator allow-list or config key:
+trust is granted only by accepting the prompt, so a non-ingress capsule can never
+puppet the broker into acting on your behalf. If your client can't display the prompt
+(no MCP elicitation support), the call fails closed — the denial message names the
+`source_id` and the next step (approve it from a client that renders elicitation, such
+as the Astrid CLI uplink). (Single-tenant: you the operator
 are admin via `default`, so authorizing your own session's ingress is a
 self-stamp — fine on your own machine. The session itself runs as the scoped
 `claude-code` principal, and per-connection auth has since landed: `agent create`

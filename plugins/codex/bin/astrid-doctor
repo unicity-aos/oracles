@@ -589,10 +589,14 @@ CAPCOUNT="$(printf '%s' "$STATUS" | grep -i 'Capsules:' | head -n1 | sed 's/^[[:
 # capsule list is the operator's default-context view, not this principal's.
 BROKER_NOTE="MCP broker:  astrid-mcp provisioned for '$PRINCIPAL' — Astrid tools are served."
 
-INGRESS_NOTE="First-call note: tool *calls* are confused-deputy gated by astrid-mcp's
-             trusted_ingress_ids allow-set (tools/list is ungated). If calls come
-             back denied, add this session's CLI uplink source_id to astrid-mcp's
-             trusted_ingress_ids (one-time, single-tenant = your own machine)."
+INGRESS_NOTE="First-call note: tool *calls* are confused-deputy gated by astrid-mcp
+             (tools/list is ungated). The FIRST tool call from a new client session
+             opens a one-time interactive consent prompt; approving it records trust
+             for that session's source_id, and later calls dispatch without
+             re-prompting. There is no operator allow-list or config key to set — if
+             your client can't display the prompt, the call fails closed; approve it
+             from a client that renders elicitation (e.g. the Astrid CLI uplink). The
+             denial message names the source_id and the exact next step."
 
 REPORT="Astrid — you are running as a governed Astrid agent.
 

@@ -1,7 +1,7 @@
 {
   "name": "astrid",
   "displayName": "Astrid",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Run Claude Code as a governed Astrid agent: capsule tools over MCP, an ephemeral self-cleaning daemon, a SessionStart readiness doctor, an Astrid HUD status line, /astrid:* operator commands, and an Astrid-agent identity. Installing this plugin turns a vanilla `claude` REPL into an Astrid-integrated session.",
   "author": {
     "name": "Unicity Labs",

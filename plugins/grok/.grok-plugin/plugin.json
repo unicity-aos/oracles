@@ -1,7 +1,7 @@
 {
   "name": "astrid",
   "displayName": "Astrid",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Run Grok Build as a governed Astrid agent: capsule tools over MCP, an ephemeral self-cleaning daemon, a SessionStart readiness doctor, /astrid:* operator commands, forge skill, and a grok-code principal. Installing this plugin turns a vanilla Grok session into an Astrid-integrated session.",
   "author": {
     "name": "Unicity Labs",

@@ -193,9 +193,9 @@ fn collect_events(session_id: &str, decoded: Decoded, out: &mut Vec<PendingEvent
             });
         }
         Decoded::Assistant { content_blocks } => {
-            // Tool execution is owned by the registered `astrid mcp serve`
+            // Tool execution is owned by the registered `aos mcp serve`
             // MCP server — claude calls it directly over MCP, so the runner never
-            // dispatches `mcp__astrid__*` tool calls itself (doing so would
+            // dispatches `mcp__aos__*` tool calls itself (doing so would
             // double-execute). Here the runner only relays the assistant's text;
             // tool_use blocks are observe-only and dropped at decode.
             for block in content_blocks {

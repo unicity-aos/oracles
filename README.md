@@ -1,130 +1,97 @@
-# Astrid Oracles
+# Unicity AOS Oracles
 
-[![CI](https://github.com/unicity-astrid/oracles/actions/workflows/ci.yml/badge.svg)](https://github.com/unicity-astrid/oracles/actions/workflows/ci.yml)
+[![CI](https://github.com/unicity-aos/oracles/actions/workflows/ci.yml/badge.svg)](https://github.com/unicity-aos/oracles/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![MSRV](https://img.shields.io/badge/MSRV-1.94-blue)](https://www.rust-lang.org)
 
-Governed host adapters for external coding agents on **Astrid OS**.
+Host integrations that connect Claude Code, Codex, and Grok Build to Unicity
+AOS. An oracle gives a coding host an AOS principal, the AOS MCP tool surface,
+and host-specific configuration while leaving the runtime boundary intact.
 
-An **oracle** is a host runtime (Claude Code, Grok Build, Codex) brought under
-Astrid’s protocol: MCP endpoints, principals, capabilities, install layout, and
-settings. One shared backend; thin per-host adapters.
+## Install
 
+Install Unicity AOS first:
 
-## Install (one command)
-
-**Base Astrid is a complete product.** The installer pulls the CLI/daemon from
-**GitHub Releases** (macOS + Linux; same assets as `astrid update`). Homebrew is
-an optional fallback only. Oracles are optional adapters — only wired when that
-host is on the machine (or you ask).
-
-```bash
-curl -fsSL https://astridos.org/install.sh | sh
+```sh
+curl -fsSL https://aos.unicity.ai/install.sh | sh
 ```
 
-| Flag | Meaning |
-|------|---------|
-| *(default)* | Install/ensure Astrid; wire **detected** coding hosts only |
-| `--base-only` | Stop at base Astrid (no oracle plugins/distros) |
-| `--host claude` | Also wire that host (repeatable) |
-| `--all` | Wire every oracle host (demos / power users) |
+Then add the detected coding hosts:
 
-```bash
-curl -fsSL https://astridos.org/install.sh | sh -s -- --base-only
-curl -fsSL https://astridos.org/install.sh | sh -s -- --host claude
-./install.sh --yes
+```sh
+curl -fsSL https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh | sh
 ```
 
-Canonical endpoint: **https://astridos.org/install.sh** (GitHub Pages site repo `unicity-astrid.github.io`). This monorepo keeps a copy for local `./install.sh`.
+Select hosts explicitly when desired:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh \
+  | sh -s -- --host codex
+```
+
+The installer is idempotent. It provisions a least-authority host principal,
+installs the exact signed oracle pack, grants that principal only the pack's
+capsules, and installs the host marketplace plugin. It writes product state
+under `~/.aos`; it never imports or changes a standalone `~/.astrid` tree.
+
+Claude's supervised headless mode runs `claude -p` and requires an Anthropic
+API key. Subscription authentication is supported only for Claude Code's own
+interactive REPL:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh \
+  | sh -s -- --host claude --claude-mode repl --claude-auth subscription
+```
+
+## Host packs
+
+Oracle packs are additive components, not replacement operating-system
+distributions.
+
+| Host | Principal | Additions on top of Community Edition |
+|---|---|---|
+| Claude Code | `claude-code` | `astrid-mcp`, `claude-install`, `claude-runner` |
+| Codex | `codex-code` | `astrid-mcp`, `codex-install`, `codex-runner` |
+| Grok Build | `grok-code` | `astrid-mcp` |
+
+Pack manifests live under `packs/`. Host plugins are installed from the signed
+release snapshot under `~/.aos/extensions/oracles/plugins/<version>`, never from
+a moving repository branch. A successful end-to-end install commits a versioned
+receipt under `~/.aos/extensions/oracles/<host>/releases/<version>` and advances
+`current`; `Pack.lock` remains as the stable compatibility path. A failed plugin
+install never writes a success receipt.
 
 ## Architecture
 
-```
-plugins/{claude,grok,codex}          host UI / hooks
-        │
-        ▼
-plugins/common/bin                   resolve · up · doctor · install
-        │
-        ▼
-astrid-mcp  (oracle-broker)          mcp__astrid__*  ·  astrid.v1.request.mcp.*
-        │
-        ├── claude-install / codex-install    HostProvisioner (home layout)
-        └── claude-runner  / codex-runner     host process protocol
-```
-
-| Layer | Crates |
-|-------|--------|
-| Identity | `oracle-core` (`Host`, `OracleIdentity::ASTRID`) |
-| MCP broker | `oracle-broker` → capsule `astrid-mcp` |
-| Host primitives | `oracle-host` (`PrincipalId`, `HostProvisioner`, `InteractionMode`) |
-| Claude | `claude-install`, `claude-runner`, `claude-completion` |
-| Codex | `codex-install`, `codex-runner` |
-| Grok | broker only today (plugin + distro; no supervised runner yet) |
-
-## Distros
-
-```bash
-astrid init --distro ./distros/claude.toml --principal claude-code
-astrid init --distro ./distros/grok.toml   --principal grok-code
-astrid init --distro ./distros/codex.toml  --principal codex-code
+```text
+host marketplace plugin
+        |
+        v
+aos --principal <host>-code mcp serve
+        |
+        v
+astrid-mcp + host capsules
+        |
+        v
+Unicity AOS Community Edition
 ```
 
-Sources resolve to `@unicity-astrid/oracles` (this monorepo).
+The customer-facing server and tool namespace are `aos` and `mcp__aos__*`.
+Published runtime identifiers remain unchanged behind that adapter:
+`astrid-mcp`, `astrid.v1.*`, `astrid-sdk`, the `astrid:*` WIT world, and the
+bundled runtime binaries retain their permanent names and provenance.
 
-## Plugins
+## Develop
 
-```bash
-# Claude Code
-claude plugin marketplace add /path/to/oracles   # marketplace at .claude-plugin/
-# or point marketplace source at ./plugins/claude
-
-# Grok
-grok plugin install /path/to/oracles/plugins/grok --trust
-
-# Codex
-# install plugins/codex via Codex plugin marketplace (.agents/plugins)
+```sh
+cargo fmt --all -- --check
+cargo test --workspace --locked
+cargo clippy --workspace --all-targets --locked -- -D warnings
+scripts/sync-plugins.sh
 ```
 
-Shared scripts live in `plugins/common/bin/` (the source of truth); each host
-plugin ships a self-contained regular-file copy in its own `bin/`, materialized
-by `scripts/sync-plugins.sh` and drift-checked in CI. Marketplace install
-packages only one plugin's subtree, so a host `bin/` must never reference a
-sibling `../../common`; the scripts self-derive the host from its plugin-root
-env var.
-
-## Build & test
-
-```bash
-cargo test -p oracle-core -p oracle-broker -p oracle-host -p claude-install --lib
-cargo build -p astrid-mcp -p claude-runner -p claude-install -p claude-completion \
-            -p codex-runner -p codex-install
-```
-
-WASM target is selected per capsule via `crates/*/.cargo/config.toml`.
-
-
-## Updates (three clocks)
-
-Do not conflate these — each has its own source of truth:
-
-| Clock | What | How the user/agent applies it |
-|-------|------|-------------------------------|
-| **Runtime** | `astrid` + `astrid-daemon` | Re-run `curl -fsSL https://astridos.org/install.sh \| sh` (refreshes managed `~/.astrid/bin`), or `astrid update -y`. Homebrew: `brew upgrade unicity-astrid/tap/astrid`. |
-| **Distro** | Capsule set per principal | Same one-command re-run re-detects hosts and re-applies distros (new Grok install → wires on next run). Lock: `~/.astrid/home/<principal>/.config/distro.lock`. |
-| **Plugin** | Editor marketplace package | Claude / Grok / Codex marketplace install (see `/start` host tabs). SessionStart doctor nudges when `oracles` has a newer GitHub release than local `plugin.json`. |
-| **install.sh** | This script | Always re-fetched from **https://astridos.org/install.sh** on each `curl \| sh`. |
-
-Doctor (`astrid-doctor --format hook` on SessionStart) rate-limits checks to ~24h and, when something is stale, announces to the user and gives the model a host-aware playbook.
-
-## Migration
-
-Retired product brands (Sage / Mimir / Sibyl) still parse on `Host::from_id`
-for old paths. New installs use host ids (`claude`, `grok`, `codex`) and the
-`astrid-mcp` capsule only. Re-init principals after upgrading:
-
-```bash
-astrid init --distro ./distros/<host>.toml --principal <principal> -y
-```
+Capsules target `wasm32-unknown-unknown`. Build installable archives with the
+`astrid-build` binary from the exact Astrid Runtime release pinned by the AOS
+compatibility contract; raw Cargo `.wasm` files are not installable capsules.
 
 ## License
 

@@ -8,7 +8,8 @@
 //!   `repl` (user runs `claude` directly in the principal folder).
 //! * [`AuthMode`] — `api_key` (kernel-elicited secret, exported to the
 //!   subprocess as `ANTHROPIC_API_KEY`) versus `subscription` (user runs
-//!   `claude /login` manually; the runner never sets `ANTHROPIC_API_KEY`).
+//!   `claude /login` in Claude Code's interactive REPL). Subscription auth is
+//!   invalid in headless mode.
 //!
 //! Persisted in the runner's per-capsule per-principal KV namespace at the
 //! single canonical key [`KV_KEY`]. The `#[astrid::install]` lifecycle
@@ -166,7 +167,61 @@ impl PrincipalConfig {
                 "max_turns must be >= 1 when set; 0 would forbid all work".to_string(),
             ));
         }
+        if self.interaction_mode == InteractionMode::Headless
+            && self.auth_mode == AuthMode::Subscription
+        {
+            return Err(SysError::ApiError(
+                "subscription authentication requires repl interaction mode; headless Claude requires an API key"
+                    .to_string(),
+            ));
+        }
         Ok(())
+    }
+
+    /// Build the initial runtime record from the principal-scoped install env
+    /// overlay. The native installer validates this closed alphabet before it
+    /// writes the overlay; an out-of-band invalid value degrades to the safer
+    /// default and is logged rather than broadening execution.
+    fn from_install_env() -> Self {
+        let interaction = env::var("interaction_mode").unwrap_or_default();
+        let auth = env::var("auth_mode").unwrap_or_default();
+        Self::from_install_values(&interaction, &auth)
+    }
+
+    fn from_install_values(interaction: &str, auth: &str) -> Self {
+        let interaction_mode = match interaction {
+            "" | "headless" => InteractionMode::Headless,
+            "repl" => InteractionMode::Repl,
+            other => {
+                log::warn(format!(
+                    "claude-runner: invalid installed interaction_mode {other:?}; using headless"
+                ));
+                InteractionMode::Headless
+            }
+        };
+        let auth_mode = match auth {
+            "" | "api_key" => AuthMode::ApiKey,
+            "subscription" => AuthMode::Subscription,
+            other => {
+                log::warn(format!(
+                    "claude-runner: invalid installed auth_mode {other:?}; using api_key"
+                ));
+                AuthMode::ApiKey
+            }
+        };
+        let cfg = Self {
+            interaction_mode,
+            auth_mode,
+            ..Self::default()
+        };
+        if cfg.validate().is_err() {
+            log::warn(
+                "claude-runner: installed headless subscription config is invalid; using headless api_key",
+            );
+            Self::default()
+        } else {
+            cfg
+        }
     }
 }
 
@@ -206,7 +261,7 @@ impl PrincipalConfig {
 /// [`Current`]: LoadOutcome::Current
 /// [`NeedsMigration`]: LoadOutcome::NeedsMigration
 /// [`Unknown`]: LoadOutcome::Unknown
-/// [`handle_spawn`]: crate::Sage::handle_spawn
+/// [`handle_spawn`]: crate::ClaudeRunner::handle_spawn
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LoadOutcome {
     /// Record at the current [`SCHEMA_VERSION`]; use as-is.
@@ -249,11 +304,11 @@ pub(crate) enum LoadOutcome {
 ///   [`load_or_default`], where orphaning the session is worse than
 ///   running it on defaults).
 ///
-/// [`handle_spawn`]: crate::Sage::handle_spawn
+/// [`handle_spawn`]: crate::ClaudeRunner::handle_spawn
 pub(crate) fn load_status() -> LoadOutcome {
     match kv::get_json_opt::<PrincipalConfig>(KV_KEY) {
         Ok(Some(cfg)) => classify(cfg),
-        Ok(None) => LoadOutcome::Current(PrincipalConfig::default()),
+        Ok(None) => LoadOutcome::Current(PrincipalConfig::from_install_env()),
         Err(e) => {
             log::warn(format!(
                 "claude-runner: failed to load principal config: {e:?}; using default"
@@ -309,9 +364,9 @@ fn classify(cfg: PrincipalConfig) -> LoadOutcome {
 /// future records reject the spawn rather than silently downgrading the
 /// operator-persisted settings.
 ///
-/// [`handle_spawn`]: crate::Sage::handle_spawn
+/// [`handle_spawn`]: crate::ClaudeRunner::handle_spawn
 pub(crate) fn load_or_default() -> PrincipalConfig {
-    match load_status() {
+    let cfg = match load_status() {
         LoadOutcome::Current(cfg) => cfg,
         LoadOutcome::NeedsMigration {
             patched,
@@ -330,6 +385,14 @@ pub(crate) fn load_or_default() -> PrincipalConfig {
             ));
             PrincipalConfig::default()
         }
+    };
+    if let Err(error) = cfg.validate() {
+        log::warn(format!(
+            "claude-runner: invalid principal config ({error}); using headless api_key"
+        ));
+        PrincipalConfig::default()
+    } else {
+        cfg
     }
 }
 
@@ -352,6 +415,13 @@ mod tests {
     }
 
     #[test]
+    fn initial_config_inherits_validated_install_modes() {
+        let cfg = PrincipalConfig::from_install_values("repl", "subscription");
+        assert_eq!(cfg.interaction_mode, InteractionMode::Repl);
+        assert_eq!(cfg.auth_mode, AuthMode::Subscription);
+    }
+
+    #[test]
     fn snake_case_wire_form() {
         let cfg = PrincipalConfig {
             interaction_mode: InteractionMode::Repl,
@@ -368,7 +438,7 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let cfg = PrincipalConfig {
-            interaction_mode: InteractionMode::Headless,
+            interaction_mode: InteractionMode::Repl,
             auth_mode: AuthMode::Subscription,
             model: ModelPreference::default(),
             max_turns: None,
@@ -398,6 +468,25 @@ mod tests {
     #[test]
     fn validate_accepts_current_schema_version() {
         assert!(PrincipalConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_headless_subscription() {
+        let cfg = PrincipalConfig {
+            auth_mode: AuthMode::Subscription,
+            ..PrincipalConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_repl_subscription() {
+        let cfg = PrincipalConfig {
+            interaction_mode: InteractionMode::Repl,
+            auth_mode: AuthMode::Subscription,
+            ..PrincipalConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
     }
 
     // Partial-update round-trip: the SettingsSetRequest shape uses

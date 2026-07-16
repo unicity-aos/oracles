@@ -1,11 +1,11 @@
-//! `.claude/CLAUDE.md` authoring — standalone Astrid grounding the runner
+//! `.claude/CLAUDE.md` authoring for a managed Unicity AOS agent.
 //! writes for a managed Claude agent.
 //!
 //! The distribution does not have to ship the `spark` identity capsule,
-//! so this file is the baseline grounding on its own: what Astrid OS is
+//! so this file is the baseline grounding on its own: what Unicity AOS is
 //! and the role it runs the agent in. It is background, not behavioural
 //! rules (the reader is a capable model) and not a tool catalogue (the
-//! `mcp__astrid__*` tools describe themselves). It claims no filesystem
+//! `mcp__aos__*` tools describe themselves). It claims no filesystem
 //! isolation or sandbox — only the capability mediation the kernel
 //! actually enforces — so it cannot over-promise a guarantee the runtime
 //! does not yet make.
@@ -25,25 +25,25 @@ pub(crate) fn claude_md_path() -> String {
 }
 
 /// Grounding body for a headless managed agent.
-const HEADLESS: &str = "# Astrid OS
+const HEADLESS: &str = "# Unicity AOS
 
-You are Claude, running as a managed agent inside Astrid OS: a secure, capability-based agent runtime. Astrid started you to do work for one principal, and mediates everything you reach on the system through capabilities granted to that principal.
+You are Claude, running as a managed agent inside Unicity AOS: a secure, capability-based agent operating system. AOS started you to do work for one principal and mediates everything you reach through capabilities granted to that principal.
 
-Those capabilities are exposed to you as the `mcp__astrid__*` tools, which describe themselves. They are your interface to the system, and the Astrid kernel decides what each one may do.
+Those capabilities are exposed to you as the `mcp__aos__*` tools, which describe themselves. They are your interface to the system, and AOS decides what each one may do.
 
-You are running headless: Astrid drives this session rather than a person typing to you.
+You are running headless: AOS drives this session rather than a person typing to you.
 
-Astrid regenerates this file on install, so edits here are not durable.
+AOS regenerates this file on install, so edits here are not durable.
 ";
 
 /// Grounding body for an interactive (repl) managed agent. Adds the
 /// honest note that the agent's own built-in tools run with the
 /// operator's ordinary authority and are not Astrid-mediated.
-const REPL: &str = "# Astrid OS
+const REPL: &str = "# Unicity AOS
 
-You are Claude, running as a managed agent inside Astrid OS: a secure, capability-based agent runtime, working with the principal at the keyboard. Astrid mediates what you reach through capabilities granted to that principal, exposed to you as the `mcp__astrid__*` tools, which describe themselves and are gated by the Astrid kernel. Your own built-in tools also work here, with the operator's ordinary authority, and are not mediated by Astrid.
+You are Claude, running as a managed agent inside Unicity AOS, working with the principal at the keyboard. AOS mediates what you reach through capabilities granted to that principal, exposed as the `mcp__aos__*` tools. Your own built-in tools also work here with the operator's ordinary authority and are not mediated by AOS.
 
-Astrid regenerates this file on install, so edits here are not durable.
+AOS regenerates this file on install, so edits here are not durable.
 ";
 
 /// Select the `CLAUDE.md` body for the principal's interaction mode.
@@ -76,9 +76,9 @@ mod tests {
         let headless = claude_md(&cfg(InteractionMode::Headless));
         let repl = claude_md(&cfg(InteractionMode::Repl));
         for body in [headless, repl] {
-            assert!(body.starts_with("# Astrid OS"));
-            assert!(body.contains("mcp__astrid__"));
-            assert!(body.contains("capability"));
+            assert!(body.starts_with("# Unicity AOS"));
+            assert!(body.contains("mcp__aos__"));
+            assert!(body.contains("capabilit"));
             assert!(body.contains("not durable"));
         }
     }
@@ -91,10 +91,10 @@ mod tests {
     #[test]
     fn repl_flags_unmediated_builtins() {
         // The repl body must be explicit that built-in tools are not
-        // Astrid-mediated — the one safety-relevant delta from headless.
+        // AOS-mediated — the one safety-relevant delta from headless.
         let body = claude_md(&cfg(InteractionMode::Repl));
         assert!(body.contains("built-in"));
-        assert!(body.contains("not mediated by Astrid"));
+        assert!(body.contains("not mediated by AOS"));
     }
 
     #[test]

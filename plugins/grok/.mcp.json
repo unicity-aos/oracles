@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "astrid": {
-      "command": "${GROK_PLUGIN_ROOT}/bin/astrid-up",
+    "aos": {
+      "command": "${GROK_PLUGIN_ROOT}/bin/aos-up",
       "args": ["--principal", "grok-code"],
       "env": {}
     }

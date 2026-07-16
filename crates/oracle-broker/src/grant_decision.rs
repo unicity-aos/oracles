@@ -8,7 +8,8 @@
 //! miss its awaiter and never persist the grant. The elicit pipeline can also
 //! drop a single accept, and the 120 s pending-dedup then answers every retry
 //! with "already pending", so the flow never converges without an operator
-//! escape hatch (`astrid agent modify <principal> --add-capsule <id>`).
+//! escape hatch (`aos --principal default agent modify <principal>
+//! --add-capsule <id>`).
 //!
 //! This module makes the user's ACCEPT durable. The moment a `grant.respond`
 //! arrives with an approve verb the broker records it here, keyed on the
@@ -36,7 +37,7 @@
 //! The [`GrantDecision::Deny`] variant, its parse path, and the broker's
 //! [`GrantAction::AutoDeny`] arm are kept intact as defence-in-depth: if a deny
 //! record ever exists (written manually via KV, or by a future version once the
-//! respond carries provenance — unicity-astrid/astrid#1114 — so genuine user
+//! respond carries provenance — astrid-runtime/astrid#1114 — so genuine user
 //! denies CAN be recorded durably), it is honoured rather than silently
 //! ignored.
 //!
@@ -284,7 +285,7 @@ pub(crate) fn grant_auto_deny_reply(req_id: &str, capsule_id: &str, principal: &
         req_id,
         format!(
             "{}: session access to capsule '{capsule_id}' was denied for this \
-             identity. An operator can allow it with: astrid agent modify {who} \
+             identity. An operator can allow it with: aos --principal default agent modify {who} \
              --add-capsule {capsule_id} (or later revoke a grant with --remove-capsule).",
             crate::profile::log_tag()
         ),
@@ -303,7 +304,7 @@ pub(crate) fn grant_unroutable_reply(req_id: &str, capsule_id: &str) -> Value {
         format!(
             "{}: could not apply the recorded grant for capsule '{capsule_id}' \
              (unroutable kernel request id). Re-grant it, or an operator can run: \
-             astrid agent modify <principal> --add-capsule {capsule_id}.",
+             aos --principal default agent modify <principal> --add-capsule {capsule_id}.",
             crate::profile::log_tag()
         ),
         true,
@@ -324,7 +325,7 @@ fn grant_reply(req_id: &str, message: String, is_error: bool) -> Value {
 #[cfg(test)]
 mod tests {
     fn install_test_profile() {
-        crate::profile::install_astrid();
+        crate::profile::install_aos();
     }
 
     use super::*;
@@ -540,7 +541,7 @@ mod tests {
         assert!(text.contains("denied"), "text was {text:?}");
         // The actionable operator escape hatch, with the resolved principal.
         assert!(
-            text.contains("astrid agent modify claude-code --add-capsule system"),
+            text.contains("aos --principal default agent modify claude-code --add-capsule system"),
             "text was {text:?}"
         );
     }
@@ -553,7 +554,7 @@ mod tests {
         let reply = grant_auto_deny_reply("req-x", "system", "");
         let text = reply_text(&reply);
         assert!(
-            text.contains("astrid agent modify <principal> --add-capsule system"),
+            text.contains("aos --principal default agent modify <principal> --add-capsule system"),
             "text was {text:?}"
         );
     }

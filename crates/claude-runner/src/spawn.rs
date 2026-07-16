@@ -79,7 +79,7 @@ const LOG_RING_BYTES: u32 = 4 * 1024 * 1024;
 /// A bare tool name (no scope qualifier) removes the tool from the
 /// model's context entirely. The rule is exhaustive by design: any
 /// built-in that can act (file/shell/web/task), surface other tools, or
-/// drive control flow outside the `mcp__astrid__*` surface is denied so a
+/// drive control flow outside the `mcp__aos__*` surface is denied so a
 /// session cannot reach around the sandbox via a tool the list forgot.
 ///
 /// SYNC: this list MUST be identical (same set) to
@@ -178,7 +178,7 @@ const DENIED_TOOLS: &[&str] = &[
 pub(crate) struct SpawnInputs<'a> {
     /// Principal that owns this session. Threaded into the child env as
     /// `ASTRID_PRINCIPAL_ID` so the `astrid-emit` hook helper can stamp
-    /// it on outgoing `claude.v1.hook.*` events. Sage's run
+    /// it on outgoing `claude.v1.hook.*` events. The runner's run
     /// loop re-verifies the claim against the per-(principal, session)
     /// hook token before republishing on the canonical `hook.v1.event.*`
     /// topic; the env value itself is untrusted (the child process may
@@ -255,10 +255,10 @@ fn argv(
         // Register EXACTLY the runner's own MCP server and nothing else.
         // `--strict-mcp-config` makes claude ignore every auto-discovered
         // `.mcp.json`; `--mcp-config` then points it at the single file
-        // claude-install authored under the principal's HOME, whose `astrid`
-        // server is `astrid mcp serve` (the rmcp stdio shim onto the
-        // astrid-mcp broker — unicity-astrid/astrid#880). claude does the
-        // native MCP handshake against it and discovers the `mcp__astrid__*`
+        // claude-install authored under the principal's HOME, whose `aos`
+        // server is `aos mcp serve` (the rmcp stdio shim onto the
+        // astrid-mcp broker — astrid-runtime/astrid#880). claude does the
+        // native MCP handshake against it and discovers the `mcp__aos__*`
         // tools from `tools/list`, then executes them DIRECTLY against that
         // server over MCP — the runner never sees or dispatches the calls. The
         // path is cwd-relative (cwd = HOME, set below) so the argv stays
@@ -308,12 +308,12 @@ fn argv(
         "dontAsk".to_string(),
         "--disallowedTools".to_string(),
         DENIED_TOOLS.join(" "),
-        // The registered `astrid mcp serve` MCP server (`--mcp-config`
+        // The registered `aos mcp serve` MCP server (`--mcp-config`
         // above) stays available for Astrid-specific operations
-        // (`mcp__astrid__*`), but it is no longer the EXCLUSIVE surface —
+        // (`mcp__aos__*`), but it is no longer the EXCLUSIVE surface —
         // Claude's native tools are primary. The astrid-mcp broker still
         // enforces capability checks + the argument-level policy gate
-        // (`policy::evaluate`) on any `mcp__astrid__*` call.
+        // (`policy::evaluate`) on any `mcp__aos__*` call.
         // -p only: skip writing claude's own session JSONL. Source of
         // truth for the conversation is the bus + the runner's KV records.
         "--no-session-persistence".to_string(),
@@ -374,7 +374,7 @@ pub(crate) fn spawn_claude(inputs: &SpawnInputs<'_>) -> Result<Spawned, SysError
         .env("CLAUDE_CODE_SKIP_PROMPT_HISTORY", "1")
         // Hook-bridge envelope: the `astrid-emit` helper (shipping in
         // core via astrid#814) reads these three vars and stamps them
-        // onto every `claude.v1.hook.*` publish. Sage's run
+        // onto every `claude.v1.hook.*` publish. The runner's run
         // loop verifies the token against KV before republishing on
         // the canonical `hook.v1.event.*` topic — env values are
         // untrusted on the way in, but the KV lookup acts as the CA.
@@ -773,7 +773,7 @@ mod tests {
              missing from DENIED_TOOLS (denied only in the overridable Local tier, \
              NOT in the binding CLI tier): {missing:?}\n  \
              unexpected in DENIED_TOOLS (not in canonical set): {unexpected:?}\n  \
-             re-sync DENIED_TOOLS with sage_install::layout::REQUIRED_DENIES.",
+             re-sync DENIED_TOOLS with claude_install::layout::REQUIRED_DENIES.",
         );
 
         // Belt-and-braces: no duplicate collapsed the set below the list

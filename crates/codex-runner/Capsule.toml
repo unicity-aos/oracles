@@ -17,28 +17,30 @@ type = "executable"
 host_process = ["codex"]
 kv = []
 fs_read = ["home://"]
-fs_write = ["home://.codex/"]
+fs_write = ["home://"]
 
 [env]
-interaction_mode = { type = "select", enum_values = ["headless", "repl"], default = "headless", request = "Interaction mode: 'headless' (Astrid drives codex exec) or 'repl' (you run Codex directly)" }
+interaction_mode = { type = "select", enum_values = ["headless", "repl"], default = "headless", request = "Interaction mode: 'headless' (Unicity AOS supervises codex exec) or 'repl' (you run Codex directly)" }
 approval_policy = { type = "select", enum_values = ["untrusted", "on-request", "never"], default = "on-request", request = "Codex approval policy for supervised headless runs" }
 sandbox_mode = { type = "select", enum_values = ["read-only", "workspace-write", "danger-full-access"], default = "workspace-write", request = "Codex sandbox mode for supervised headless runs" }
 model = { type = "text", default = "", request = "Optional Codex model override (blank uses Codex default)" }
-profile = { type = "text", default = "astrid", request = "Codex config profile layered over the base config" }
+profile = { type = "text", default = "aos", request = "Codex config profile layered over the base config" }
 ephemeral = { type = "select", enum_values = ["false", "true"], default = "false", request = "Run bounded Codex turns without persisting Codex session files" }
 ignore_user_config = { type = "select", enum_values = ["false", "true"], default = "false", request = "Ignore the base user Codex config for bounded automation turns" }
 ignore_rules = { type = "select", enum_values = ["false", "true"], default = "false", request = "Ignore user and project Codex execpolicy rule files" }
 skip_git_repo_check = { type = "select", enum_values = ["false", "true"], default = "false", request = "Permit supervised Codex execution outside a Git repository" }
-mirror_json_events = { type = "select", enum_values = ["true", "false"], default = "true", request = "Mirror codex exec JSONL records onto Astrid events" }
+mirror_json_events = { type = "select", enum_values = ["true", "false"], default = "true", request = "Mirror codex exec JSONL records onto AOS events" }
 
 [subscribe]
 "codex.v1.request.spawn" = { wit = "opaque", handler = "handle_spawn" }
 "codex.v1.request.send.*" = { wit = "opaque", handler = "handle_send" }
 "codex.v1.request.settings.set" = { wit = "opaque", handler = "handle_settings_set" }
 "codex.v1.hook.*.*" = { wit = "opaque", handler = "handle_hook" }
+"codex.v1.install.complete" = "codex-install-complete"
 
 [publish]
 "codex.v1.event.*" = "opaque"
 "codex.v1.event.*.*" = "opaque"
 "codex.v1.audit.*" = "opaque"
 "codex.v1.settings.changed" = "opaque"
+"codex.v1.install.run" = "codex-install-request"

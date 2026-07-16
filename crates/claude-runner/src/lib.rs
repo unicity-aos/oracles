@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! Claude runner — Claude headless agent runner on Astrid OS.
+//! Claude runner — Claude headless agent runner on Unicity AOS.
 //!
 //! Supervises one `claude -p --input-format stream-json --output-format
 //! stream-json` subprocess per principal session. Streams the user's
@@ -12,9 +12,9 @@
 //! lived so Anthropic-side prompt caching stays warm turn-to-turn.
 //!
 //! Tool execution is NOT the runner's job. Claude is configured with the
-//! registered `astrid mcp serve` MCP server (`--mcp-config`), so it
-//! invokes `mcp__astrid__*` tools directly against that server over the
-//! MCP protocol. Sage never sees, dispatches, or writes back tool calls
+//! registered `aos mcp serve` MCP server (`--mcp-config`), so it
+//! invokes `mcp__aos__*` tools directly against that server over the
+//! MCP protocol. The runner never sees, dispatches, or writes back tool calls
 //! — doing so on top of the registered server would double-execute every
 //! tool. The supervisor relays only conversation text / lifecycle events.
 //!
@@ -35,6 +35,7 @@
 //!   partial, and detect crash / buffer-overflow / capsule-reload.
 
 use astrid_sdk::prelude::*;
+use oracle_host::ids::{resolve_principal, stamped_principal};
 use serde::Deserialize;
 use serde_json::Value;
 use std::time::Duration;
@@ -114,7 +115,7 @@ pub(crate) fn validate_id(field: &str, id: &str) -> Result<(), SysError> {
 /// Claude host runner — capsule singleton.
 ///
 /// Holds the live `Sessions` registry directly. The `#[capsule]`
-/// macro stores a single `OnceLock<Sage>` and gives every handler the
+/// macro stores a single `OnceLock<ClaudeRunner>` and gives every handler the
 /// same `&self` for the duration of one capsule incarnation. That
 /// satisfies the requirement to share `Process` resource handles
 /// across IPC dispatches (KV-backed state would not — `Process` is a
@@ -186,7 +187,8 @@ pub struct SettingsSetRequest {
 impl ClaudeRunner {
     /// Spawn a new `claude -p` subprocess for a principal session.
     #[astrid::interceptor("handle_spawn")]
-    pub fn handle_spawn(&self, req: SpawnRequest) -> Result<(), SysError> {
+    pub fn handle_spawn(&self, mut req: SpawnRequest) -> Result<(), SysError> {
+        req.principal_id = stamped_principal(&req.principal_id)?.to_string();
         // Untrusted input gate. principal_id flows into KV keys and
         // topic strings (the fs path is `home://...`, kernel-scoped per
         // invocation — principal_id no longer reaches the path);
@@ -292,6 +294,18 @@ impl ClaudeRunner {
             }
         };
 
+        if let Err(error) = cfg.validate() {
+            let _ = ipc::publish_json(
+                "claude.v1.event.session_rejected",
+                &serde_json::json!({
+                    "principal_id": req.principal_id,
+                    "reason": "invalid_config",
+                    "error": error.to_string(),
+                }),
+            );
+            return Ok(());
+        }
+
         // Repl mode short-circuit. No spawn, no identity fetch, no env
         // read — the user drives `claude` directly inside the principal
         // folder and the runner just publishes a structured rejection so the
@@ -328,6 +342,13 @@ impl ClaudeRunner {
 
         let session_id = req.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let principal_id = req.principal_id;
+        if self
+            .sessions
+            .with(|sessions| sessions.contains_key(&session_id))?
+        {
+            publish_spawn_error(&session_id, &principal_id, "session_already_exists");
+            return Ok(());
+        }
 
         // Block until claude-install confirms the principal's `.claude/`
         // is provisioned. claude-install is the source of truth: it
@@ -338,15 +359,10 @@ impl ClaudeRunner {
         // abort the spawn — proceeding would just spawn `claude -p`
         // against an unprovisioned principal home.
         //
-        // On success claude-install returns the host-resolved absolute
-        // home path (it canonicalises `home://` before publishing the
-        // InstallComplete envelope). Threading that path through the
-        // spawn keeps a single canonicalize host call per principal-
-        // install and guarantees the claude subprocess sees a real
-        // filesystem path in `HOME` / cwd rather than the `home://`
-        // VFS scheme string — which would silently break per-principal
-        // isolation if the subprocess fell back to ambient `$HOME`.
-        let resolved_home = match ensure_install(&principal_id, &cfg) {
+        // On success claude-install returns the principal's `home://` VFS
+        // scheme. The guest must not discover a host path; the process host
+        // resolves the scheme when it applies child env/cwd/argv.
+        let home_path = match ensure_install(&principal_id, &cfg) {
             EnsureInstall::Ok(home) => home,
             EnsureInstall::Failed(reason) => {
                 publish_spawn_error(
@@ -412,24 +428,24 @@ impl ClaudeRunner {
         // Fetch identity prompt from spark with a 5 s budget. Falls
         // back to a hard-coded minimal prompt + audit on timeout.
         //
-        // `home_path` is the absolute filesystem path returned by
-        // claude-install — NOT the `home://` VFS scheme. Identity-file
-        // writes still go through the VFS scheme (see
-        // `identity::write_prompt_file`), but the path threaded into
-        // the subprocess `HOME` / cwd must be a real OS path the host
-        // spawn primitive can interpret.
-        let home_path = resolved_home;
-        let prompt =
-            identity::fetch_prompt(&principal_id, &session_id, &home_path).unwrap_or_else(|e| {
-                log::warn(format!(
-                    "claude-runner: identity fetch errored: {e}, using fallback"
-                ));
-                "You are an agent running inside Astrid OS. Tools are exposed via mcp__astrid__*."
-                    .into()
-            });
+        // `home_path` remains a kernel-resolved VFS scheme for both file and
+        // process requests; no host filesystem path crosses into the capsule.
+        let prompt = match identity::fetch_prompt(&principal_id, &session_id, &home_path) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                let _ = crate::hooks::forget_token(&principal_id, &session_id);
+                publish_spawn_error(
+                    &session_id,
+                    &principal_id,
+                    &format!("identity_context_failed: {error}"),
+                );
+                return Ok(());
+            }
+        };
         let identity_path = match identity::write_prompt_file(&home_path, &session_id, &prompt) {
             Ok(p) => p,
             Err(e) => {
+                let _ = crate::hooks::forget_token(&principal_id, &session_id);
                 publish_spawn_error(
                     &session_id,
                     &principal_id,
@@ -489,9 +505,28 @@ impl ClaudeRunner {
             os_pid: spawned.os_pid,
             process_id: spawned.process_id,
         };
-        save_record(&record)?;
+        let cleanup_process = spawned.process.clone();
+        let recovery_process = spawned.process.clone();
+        if let Err(error) = save_record(&record) {
+            if let Err(cleanup_error) =
+                cleanup_untracked_process(cleanup_process, &principal_id, &session_id)
+            {
+                preserve_recovery_session(
+                    &self.sessions,
+                    &record,
+                    recovery_process,
+                    &cleanup_error,
+                );
+            }
+            publish_spawn_error(
+                &session_id,
+                &principal_id,
+                &format!("session_record_failed: {error}"),
+            );
+            return Ok(());
+        }
 
-        self.sessions.with(|map| {
+        if let Err(error) = self.sessions.with(|map| {
             map.insert(
                 session_id.clone(),
                 RuntimeSession {
@@ -500,12 +535,29 @@ impl ClaudeRunner {
                     codec: codec::LineDecoder::new(),
                 },
             );
-        })?;
+        }) {
+            if let Err(cleanup_error) =
+                cleanup_untracked_process(cleanup_process, &principal_id, &session_id)
+            {
+                preserve_recovery_session(
+                    &self.sessions,
+                    &record,
+                    recovery_process,
+                    &cleanup_error,
+                );
+            }
+            publish_spawn_error(
+                &session_id,
+                &principal_id,
+                &format!("session_registry_failed: {error}"),
+            );
+            return Ok(());
+        }
 
         // TODO(astrid-rfcs#TBD): mirror to a shared cross-capsule audit
         // topic once a convention lands; the kernel-side
         // `astrid.v1.audit.entry` is admin-action-shaped and not the
-        // right home for capsule-emitted attribution. Sage stays on
+        // right home for capsule-emitted attribution. The runner stays on
         // `claude.v1.audit.*` exclusively today — see README "Known
         // deficiencies" for the open RFC-class gap.
         //
@@ -570,6 +622,13 @@ impl ClaudeRunner {
     pub fn handle_send(&self, req: SendRequest) -> Result<(), SysError> {
         // Validate before the id reaches any format!/IPC topic.
         validate_id("session_id", &req.session_id)?;
+        if let Some(principal) = self.sessions.with(|sessions| {
+            sessions
+                .get(&req.session_id)
+                .map(|session| session.record.principal_id.clone())
+        })? {
+            stamped_principal(&principal)?;
+        }
         send_user_turn(&self.sessions, &req.session_id, &req.text)
     }
 
@@ -594,12 +653,11 @@ impl ClaudeRunner {
     /// 4. Drains `claude.v1.hook.*`, validates each per-session hook token
     ///    against KV, and republishes on the canonical
     ///    `hook.v1.event.<name>` ([`crate::hooks::validate_and_route`]).
-    /// 5. Sweeps the `claude.pending_restart.*` KV markers and respawns
-    ///    each torn-down session with a fresh identity prompt
-    ///    ([`shutdown::respawn_pending`]).
+    /// Identity refresh captures its principal-bound home/config/secret and
+    /// completes the matching respawn inline before this loop polls hooks.
     ///
     /// Tool dispatch and approval routing are deliberately absent: claude
-    /// drives `mcp__astrid__*` tools against the registered `astrid mcp
+    /// drives `mcp__aos__*` tools against the registered `aos mcp
     /// serve` MCP server, and that server owns its own approval / timeout
     /// handling — the runner would only double-execute if it intervened.
     #[astrid::run]
@@ -638,6 +696,34 @@ impl ClaudeRunner {
                         log::warn("claude-runner: stop request with invalid session_id; dropping");
                         continue;
                     }
+                    let owner = match self
+                        .sessions
+                        .with(|map| map.get(&sid).map(|s| s.record.principal_id.clone()))
+                    {
+                        Ok(owner) => owner,
+                        Err(error) => {
+                            log::warn(format!(
+                                "claude-runner: cannot authorize stop({sid}): {error}"
+                            ));
+                            continue;
+                        }
+                    };
+                    let Some(owner) = owner else {
+                        continue;
+                    };
+                    if resolve_principal(&owner, msg.principal.verified()).is_err() {
+                        log::warn(format!(
+                            "claude-runner: rejected cross-principal stop({sid})"
+                        ));
+                        let _ = ipc::publish_json(
+                            "claude.v1.audit.stop_rejected",
+                            &serde_json::json!({
+                                "session_id": sid,
+                                "reason": "principal_mismatch",
+                            }),
+                        );
+                        continue;
+                    }
                     if let Err(e) = shutdown::stop_session(&self.sessions, &sid, "requested") {
                         log::warn(format!("claude-runner: stop({sid}) failed: {e:?}"));
                     }
@@ -662,10 +748,6 @@ impl ClaudeRunner {
             // poll doesn't tear down the run loop.
             if let Ok(poll) = hook_sub.poll() {
                 let _ = crate::hooks::validate_and_route(poll.messages);
-            }
-
-            if let Err(e) = shutdown::respawn_pending(&self.sessions) {
-                log::warn(format!("claude-runner: respawn sweep failed: {e:?}"));
             }
 
             if astrid_sdk::time::sleep(supervisor::TICK_INTERVAL).is_err() {
@@ -731,14 +813,8 @@ fn send_user_turn(sessions: &Sessions, session_id: &str, text: &str) -> Result<(
 pub(crate) enum EnsureInstall {
     /// claude-install confirmed the principal is provisioned. Either a
     /// fresh `success: true` event arrived, or the cache-hit fast-reply
-    /// (`already_installed: true`) landed. The string is the
-    /// host-resolved absolute home path lifted from the
-    /// `claude.v1.install.complete` envelope — claude-install canonicalises
-    /// `home://` before publishing so this is a real filesystem path
-    /// the subprocess `HOME` / cwd can interpret. Falls back to the
-    /// `home://` VFS scheme string if claude-install omitted the field
-    /// (older capsule version); the spawn path will still function but
-    /// the subprocess may not see a valid `$HOME`.
+    /// (`already_installed: true`) landed. The string is always the guest VFS
+    /// scheme `home://`; host filesystem paths never cross into the capsule.
     Ok(String),
     /// Either claude-install published `success: false` (carrying its
     /// `error` field), or the 30 s deadline elapsed with no response,
@@ -754,11 +830,9 @@ pub(crate) enum EnsureInstall {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum InstallEnvelope {
     /// Envelope matched our principal and reported `success: true`.
-    /// The string is the resolved home path from the envelope's
-    /// `home_path` field — empty if the field was missing or blank
-    /// (older claude-install incarnations); the caller treats empty as
-    /// "fall back to `home://` VFS scheme".
-    Success(String),
+    /// The installer's informational `home_path` is deliberately ignored;
+    /// the runner always supplies `home://` to the process host.
+    Success,
     /// Envelope matched our principal and reported `success: false`.
     /// The string is the install error reason, lifted verbatim from the
     /// `error` field if present, otherwise `"unknown"`.
@@ -793,12 +867,7 @@ pub(crate) fn classify_install_complete(payload: &str, principal_id: &str) -> In
         return InstallEnvelope::Skip;
     }
     if value.get("success").and_then(Value::as_bool) == Some(true) {
-        let home_path = value
-            .get("home_path")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        return InstallEnvelope::Success(home_path);
+        return InstallEnvelope::Success;
     }
     let reason = value
         .get("error")
@@ -863,30 +932,17 @@ fn ensure_install(principal_id: &str, cfg: &config::PrincipalConfig) -> EnsureIn
         let step = remaining_ms.min(2_000);
         if let Ok(result) = sub.recv(step) {
             for msg in result.messages {
+                if resolve_principal(principal_id, msg.principal.verified()).is_err() {
+                    continue;
+                }
                 // Multiple principals may be installing concurrently on
                 // the bus — `classify_install_complete` filters to our
                 // own principal_id and folds the success/failure shape
                 // into a single decision. Failure includes the `error`
                 // string verbatim so the operator sees the real reason.
                 match classify_install_complete(&msg.payload, principal_id) {
-                    InstallEnvelope::Success(home_path) => {
-                        // claude-install ought to publish a resolved
-                        // absolute path here. If it didn't (older
-                        // capsule version with an empty `home_path`
-                        // field), fall back to the VFS scheme so the
-                        // spawn still has *something* to thread into
-                        // HOME/cwd. Note: the subprocess will then see
-                        // `home://` and likely fall back to ambient
-                        // $HOME, breaking per-principal isolation —
-                        // this is the silent-failure mode the resolved
-                        // path closes; the fallback exists only so a
-                        // version skew doesn't hard-block spawns.
-                        let resolved = if home_path.is_empty() {
-                            "home://".to_string()
-                        } else {
-                            home_path
-                        };
-                        return EnsureInstall::Ok(resolved);
+                    InstallEnvelope::Success => {
+                        return EnsureInstall::Ok("home://".to_string());
                     }
                     InstallEnvelope::Failure(reason) => return EnsureInstall::Failed(reason),
                     InstallEnvelope::Skip => {}
@@ -910,6 +966,68 @@ fn publish_spawn_error(session_id: &str, principal_id: &str, reason: &str) {
             "reason": reason,
         }),
     );
+}
+
+pub(crate) fn cleanup_untracked_process(
+    process: process::PersistentProcess,
+    principal_id: &str,
+    session_id: &str,
+) -> Result<(), SysError> {
+    cleanup_after_stop(process.stop(None).map(|_| ()), || {
+        let _ = hooks::forget_token(principal_id, session_id);
+        let _ = state::delete_record(session_id);
+    })
+    .inspect_err(|error| {
+        log::error(format!(
+            "claude-runner: failed to stop untracked process for {session_id}: {error:?}"
+        ));
+    })
+}
+
+fn cleanup_after_stop<E>(
+    stop_result: Result<(), E>,
+    cleanup_state: impl FnOnce(),
+) -> Result<(), E> {
+    stop_result?;
+    cleanup_state();
+    Ok(())
+}
+
+pub(crate) fn preserve_recovery_session(
+    sessions: &Sessions,
+    record: &SessionRecord,
+    process: process::PersistentProcess,
+    cleanup_error: &SysError,
+) {
+    log::error(format!(
+        "claude-runner: preserving recovery state for {} after cleanup failure: {cleanup_error:?}",
+        record.session_id
+    ));
+    if let Err(error) = state::save_record(record) {
+        log::error(format!(
+            "claude-runner: failed to preserve recovery record for {}: {error:?}",
+            record.session_id
+        ));
+    }
+    if let Err(error) = sessions.with(|map| {
+        map.entry(record.session_id.clone())
+            .or_insert_with(|| RuntimeSession {
+                record: record.clone(),
+                process,
+                codec: codec::LineDecoder::default(),
+            });
+    }) {
+        log::error(format!(
+            "claude-runner: failed to preserve runtime handle for {}: {error:?}",
+            record.session_id
+        ));
+    }
+    if let Err(error) = sessions.request_reload_recovery() {
+        log::error(format!(
+            "claude-runner: failed to re-arm recovery for {}: {error:?}",
+            record.session_id
+        ));
+    }
 }
 
 /// Pull the trailing segment out of an IPC topic (the bit after the

@@ -1,4 +1,4 @@
-//! astrid-mcp — the shared Astrid oracle MCP broker.
+//! astrid-mcp — the neutral runtime capsule behind the Unicity AOS MCP surface.
 //!
 //! One capsule for every host (Claude Code, Grok Build, Codex). Host plugins
 //! only change principal + hooks; they all talk to this broker.
@@ -14,7 +14,7 @@ use oracle_broker::handlers;
 pub struct AstridMcp;
 
 fn ensure_identity() {
-    oracle_broker::install_astrid();
+    oracle_broker::install_aos();
 }
 
 #[capsule]

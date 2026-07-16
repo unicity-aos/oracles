@@ -1,13 +1,13 @@
 ---
 name: Capsule Forge
-description: "Use when creating, building, scaffolding, or authoring an Astrid capsule — a sandboxed WASM tool provider that exposes tools to the LLM over a message bus. The complete, self-contained guide: the minimal file set, the #[capsule]/#[astrid::tool] macros, Capsule.toml and the capability/bus ACL, the build→install→call loop, and every footgun. Everything needed to ship a capsule from zero."
+description: "Use when creating, building, scaffolding, or authoring an Unicity AOS capsule — a sandboxed WASM tool provider that exposes tools to the LLM over a message bus. The complete, self-contained guide: the minimal file set, the #[capsule]/#[astrid::tool] macros, Capsule.toml and the capability/bus ACL, the build→install→call loop, and every footgun. Everything needed to ship a capsule from zero."
 ---
 
-# Capsule Forge — Author an Astrid Capsule From Zero
+# Capsule Forge — Author an Unicity AOS Capsule From Zero
 
 You are about to write a **capsule**: a small WebAssembly Component, compiled
 from Rust, that the Astrid kernel loads into a sandbox and lets it expose
-**tools** to the LLM over an event bus. You need no prior Astrid knowledge —
+**tools** to the LLM over an event bus. You need no prior AOS knowledge —
 **this page is the whole map.** Everything you need to write the WIT references,
 the `Capsule.toml`, and the Rust is here. You should never have to leave it.
 
@@ -46,11 +46,11 @@ the `Capsule.toml`, and the Rust is here. You should never have to leave it.
 Get a complete, *compiling* skeleton one of three ways, then build → install →
 call:
 
-- **Forge tool (available when the Astrid daemon is running with the forge
-  capsule installed — it ships in the Grok distro):** call
+- **Forge tool (available when Unicity AOS is running with the forge capsule
+  installed — it ships with Unicity AOS):** call
   `scaffold_capsule { "name": "my-capsule" }`. It returns a JSON map of
   `path -> file content` for a complete skeleton — write each file out.
-- **CLI:** `astrid capsule new my-capsule` scaffolds the same full project
+- **CLI:** `aos capsule new my-capsule` scaffolds the same full project
   (`.cargo/config.toml`, `rust-toolchain.toml`, `Cargo.toml`, `Capsule.toml`,
   `src/lib.rs`, `README.md`) ready to `cargo build` on the first try.
 - **By hand:** copy the files in section 3, substituting your name.
@@ -61,17 +61,17 @@ Then:
 # 1. Install the WASM target once (the scaffold pins it in rust-toolchain.toml):
 rustup target add wasm32-unknown-unknown
 
-# 2. Build the capsule. `astrid capsule build` produces ./dist/<name>.capsule.
+# 2. Build the capsule. `aos capsule build` produces ./dist/<name>.capsule.
 #    Plain `cargo build` also works — .cargo/config.toml selects the target,
 #    so DO NOT pass --target.
-astrid capsule build
+aos capsule build
 
 # 3. Install it into the running daemon (content-addressed — see footgun 4):
-astrid capsule install ./dist/my-capsule.capsule
+aos capsule install ./dist/my-capsule.capsule
 
 # 4. Verify it loaded:
-astrid capsule list          # your capsule should appear
-astrid status                # daemon should still be healthy
+aos capsule list          # your capsule should appear
+aos status                # daemon should still be healthy
 
 # 5. Ask the LLM to call your tool.
 ```
@@ -226,10 +226,10 @@ impl MyCapsule {
 }
 ```
 
-> **Do NOT create a checked-in `wit/` directory.** The WIT the manifest
-> references (`@unicity-astrid/wit/...`) is resolved at build time — it is
-> *generated*, never hand-authored in your repo. A `wit/` directory will confuse
-> the build.
+> Canonical contracts referenced as `@unicity-astrid/wit/...` are resolved at
+> build time and need no local copy. If the capsule defines its own public WIT
+> interface, check that source into `wit/`; the capsule builder includes it in
+> the installable archive so consumers can discover and subscribe to it.
 
 ---
 
@@ -293,7 +293,7 @@ and its result is published on `tool.v1.execute.foo.result`.
 ### Lifecycle hooks (each is a singleton; duplicates are a compile error)
 
 - **`#[astrid::install]`** — `fn(&self) -> Result<(), SysError>`. Runs once at
-  `astrid capsule install`, *before* the capsule enters the normal runtime.
+  `aos capsule install`, *before* the capsule enters the normal runtime.
   This is the only place `elicit` works (interactive secret/value prompting).
   **This is also how a Skill lands on disk** — see footgun 5.
 - **`#[astrid::upgrade]`** — `fn(&self, prev_version: &str) -> Result<(), SysError>`.
@@ -406,7 +406,7 @@ A `PollResult` carries `messages: Vec<Message>`; each `Message` has
 **Note:** a `recv` timeout returns `Ok` with an empty message list, *not* an
 error — treat an empty `PollResult` as the timeout signal.
 
-### `log` — structured logging (infallible; lands in `~/.astrid/log/`)
+### `log` — structured logging (infallible; lands in `~/.aos/runtime/log/`)
 
 ```rust
 log::trace(msg); log::debug(msg); log::info(msg); log::warn(msg); log::error(msg);
@@ -456,7 +456,7 @@ it before touching a byte of WASM. Every section below is optional except
 
 ```toml
 [package]
-name = "astrid-capsule-http"   # required; lowercase ASCII alphanumeric + hyphens
+name = "my-http-capsule"       # required; lowercase ASCII alphanumeric + hyphens
 version = "0.1.0"             # required; three-part numeric
 description = "HTTP fetch tool"
 authors = ["Name <e@mail>"]
@@ -565,7 +565,7 @@ NAME    = { type = "text",   request = "Your name", default = "Agent" }
 ```
 
 `type` is `secret` | `text` | `select` | `array`. **`secret`** is masked at the
-install prompt and stored 0600 in `~/.astrid/secrets/` (never returned to the
+install prompt and stored 0600 in `~/.aos/runtime/secrets/` (never returned to the
 guest as plaintext via the env path); the others land in per-principal env JSON.
 Read values at runtime with `env::var("API_KEY")`. **`scope` is operator-only**
 (`skip_deserializing`) — a manifest **cannot** set it; the kernel decides per-agent
@@ -649,7 +649,10 @@ You almost never hand-write WIT for a tool capsule. What you need to know:
 - **Inspect a real interface** with the forge `explain_interface { "name": "tool" }`
   tool (reads from `home://wit/` and summarizes package/interfaces/records), or the
   system capsule's `list_interfaces` / `read_interface`.
-- **Do not check a `wit/` directory into your repo** — it's generated at build.
+- **Canonical versus capsule-owned WIT.** Canonical
+  `@unicity-astrid/wit/...` contracts are resolved at build. Custom interfaces
+  owned by your capsule belong in a checked-in `wit/` directory and ship in the
+  capsule archive.
 
 ---
 
@@ -726,14 +729,14 @@ with **three** different rules. Name this so you don't trip:
 edit src/lib.rs / Capsule.toml
       │
       ▼
-astrid capsule build            # -> ./dist/<name>.capsule
+aos capsule build            # -> ./dist/<name>.capsule
       │                         #    (plain `cargo build` works too; no --target)
       ▼
-astrid capsule install ./dist/<name>.capsule   # content-addressed; replaces prior version
+aos capsule install ./dist/<name>.capsule   # content-addressed; replaces prior version
       │
       ▼
-astrid capsule list             # confirm it loaded
-astrid status                   # confirm the daemon is healthy
+aos capsule list             # confirm it loaded
+aos status                   # confirm the daemon is healthy
       │
       ▼
 ask the LLM to call the tool    # verify behaviour
@@ -743,12 +746,12 @@ ask the LLM to call the tool    # verify behaviour
 
 - **There is NO hot-reload** — the watcher is dead code (issue #296). To iterate,
   rebuild and **reinstall**; each install replaces the prior version.
-- **Logs** live under `~/.astrid/log/`, one file per capsule. A guest panic shows
+- **Logs** live under `~/.aos/runtime/log/`, one file per capsule. A guest panic shows
   as `capsule panic at src/lib.rs:NN` (the SDK installs a panic hook). ERROR-level
   guest logs also surface in the daemon log. Grep the per-capsule log when a tool
   traps or a run loop exits.
-- If `astrid` isn't on PATH, it's at `~/.astrid/bin/astrid`.
-- If `astrid capsule build` is unavailable, `cargo build --release` works (the
+- If `aos` isn't on PATH, the standard install is at `~/.aos/bin/aos`.
+- If `aos capsule build` is unavailable, `cargo build --release` works (the
   `.cargo/config.toml` selects the target); the `.wasm` lands under
   `target/wasm32-unknown-unknown/release/`.
 
@@ -762,10 +765,12 @@ ask the LLM to call the tool    # verify behaviour
    it for you — it must live in *your* crate. The #1 cause of confusing build
    failures.
 2. **`crate-type = ["cdylib"]`.** Not `bin`, not the default `rlib`.
-3. **No checked-in `wit/`.** The WIT contracts are generated at build time.
+3. **Put only capsule-owned contracts in `wit/`.** Canonical
+   `@unicity-astrid/wit/...` contracts are resolved at build; custom interfaces
+   must be checked in so they can ship with the capsule.
 4. **Content-addressed install.** Install with
-   `astrid capsule install ./dist/<name>.capsule`. **Do not** hand-copy the
-   `.wasm` into `~/.astrid` — install records a BLAKE3 hash in `meta.json`, and a
+   `aos capsule install ./dist/<name>.capsule`. **Do not** hand-copy the
+   `.wasm` into `~/.aos/runtime` — install records a BLAKE3 hash in `meta.json`, and a
    capsule whose binary doesn't match (or wasn't installed this way) fails to load.
 5. **A Skill needs an `#[astrid::install]` hook to land.** The StaticEngine that
    would place `[[skill]]` files is a no-op stub. If your capsule ships a Skill,
@@ -831,8 +836,8 @@ domains (files *and* network *and* process), that's the smell, not the feature.
 
 ## 15. The Forge Tools
 
-The Astrid daemon's **forge** capsule — bundled in the Grok distro and bridged to
-this Grok Build session over MCP when the daemon is running — gives you tools to
+The **forge** capsule — bundled with Unicity AOS and bridged to this Grok Build
+session over MCP when AOS is running — gives you tools to
 do all of the above without leaving the chat:
 
 | Tool | Use it when |
@@ -844,8 +849,8 @@ do all of the above without leaving the chat:
 | `validate_manifest { toml }` | You want your `Capsule.toml` linted for the common mistakes before you build. |
 | `capsule_doctor { name }` | A capsule loaded but its tools don't appear, or an import is unsatisfied — diagnose it. |
 
-(If those tools aren't present, the daemon isn't running or the forge capsule
-isn't installed — every step above also works with the `astrid` CLI and by hand,
+(If those tools aren't present, AOS isn't running or the forge capsule isn't
+installed — every step above also works with the `aos` CLI and by hand,
 so you are never blocked.)
 
 Welcome to capsule authoring. Scaffold one and ship it.

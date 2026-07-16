@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Codex host runner on Astrid"
+description = "Codex host runner on Unicity AOS"
 publish = false
 
 [lib]

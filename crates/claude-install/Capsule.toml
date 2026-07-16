@@ -15,8 +15,7 @@ type = "executable"
 
 [capabilities]
 # The `home://` scheme resolves at check time against the per-invocation
-# principal home (`~/.astrid/home/<principal>/` in the FHS layout — see
-# core/crates/astrid-kernel/src/lib.rs:75). claude-install writes
+# principal home (`$AOS_HOME/runtime/home/<principal>/` in AOS). claude-install writes
 # `.claude/settings.local.json` + `.claude/.mcp.json` so the write scope
 # is intentionally narrowed to `home://.claude/`; the read side stays
 # permissive within the principal home for diagnostics.
@@ -25,20 +24,20 @@ fs_write = ["home://.claude/"]
 kv = []
 
 [subscribe]
-# Run the per-principal install: create home://.claude/, write
-# settings.local.json (hardened permissions + the MCP stub pointing at
-# /bin/false — the runner parses tool_use blocks out of stream-json directly).
+# Run the per-principal install: create home://.claude/, write the governed
+# settings tiers, and register `aos --principal <id> mcp serve` as the host's
+# MCP server.
 # Onboarding credentials (the Anthropic API key) are NOT elicited from
 # here; the sibling `claude-runner` Capsule.toml `[env]` block declares
 # them so the kernel elicits at install time and persists via the host
 # SecretStore. See the crate-level doc in src/lib.rs.
-"claude.v1.install.run" = { wit = "opaque", handler = "handle_install" }
+"claude.v1.install.run" = { wit = "claude-install-request", handler = "handle_install" }
 # Re-link an existing principal (re-run /login or refresh config).
-"claude.v1.install.relink" = { wit = "opaque", handler = "handle_relink" }
+"claude.v1.install.relink" = { wit = "claude-relink-request", handler = "handle_relink" }
 
 [publish]
-"claude.v1.install.status" = "opaque"
-"claude.v1.install.complete" = "opaque"
+"claude.v1.install.status" = "claude-install-status"
+"claude.v1.install.complete" = "claude-install-complete"
 # Audit events emitted by claude-install (e.g. `relink_completed`,
 # `install_completed`). Declared as a wildcard so future audit
 # variants can be added without re-touching the manifest. Mirrors the

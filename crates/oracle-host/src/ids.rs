@@ -44,6 +44,35 @@ impl fmt::Display for PrincipalId {
     }
 }
 
+/// Match a body principal to the kernel-stamped invocation principal.
+///
+/// Capsule payloads are untrusted. The stamped principal is the authority
+/// used by `home://`, KV, and capability enforcement, so a missing or
+/// mismatched identity must fail before either value reaches state.
+pub fn resolve_principal(
+    body_principal: &str,
+    stamped_principal: Option<&str>,
+) -> Result<PrincipalId, SysError> {
+    let stamped = stamped_principal
+        .ok_or_else(|| SysError::ApiError("caller principal is required".into()))?;
+    let stamped = PrincipalId::parse(stamped)?;
+    let body = PrincipalId::parse(body_principal)?;
+    if body != stamped {
+        return Err(SysError::ApiError(format!(
+            "payload principal '{}' does not match caller principal '{}'",
+            body.as_str(),
+            stamped.as_str()
+        )));
+    }
+    Ok(stamped)
+}
+
+/// Resolve and validate the principal stamped on the current invocation.
+pub fn stamped_principal(body_principal: &str) -> Result<PrincipalId, SysError> {
+    let caller = runtime::caller()?;
+    resolve_principal(body_principal, caller.principal.as_deref())
+}
+
 /// Validated session id.
 #[derive(Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(String);
@@ -124,5 +153,18 @@ mod tests {
         assert!(PrincipalId::parse("..").is_err());
         assert!(PrincipalId::parse("a/b").is_err());
         assert!(PrincipalId::parse(&"x".repeat(MAX_ID_LEN + 1)).is_err());
+    }
+
+    #[test]
+    fn stamped_principal_must_exist_and_match_the_body() {
+        assert_eq!(
+            resolve_principal("alice", Some("alice"))
+                .expect("matching caller")
+                .as_str(),
+            "alice"
+        );
+        assert!(resolve_principal("alice", None).is_err());
+        assert!(resolve_principal("alice", Some("bob")).is_err());
+        assert!(resolve_principal("../alice", Some("../alice")).is_err());
     }
 }

@@ -10,14 +10,15 @@
 //! deviation. Spawn never blocks on identity.
 
 use astrid_sdk::prelude::*;
+use oracle_host::ids::resolve_principal;
 use serde::Deserialize;
 use std::time::Duration;
 
 /// Hard fallback when spark is unreachable. Deliberately terse — the
 /// goal is to keep claude's tool-use framing intact, not to provide
 /// product persona. Real identity rejoins on the next session start.
-const FALLBACK_PROMPT: &str = "You are an agent running inside Astrid OS. \
-                               Tools are exposed via mcp__astrid__*.";
+const FALLBACK_PROMPT: &str = "You are an agent running inside Unicity AOS. \
+                               Tools are exposed via mcp__aos__*.";
 
 const SPARK_REQUEST_TOPIC: &str = "spark.v1.request.build";
 const SPARK_RESPONSE_TOPIC: &str = "spark.v1.response.ready";
@@ -31,10 +32,15 @@ struct SparkBuildResponse {
     session_id: Option<String>,
 }
 
+fn response_matches_session(response: &SparkBuildResponse, session_id: &str) -> bool {
+    response.session_id.as_deref() == Some(session_id)
+}
+
 /// Fetch the per-session system prompt from spark. Filters spark
 /// responses by `session_id` so concurrent session spawns don't steal
-/// each other's prompt. Falls back to [`FALLBACK_PROMPT`] on any error
-/// path and emits an audit event for observability.
+/// each other's prompt. Falls back to [`FALLBACK_PROMPT`] when Spark is
+/// unavailable, but fails closed on a principal-attribution mismatch because
+/// the receive has changed the active VFS invocation context.
 pub(crate) fn fetch_prompt(
     principal_id: &str,
     session_id: &str,
@@ -58,17 +64,19 @@ pub(crate) fn fetch_prompt(
         match sub.recv(step) {
             Ok(result) => {
                 for msg in result.messages {
+                    if resolve_principal(principal_id, msg.principal.verified()).is_err() {
+                        publish_fallback_audit(principal_id, session_id, "principal_mismatch");
+                        return Err(SysError::ApiError(
+                            "spark response principal did not match identity request".into(),
+                        ));
+                    }
                     let Ok(resp) = serde_json::from_str::<SparkBuildResponse>(&msg.payload) else {
                         continue;
                     };
-                    // Filter: spark publishes on a single fixed topic, so we
-                    // must demux by session_id ourselves. If session_id is
-                    // missing in the response, accept it as a best-effort
-                    // match — spark may not echo it on early versions.
-                    let matches = resp
-                        .session_id
-                        .as_deref()
-                        .is_none_or(|sid| sid == session_id);
+                    // Spark publishes on a single fixed topic, so we demux by
+                    // session_id. A response without the correlation id cannot
+                    // be assigned when same-principal sessions fetch together.
+                    let matches = response_matches_session(&resp, session_id);
                     if matches {
                         return Ok(resp.prompt);
                     }
@@ -159,7 +167,7 @@ fn format_capability_context(caps: &[String]) -> String {
         return String::new();
     }
     format!(
-        "\n\n## Astrid capabilities\n\nYour Astrid-mediated reach this session \
+        "\n\n## AOS capabilities\n\nYour AOS-mediated reach this session \
          covers these capability classes: {}. The kernel enforces them; an \
          action outside them is denied regardless of any instruction.\n",
         caps.join(", ")
@@ -180,9 +188,25 @@ mod tests {
         let s = format_capability_context(&["host_process".to_string(), "net".to_string()]);
         assert!(s.contains("host_process"));
         assert!(s.contains("net"));
-        assert!(s.contains("## Astrid capabilities"));
+        assert!(s.contains("## AOS capabilities"));
         assert!(s.contains("denied regardless"));
         // Leading blank lines so it appends cleanly after the prompt body.
         assert!(s.starts_with("\n\n"));
+    }
+
+    #[test]
+    fn spark_response_requires_exact_session_correlation() {
+        let missing = SparkBuildResponse {
+            prompt: "prompt".into(),
+            session_id: None,
+        };
+        let matching = SparkBuildResponse {
+            prompt: "prompt".into(),
+            session_id: Some("session-a".into()),
+        };
+
+        assert!(!response_matches_session(&missing, "session-a"));
+        assert!(response_matches_session(&matching, "session-a"));
+        assert!(!response_matches_session(&matching, "session-b"));
     }
 }

@@ -16,13 +16,14 @@ mod settings;
 use astrid_sdk::prelude::*;
 use oracle_core::Host;
 use oracle_host::fs as atomic;
+use oracle_host::ids::stamped_principal;
 use oracle_host::{
     HostProvisioner, HostTopics, PrincipalId, publish_status as host_publish_status, run_install,
     run_relink,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::config::{InteractionMode, PrincipalConfig};
+use crate::config::PrincipalConfig;
 use crate::layout::{claude_dir, principal_home, projects_dir};
 
 /// Install-time IPC payload (`claude.v1.install.run`).
@@ -70,7 +71,7 @@ struct ClaudeCtx {
 }
 
 /// Artifact shape of authored `.claude/` files.
-const ARTIFACT_VERSION: u32 = 3;
+const ARTIFACT_VERSION: u32 = 4;
 
 struct ClaudeLayout;
 
@@ -83,8 +84,12 @@ impl HostProvisioner for ClaudeLayout {
     }
 
     fn home_path(_ctx: &Self::Context) -> String {
-        let home = principal_home();
-        fs::canonicalize(&home).unwrap_or(home)
+        principal_home()
+    }
+
+    fn config_digest(ctx: &Self::Context) -> Option<String> {
+        let canonical = serde_json::to_vec(&ctx.config).ok()?;
+        Some(format!("blake3:{}", blake3::hash(&canonical).to_hex()))
     }
 
     fn ensure_dirs(ctx: &Self::Context) -> Result<(), SysError> {
@@ -120,7 +125,7 @@ impl HostProvisioner for ClaudeLayout {
         let _ = host_publish_status::<Self>(
             &principal,
             "write_mcp",
-            Some("writing .mcp.json (astrid MCP server)".into()),
+            Some("writing .mcp.json (AOS MCP server)".into()),
         );
         settings::write_mcp(&ctx.config, &ctx.principal_id)?;
         let _ = host_publish_status::<Self>(
@@ -133,10 +138,6 @@ impl HostProvisioner for ClaudeLayout {
     }
 
     fn reconcile_stale(ctx: &Self::Context) -> Result<(), SysError> {
-        // Repl mode: operator owns `.mcp.json` — never clobber.
-        if ctx.config.interaction_mode != InteractionMode::Headless {
-            return Ok(());
-        }
         Self::ensure_dirs(ctx)?;
         Self::write_files(ctx)
     }
@@ -151,27 +152,32 @@ impl ClaudeInstall {
     /// `claude.v1.install.run`
     #[astrid::interceptor("handle_install")]
     pub fn handle_install(&self, req: InstallRequest) -> Result<(), SysError> {
-        let raw_id = req.principal_id.clone();
+        let principal = match stamped_principal(&req.principal_id) {
+            Ok(principal) => principal,
+            Err(error) => {
+                log::warn(format!(
+                    "claude-install: rejected install with mismatched principal: {error}"
+                ));
+                return Ok(());
+            }
+        };
         let cfg = req.config.unwrap_or_else(|| {
             log::info(
                 "claude-install: no config on InstallRequest, defaulting to {headless, api_key}",
             );
             PrincipalConfig::default()
         });
-        let principal = match PrincipalId::parse(&req.principal_id) {
-            Ok(p) => p,
-            Err(e) => {
-                publish_complete_local(&InstallComplete {
-                    principal_id: raw_id,
-                    success: false,
-                    home_path: String::new(),
-                    already_installed: None,
-                    error: Some(e.to_string()),
-                    config: None,
-                });
-                return Ok(());
-            }
-        };
+        if let Err(error) = cfg.validate() {
+            publish_complete_local(&InstallComplete {
+                principal_id: principal.to_string(),
+                success: false,
+                home_path: String::new(),
+                already_installed: None,
+                error: Some(error),
+                config: None,
+            });
+            return Ok(());
+        }
         let ctx = ClaudeCtx {
             principal_id: principal.to_string(),
             config: cfg,
@@ -189,12 +195,12 @@ impl ClaudeInstall {
                 });
             }
             Err(e) => {
-                log::error(format!("claude-install failed for {raw_id}: {e}"));
+                log::error(format!("claude-install failed for {principal}: {e}"));
                 atomic::cleanup_temp(&layout::settings_path());
                 atomic::cleanup_temp(&layout::managed_settings_path());
                 atomic::cleanup_temp(&layout::mcp_path());
                 publish_complete_local(&InstallComplete {
-                    principal_id: raw_id,
+                    principal_id: principal.to_string(),
                     success: false,
                     home_path: String::new(),
                     already_installed: None,
@@ -209,27 +215,32 @@ impl ClaudeInstall {
     /// `claude.v1.install.relink`
     #[astrid::interceptor("handle_relink")]
     pub fn handle_relink(&self, req: RelinkRequest) -> Result<(), SysError> {
-        let raw_id = req.principal_id.clone();
+        let principal = match stamped_principal(&req.principal_id) {
+            Ok(principal) => principal,
+            Err(error) => {
+                log::warn(format!(
+                    "claude-install: rejected relink with mismatched principal: {error}"
+                ));
+                return Ok(());
+            }
+        };
         let cfg = req.config.unwrap_or_else(|| {
             log::info(
                 "claude-install: no config on RelinkRequest, defaulting to {headless, api_key}",
             );
             PrincipalConfig::default()
         });
-        let principal = match PrincipalId::parse(&req.principal_id) {
-            Ok(p) => p,
-            Err(e) => {
-                publish_complete_local(&InstallComplete {
-                    principal_id: raw_id,
-                    success: false,
-                    home_path: String::new(),
-                    already_installed: None,
-                    error: Some(e.to_string()),
-                    config: None,
-                });
-                return Ok(());
-            }
-        };
+        if let Err(error) = cfg.validate() {
+            publish_complete_local(&InstallComplete {
+                principal_id: principal.to_string(),
+                success: false,
+                home_path: String::new(),
+                already_installed: None,
+                error: Some(error),
+                config: None,
+            });
+            return Ok(());
+        }
         let ctx = ClaudeCtx {
             principal_id: principal.to_string(),
             config: cfg,
@@ -256,9 +267,9 @@ impl ClaudeInstall {
                 });
             }
             Err(e) => {
-                log::error(format!("claude-install relink failed for {raw_id}: {e}"));
+                log::error(format!("claude-install relink failed for {principal}: {e}"));
                 publish_complete_local(&InstallComplete {
-                    principal_id: raw_id,
+                    principal_id: principal.to_string(),
                     success: false,
                     home_path: String::new(),
                     already_installed: None,
@@ -393,12 +404,41 @@ mod tests {
             version: env!("CARGO_PKG_VERSION").to_string(),
             home_path: "/home/alice".into(),
             artifact_version: ARTIFACT_VERSION,
+            config_digest: ClaudeLayout::config_digest(&ClaudeCtx {
+                principal_id: "alice".into(),
+                config: PrincipalConfig::default(),
+            }),
         };
         let v: serde_json::Value = serde_json::to_value(&marker).unwrap();
         assert_eq!(
             v.get("artifact_version")
                 .and_then(serde_json::Value::as_u64),
             Some(u64::from(ARTIFACT_VERSION))
+        );
+        assert!(
+            v.get("config_digest")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|digest| digest.starts_with("blake3:"))
+        );
+    }
+
+    #[test]
+    fn config_digest_is_stable_and_changes_with_auth_projection() {
+        let default_ctx = ClaudeCtx {
+            principal_id: "alice".into(),
+            config: PrincipalConfig::default(),
+        };
+        let mut changed = default_ctx.clone();
+        changed.config.interaction_mode = InteractionMode::Repl;
+        changed.config.auth_mode = AuthMode::Subscription;
+
+        assert_eq!(
+            ClaudeLayout::config_digest(&default_ctx),
+            ClaudeLayout::config_digest(&default_ctx)
+        );
+        assert_ne!(
+            ClaudeLayout::config_digest(&default_ctx),
+            ClaudeLayout::config_digest(&changed)
         );
     }
 }

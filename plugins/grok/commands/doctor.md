@@ -1,9 +1,10 @@
 ---
-description: Diagnose the Astrid runtime backing this session and report readiness + any fix.
+description: Diagnose the Unicity AOS runtime backing this session and report any required fix.
 ---
 
-Run the Astrid readiness check and present the result.
+Run the AOS readiness check and present its result.
 
-!`"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/astrid-doctor" --format human 2>/dev/null || echo "(could not run astrid-doctor — is the Astrid plugin installed correctly?)"`
+!`"${GROK_PLUGIN_ROOT}/bin/aos-doctor" --format human 2>/dev/null || echo "(could not run aos-doctor — is the AOS plugin installed correctly?)"`
 
-Relay the report. If it flags a gap (no daemon, missing `astrid-mcp` broker, or denied tool calls needing a trusted ingress), state the gap and the exact fix it gives. Otherwise confirm the session is a healthy, governed Astrid agent.
+If setup is missing, preserve the explicit installer command. Do not edit the
+private runtime home or provision credentials implicitly.

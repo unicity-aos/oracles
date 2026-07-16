@@ -1,117 +1,83 @@
 #!/usr/bin/env sh
-# install.sh — one command. That's the product.
-#
-#   curl -fsSL https://astridos.org/install.sh | sh
-#
-# One status line per step: box spinner + elapsed bar while it runs, a
-# checkmark when it lands. Does CLI + base home + detected host plugins
-# (marketplace) + host capsules. Re-run upgrades everything in place.
-#
-# Before writing into host apps it lists what it detected and asks once —
-# Enter wires all, names pick a subset, n skips. -y or no TTY never asks.
-#
-# Flags ride after `sh -s --`:
-#
-#   curl -fsSL https://astridos.org/install.sh | sh -s -- --host claude --verbose
+# Install signed Unicity AOS oracle packs and their host marketplace plugins.
 set -eu
+umask 077
 
-ORACLES_REPO="${ASTRID_ORACLES_REPO:-unicity-astrid/oracles}"
-DISTRO_BASE="${ASTRID_ORACLES_DISTRO_BASE:-https://raw.githubusercontent.com/${ORACLES_REPO}/main/distros}"
-ASTRID_RELEASE_REPO="${ASTRID_RELEASE_REPO:-unicity-astrid/astrid}"
-ASTRID_MANAGED_BIN="${ASTRID_HOME:-$HOME/.astrid}/bin"
-BREW_TAP="${ASTRID_BREW_TAP:-unicity-astrid/tap}"
-BREW_FORMULA="${ASTRID_BREW_FORMULA:-astrid}"
-
-VERBOSE=0
-NO_BREW=0
-BASE_ONLY=0
-SKIP_INIT=0
-ALL_HOSTS=0
-REQUESTED_HOSTS=""
-BIN_ROOT="${ASTRID_BIN_ROOT:-}"
-ASTRID=""
-FAILED=0
+ORACLES_REPO="${AOS_ORACLES_REPO:-unicity-aos/oracles}"
+ORACLES_VERSION="${AOS_ORACLES_VERSION:-0.2.0}"
+AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/install.sh}"
+AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
+AOS_CHANNEL=""
+AOS_VERSION=""
+CLAUDE_AUTH_MODE="${AOS_CLAUDE_AUTH_MODE:-api_key}"
+CLAUDE_INTERACTION_MODE="${AOS_CLAUDE_INTERACTION_MODE:-headless}"
+COSIGN_VERSION=v3.1.1
 ASSUME_YES=0
-SPIN_PID=""
-CLEAN_TMP=""
-SPIN_TTY=0
-[ -t 1 ] && SPIN_TTY=1
+ALL_HOSTS=0
+NO_INSTALL_AOS=0
+NO_MIGRATE_PROMPT=0
+OFFLINE=0
+REQUESTED_HOSTS=""
+LOCAL_ASSETS="${AOS_ORACLE_ASSETS:-}"
+WORK=""
+COSIGN=""
+STARTED_DAEMON=0
+RELEASE_STAGE=""
+PLUGIN_SNAPSHOT=""
+PLUGIN_BLAKE3=""
+ASSET_SOURCE="release"
+B3SUM=""
+INSTALL_LOCK=""
+LOCK_HELD=0
+PLUGIN_STAGE=""
+RECEIPT_STAGE=""
 
+say() { printf '%s\n' "$*"; }
+die() { say "aos-oracles: $*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
-say()  { printf '%s\n' "$*"; }
-
-# Run a subcommand quietly; pass its output through under --verbose.
-# stdin is /dev/null: subcommands are non-interactive and must never eat
-# terminal input — the host-selection prompt is the only /dev/tty reader.
-q() { if [ "$VERBOSE" -eq 1 ]; then "$@" </dev/null; else "$@" </dev/null >/dev/null 2>&1; fi; }
-
-# --- status bar: box spinner + elapsed rectangle ----------------------------
-spin_start() {
-  if [ "$SPIN_TTY" -eq 0 ] || [ "$VERBOSE" -eq 1 ]; then return 0; fi
-  _label="$1"
-  (
-    start="$(date +%s)"
-    i=0
-    while :; do
-      now="$(date +%s)"
-      el=$((now - start))
-      filled=$((el / 3))
-      [ "$filled" -gt 10 ] && filled=10
-      bar=""
-      j=0
-      while [ "$j" -lt 10 ]; do
-        if [ "$j" -lt "$filled" ]; then bar="${bar}▮"; else bar="${bar}▯"; fi
-        j=$((j + 1))
-      done
-      case "$i" in 0) f="◰" ;; 1) f="◳" ;; 2) f="◲" ;; *) f="◱" ;; esac
-      printf '\r\033[K%s %s %s %ss' "$f" "$_label" "$bar" "$el"
-      i=$(((i + 1) % 4))
-      sleep 0.2 2>/dev/null || sleep 1
-    done
-  ) &
-  SPIN_PID=$!
-}
-
-spin_stop() {
-  if [ -z "$SPIN_PID" ]; then return 0; fi
-  kill "$SPIN_PID" 2>/dev/null || true
-  wait "$SPIN_PID" 2>/dev/null || true
-  SPIN_PID=""
-  [ "$SPIN_TTY" -eq 1 ] && printf '\r\033[K'
-  return 0
-}
-
-ok()   { spin_stop; say "✓ $*"; }
-fail() { spin_stop; say "✗ $*"; FAILED=$((FAILED + 1)); }
-warn() { spin_stop; say "! $*"; }
-die()  { spin_stop; say "✗ $*" >&2; exit 1; }
 
 cleanup() {
-  spin_stop
-  if [ -n "$CLEAN_TMP" ]; then rm -rf "$CLEAN_TMP" 2>/dev/null || true; fi
+  if [ "$STARTED_DAEMON" -eq 1 ] && have aos; then
+    aos --principal default stop >/dev/null 2>&1 || true
+  fi
+  if [ "$LOCK_HELD" -eq 1 ] && [ -n "$INSTALL_LOCK" ]; then
+    rm -rf "$INSTALL_LOCK"
+    LOCK_HELD=0
+  fi
+  [ -z "$PLUGIN_STAGE" ] || rm -rf "$PLUGIN_STAGE"
+  [ -z "$RECEIPT_STAGE" ] || rm -rf "$RECEIPT_STAGE"
+  [ -z "$WORK" ] || rm -rf "$WORK"
 }
+
+on_signal() {
+  code=$1
+  trap - EXIT HUP INT TERM
+  cleanup
+  exit "$code"
+}
+
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'on_signal 129' HUP
+trap 'on_signal 130' INT
+trap 'on_signal 143' TERM
 
 usage() {
   cat <<'EOF'
-curl -fsSL https://astridos.org/install.sh | sh
+Usage: install.sh [options]
 
-One command: CLI, base home, plugins + capsules for hosts on this machine.
-Detected hosts are listed first and wired after one Enter (names pick a
-subset, n skips). Re-run any time to upgrade. Flags go after `sh -s --`:
-
-  curl -fsSL https://astridos.org/install.sh | sh -s -- --host claude --verbose
-
-  --host NAME   only this host (claude|grok|codex), repeatable — no prompt
-  --all         every host — no prompt
-  --yes, -y     wire all detected hosts without asking
-  --base-only   skip host plugins/capsules
-  --skip-init   skip base-home init
-  --no-brew     never use Homebrew
-  --bin-root D  use astrid from D
-  --verbose     show subcommand output (disables the status bar)
+  --host HOST       install claude, codex, or grok (repeatable)
+  --all             install every supported host
+  --yes, -y         non-interactive; fresh CE profiles need OPENAI_API_KEY
+  --oracle-version V exact signed oracle pack version (default: 0.2.0)
+  --aos-channel C   install/follow the AOS stable, dev, or nightly channel
+  --aos-version V   install an exact AOS calendar-semver release
+  --local-assets D  use locally built capsules and pack manifests for testing
+  --offline         initialize CE without update-network access
+  --no-migrate-prompt
+                    do not offer the optional Astrid state-import prompt
+  --claude-auth M   api_key or subscription (non-interactive Claude setup)
+  --claude-mode M   headless or repl (non-interactive Claude setup)
+  --no-install-aos  fail instead of invoking the canonical AOS installer
   -h, --help
 EOF
 }
@@ -120,438 +86,605 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --host)
       shift
-      h="${1:-}"
-      case "$h" in
-        claude|grok|codex) REQUESTED_HOSTS="${REQUESTED_HOSTS} ${h}" ;;
-        *) die "unknown host '$h' (want claude|grok|codex)" ;;
+      case "${1:-}" in
+        claude|codex|grok) REQUESTED_HOSTS="$REQUESTED_HOSTS ${1}" ;;
+        *) die "unknown host '${1:-}'" ;;
       esac
       ;;
     --all) ALL_HOSTS=1 ;;
-    --base-only) BASE_ONLY=1 ;;
-    --skip-init) SKIP_INIT=1 ;;
-    --no-brew) NO_BREW=1 ;;
-    --bin-root)
-      shift
-      BIN_ROOT="${1:-}"
-      [ -n "$BIN_ROOT" ] || die "--bin-root needs a path"
-      ;;
-    --verbose|-v) VERBOSE=1 ;;
     --yes|-y) ASSUME_YES=1 ;;
-    --upgrade) ;; # accepted for compat
+    --oracle-version)
+      shift
+      ORACLES_VERSION="${1:-}"
+      ;;
+    --aos-channel)
+      shift
+      AOS_CHANNEL="${1:-}"
+      ;;
+    --aos-version)
+      shift
+      AOS_VERSION="${1:-}"
+      ;;
+    --local-assets)
+      shift
+      LOCAL_ASSETS="${1:-}"
+      ;;
+    --offline) OFFLINE=1 ;;
+    --no-migrate-prompt) NO_MIGRATE_PROMPT=1 ;;
+    --claude-auth)
+      shift
+      CLAUDE_AUTH_MODE="${1:-}"
+      ;;
+    --claude-mode)
+      shift
+      CLAUDE_INTERACTION_MODE="${1:-}"
+      ;;
+    --no-install-aos) NO_INSTALL_AOS=1 ;;
     -h|--help) usage; exit 0 ;;
-    *) die "unknown argument: $1 (try --help)" ;;
+    *) die "unknown argument '$1'" ;;
   esac
   shift
 done
 
-if [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] && have gh; then
-  _tok="$(gh auth token 2>/dev/null || true)"
-  [ -n "$_tok" ] && export GH_TOKEN="$_tok"
+printf '%s\n' "$ORACLES_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || die "invalid oracle version '$ORACLES_VERSION'"
+[ -z "$AOS_CHANNEL" ] || [ -z "$AOS_VERSION" ] \
+  || die "--aos-channel and --aos-version are mutually exclusive"
+case "$AOS_CHANNEL" in
+  ""|stable|dev|nightly) ;;
+  *) die "invalid AOS channel '$AOS_CHANNEL'" ;;
+esac
+if [ -n "$AOS_VERSION" ]; then
+  printf '%s\n' "$AOS_VERSION" \
+    | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    || die "invalid AOS version '$AOS_VERSION'"
+fi
+case "$CLAUDE_AUTH_MODE" in
+  api_key|subscription) ;;
+  *) die "invalid Claude auth mode '$CLAUDE_AUTH_MODE'" ;;
+esac
+case "$CLAUDE_INTERACTION_MODE" in
+  headless|repl) ;;
+  *) die "invalid Claude interaction mode '$CLAUDE_INTERACTION_MODE'" ;;
+esac
+if [ "$CLAUDE_INTERACTION_MODE" = headless ] && [ "$CLAUDE_AUTH_MODE" = subscription ]; then
+  die "Claude subscription authentication requires --claude-mode repl; headless mode requires --claude-auth api_key"
 fi
 
-has_pair() { [ -n "$1" ] && [ -x "$1/astrid" ] && [ -x "$1/astrid-daemon" ]; }
+if [ -n "$LOCAL_ASSETS" ]; then
+  [ -d "$LOCAL_ASSETS" ] || die "local asset directory not found: $LOCAL_ASSETS"
+  LOCAL_ASSETS=$(cd -- "$LOCAL_ASSETS" && pwd -P)
+fi
 
-cli_version() { "$1" --version 2>/dev/null | head -n1 | awk '{ print $NF }'; }
-
-platform_target() {
-  os="$(uname -s 2>/dev/null || echo unknown)"
-  arch="$(uname -m 2>/dev/null || echo unknown)"
-  case "${os}/${arch}" in
-    Darwin/arm64|Darwin/aarch64) printf 'aarch64-apple-darwin\n' ;;
-    Darwin/x86_64)               printf 'x86_64-apple-darwin\n' ;;
-    Linux/x86_64|Linux/amd64)    printf 'x86_64-unknown-linux-gnu\n' ;;
-    Linux/aarch64|Linux/arm64)   printf 'aarch64-unknown-linux-gnu\n' ;;
+platform() {
+  os=$(uname -s)
+  arch=$(uname -m)
+  case "$os/$arch" in
+    Darwin/arm64|Darwin/aarch64) printf 'darwin-arm64\n' ;;
+    Darwin/x86_64) printf 'darwin-amd64\n' ;;
+    Linux/aarch64|Linux/arm64) printf 'linux-arm64\n' ;;
+    Linux/x86_64|Linux/amd64) printf 'linux-amd64\n' ;;
     *) return 1 ;;
   esac
 }
 
 sha256_file() {
-  if have sha256sum; then sha256sum "$1" | awk '{ print $1 }'
-  elif have shasum; then shasum -a 256 "$1" | awk '{ print $1 }'
+  if have sha256sum; then sha256sum "$1" | awk '{print $1}'
+  elif have shasum; then shasum -a 256 "$1" | awk '{print $1}'
   else return 1
   fi
 }
 
-# Install from GitHub Releases. Never exits: returns 1 so brew can back it up.
-install_from_github() {
-  target="$(platform_target)" || { warn "unsupported platform $(uname -s 2>/dev/null)/$(uname -m 2>/dev/null)"; return 1; }
-  have curl || { warn "curl required for GitHub releases"; return 1; }
-  tmp="$(mktemp -d 2>/dev/null || mktemp -d -t astrid-install)" || { warn "mktemp failed"; return 1; }
-  CLEAN_TMP="$tmp"
-
-  auth="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-  if [ -n "${ASTRID_VERSION:-}" ]; then
-    tag="v${ASTRID_VERSION#v}"
-  else
-    api="https://api.github.com/repos/${ASTRID_RELEASE_REPO}/releases/latest"
-    meta="$(curl -fsSL --max-time 30 ${auth:+-H "Authorization: Bearer ${auth}"} "$api")" \
-      || { warn "could not query GitHub releases"; return 1; }
-    tag="$(printf '%s' "$meta" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
-    [ -n "$tag" ] || { warn "latest release has no tag"; return 1; }
+ensure_b3sum() {
+  if have b3sum; then
+    B3SUM=$(command -v b3sum)
+    return
   fi
-  version="${tag#v}"
-  asset="astrid-${version}-${target}.tar.gz"
-  base="https://github.com/${ASTRID_RELEASE_REPO}/releases/download/${tag}"
-
-  curl -fsSL --max-time 120 -o "$tmp/$asset" "${base}/${asset}" || { warn "download failed: $asset"; return 1; }
-  curl -fsSL --max-time 30 -o "$tmp/SHA256SUMS.txt" "${base}/SHA256SUMS.txt" || { warn "release has no SHA256SUMS.txt"; return 1; }
-  expected="$(awk -v a="$asset" '$2 == a || $2 == "./"a { print $1; exit }' "$tmp/SHA256SUMS.txt")"
-  [ -n "$expected" ] || { warn "no checksum for $asset"; return 1; }
-  actual="$(sha256_file "$tmp/$asset")" || { warn "need sha256sum or shasum"; return 1; }
-  [ "$expected" = "$actual" ] || { warn "checksum mismatch for $asset"; return 1; }
-
-  mkdir -p "$ASTRID_MANAGED_BIN" || { warn "cannot create $ASTRID_MANAGED_BIN"; return 1; }
-  tar -xzf "$tmp/$asset" -C "$tmp" || { warn "extract failed"; return 1; }
-  found=""
-  for d in "$tmp"/* "$tmp"; do
-    [ -d "$d" ] || continue
-    if [ -x "$d/astrid" ] && [ -x "$d/astrid-daemon" ]; then found="$d"; break; fi
-  done
-  [ -n "$found" ] || { warn "archive missing astrid + astrid-daemon"; return 1; }
-  for b in astrid astrid-daemon astrid-build astrid-emit; do
-    if [ -x "$found/$b" ]; then
-      cp -f "$found/$b" "$ASTRID_MANAGED_BIN/$b" || { warn "cannot write $ASTRID_MANAGED_BIN/$b"; return 1; }
-      chmod 755 "$ASTRID_MANAGED_BIN/$b" 2>/dev/null || true
-    fi
-  done
-  export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
-  ASTRID="$ASTRID_MANAGED_BIN/astrid"
-  export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
-
-  case "$(uname -s 2>/dev/null)" in Darwin) path_rc="$HOME/.zprofile" ;; *) path_rc="$HOME/.profile" ;; esac
-  if ! grep -qsF "$ASTRID_MANAGED_BIN" "$path_rc"; then
-    printf '\n# Astrid CLI\nexport PATH="%s:$PATH"\n' "$ASTRID_MANAGED_BIN" >> "$path_rc" 2>/dev/null || true
-  fi
-  rm -rf "$tmp" 2>/dev/null || true
-  CLEAN_TMP=""
-  return 0
+  die "b3sum is required to verify signed oracle release checksums"
 }
 
-ensure_cli() {
-  spin_start "CLI"
-  if [ -n "$BIN_ROOT" ]; then
-    has_pair "$BIN_ROOT" || die "--bin-root missing astrid + astrid-daemon: $BIN_ROOT"
-    ASTRID="$BIN_ROOT/astrid"
-    export ASTRID_BIN_ROOT="$BIN_ROOT"
-    ok "CLI $(cli_version "$ASTRID") (--bin-root)"
-    return 0
-  fi
-  if [ -n "${ASTRID_BIN:-}" ]; then
-    _dir="$(dirname "$ASTRID_BIN")"
-    has_pair "$_dir" || die "ASTRID_BIN dir missing astrid + astrid-daemon: $_dir"
-    ASTRID="$ASTRID_BIN"
-    export ASTRID_BIN_ROOT="$_dir"
-    ok "CLI $(cli_version "$ASTRID") (ASTRID_BIN)"
-    return 0
-  fi
-
-  if has_pair "$ASTRID_MANAGED_BIN"; then
-    export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
-    ASTRID="$ASTRID_MANAGED_BIN/astrid"
-    export ASTRID_BIN_ROOT="$ASTRID_MANAGED_BIN"
-  elif have astrid; then
-    ASTRID="$(command -v astrid)"
-  fi
-
-  if [ -n "$ASTRID" ] && [ -x "$ASTRID" ]; then
-    before="$(cli_version "$ASTRID")"
-    if q "$ASTRID" update -y; then
-      if has_pair "$ASTRID_MANAGED_BIN"; then
-        export PATH="${ASTRID_MANAGED_BIN}:${PATH}"
-        ASTRID="$ASTRID_MANAGED_BIN/astrid"
-      elif have astrid; then
-        ASTRID="$(command -v astrid)"
-      fi
-    fi
-    after="$(cli_version "$ASTRID")"
-    if [ -n "$before" ] && [ -n "$after" ] && [ "$before" != "$after" ]; then
-      ok "CLI ${after} (updated from ${before})"
-    else
-      ok "CLI ${after:-unknown} (up to date)"
-    fi
-    return 0
-  fi
-
-  if install_from_github; then
-    ok "CLI $(cli_version "$ASTRID") (installed)"
-    return 0
-  fi
-  if [ "$NO_BREW" -eq 0 ] && have brew; then
-    spin_start "CLI (brew)"
-    q brew tap "$BREW_TAP" || true
-    q brew install "${BREW_TAP}/${BREW_FORMULA}" || q brew install "$BREW_FORMULA" \
-      || die "Homebrew install failed"
-    ASTRID="$(command -v astrid)" || die "no astrid on PATH after brew"
-    ok "CLI $(cli_version "$ASTRID") (brew)"
-    return 0
-  fi
-  die "could not install Astrid (GitHub releases failed; brew unavailable)"
+blake3_file() {
+  "$B3SUM" "$1" | awk '{print $1}'
 }
 
-ensure_base() {
-  if [ "$SKIP_INIT" -eq 1 ]; then return 0; fi
-  spin_start "base home"
-  home="${ASTRID_HOME:-$HOME/.astrid}"
-  if [ -d "$home/home/default" ] || [ -f "$home/config.toml" ]; then
-    ok "base home"
-    return 0
+acquire_install_lock() {
+  lock_root="$AOS_HOME_DIR/extensions/oracles"
+  INSTALL_LOCK="$lock_root/.install.lock"
+  mkdir -p "$lock_root"
+  if ! mkdir "$INSTALL_LOCK" 2>/dev/null; then
+    owner=""
+    [ ! -r "$INSTALL_LOCK/pid" ] || owner=$(cat "$INSTALL_LOCK/pid" 2>/dev/null || true)
+    if [ -n "$owner" ]; then
+      die "another oracle installation is active for $AOS_HOME_DIR (pid $owner)"
+    fi
+    die "another oracle installation is active for $AOS_HOME_DIR"
   fi
-  if q "$ASTRID" init -y; then
-    ok "base home (initialized)"
-  else
-    fail "base home (astrid init) — run: astrid doctor"
+  LOCK_HELD=1
+  printf '%s\n' "$$" > "$INSTALL_LOCK/pid"
+}
+
+atomic_symlink() {
+  target=$1
+  destination=$2
+  allow_regular=${3:-0}
+  parent=${destination%/*}
+  name=${destination##*/}
+  temporary="$parent/.$name.$$"
+  if [ -d "$destination" ] && [ ! -L "$destination" ]; then
+    die "$destination is a directory"
+  fi
+  if [ -e "$destination" ] && [ ! -L "$destination" ] && [ "$allow_regular" -ne 1 ]; then
+    die "$destination is not a symlink"
+  fi
+  rm -f "$temporary"
+  ln -s "$target" "$temporary"
+  case "$(uname -s)" in
+    Darwin) mv -f -h "$temporary" "$destination" ;;
+    Linux) mv -fT "$temporary" "$destination" ;;
+    *) rm -f "$temporary"; die "unsupported platform for atomic symlink replacement" ;;
+  esac
+}
+
+calendar_version_at_least() {
+  actual=$1
+  floor=$2
+  awk -v actual="$actual" -v floor="$floor" 'BEGIN {
+    split(actual, a, ".")
+    split(floor, f, ".")
+    ok = (a[1] > f[1]) ||
+         (a[1] == f[1] && a[2] > f[2]) ||
+         (a[1] == f[1] && a[2] == f[2] && a[3] >= f[3])
+    exit !ok
+  }'
+}
+
+ensure_aos() {
+  if have aos && [ -z "$AOS_CHANNEL" ] && [ -z "$AOS_VERSION" ]; then return 0; fi
+  [ "$NO_INSTALL_AOS" -eq 0 ] || die "Unicity AOS is required; run $AOS_INSTALL_URL"
+  have curl || die "curl is required to install Unicity AOS"
+  WORK=${WORK:-$(mktemp -d 2>/dev/null || mktemp -d -t aos-oracles)}
+  installer="$WORK/aos-install.sh"
+  curl -fsSL --max-time 60 "$AOS_INSTALL_URL" -o "$installer" \
+    || die "could not download the canonical AOS installer"
+  chmod 700 "$installer"
+  set -- "$installer"
+  [ "$ASSUME_YES" -eq 0 ] || set -- "$@" --yes
+  if [ "$NO_MIGRATE_PROMPT" -eq 1 ] || [ "$ASSUME_YES" -eq 1 ]; then
+    set -- "$@" --no-migrate-prompt
+  fi
+  [ -z "$AOS_CHANNEL" ] || set -- "$@" --channel "$AOS_CHANNEL"
+  [ -z "$AOS_VERSION" ] || set -- "$@" --version "$AOS_VERSION"
+  sh "$@"
+  if [ -x "$AOS_HOME_DIR/bin/aos" ]; then
+    PATH="$AOS_HOME_DIR/bin:$PATH"
+    export PATH
+  fi
+  have aos || die "AOS installed but 'aos' is not on PATH; start a new shell and retry"
+  if [ -n "$AOS_VERSION" ]; then
+    installed=$(aos --version | awk 'NF { value = $NF } END { print value }')
+    [ "$installed" = "$AOS_VERSION" ] \
+      || die "requested Unicity AOS $AOS_VERSION but installer selected $installed"
   fi
 }
 
 detect_hosts() {
-  hosts=""
-  if [ "$BASE_ONLY" -eq 1 ]; then printf '%s' ""; return 0; fi
-  if [ "$ALL_HOSTS" -eq 1 ]; then printf '%s' "claude grok codex"; return 0; fi
-  if [ -n "$REQUESTED_HOSTS" ]; then printf '%s' "$REQUESTED_HOSTS"; return 0; fi
-  # A host counts only when its binary actually resolves — a stale dotdir
-  # must not pull plugins and capsules onto a machine that can't run them.
-  if have claude || [ -x "${HOME}/.claude/local/claude" ]; then hosts="${hosts} claude"; fi
-  if have grok; then hosts="${hosts} grok"; fi
-  if have codex; then hosts="${hosts} codex"; fi
-  printf '%s' "$hosts"
+  if [ "$ALL_HOSTS" -eq 1 ]; then printf 'claude codex grok\n'; return; fi
+  if [ -n "$REQUESTED_HOSTS" ]; then printf '%s\n' "$REQUESTED_HOSTS"; return; fi
+  found=""
+  have claude && found="$found claude"
+  have codex && found="$found codex"
+  have grok && found="$found grok"
+  printf '%s\n' "$found"
 }
 
-# One Enter of consent before writing into other apps' configs (rustup-style):
-# Enter wires every detected host, names pick a subset, n skips. Prompts only
-# on a real terminal in pure-detection mode; flags, -y, and CI never block.
-choose_hosts() {
-  if [ "$#" -eq 0 ]; then printf ''; return 0; fi
-  if [ "$ASSUME_YES" -eq 1 ] || [ -n "$REQUESTED_HOSTS" ] || [ "$ALL_HOSTS" -eq 1 ]; then
-    printf '%s' "$*"
-    return 0
+run_init() {
+  target="${1:-}"
+  set -- aos --principal default init
+  [ -z "$target" ] || set -- "$@" --target-principal "$target"
+  [ "$OFFLINE" -eq 0 ] || set -- "$@" --offline
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    set -- "$@" --yes
+    if [ -n "${OPENAI_API_KEY:-}" ]; then
+      ASTRID_VAR_OPENAI_API_KEY="$OPENAI_API_KEY" "$@"
+    else
+      "$@"
+    fi
+  elif [ -r /dev/tty ]; then
+    "$@" </dev/tty
+  else
+    "$@"
   fi
-  if [ "$SPIN_TTY" -eq 0 ] || [ ! -r /dev/tty ]; then printf '%s' "$*"; return 0; fi
-  labels=""
-  for h in "$@"; do labels="${labels}${labels:+, }$(pretty "$h")"; done
-  printf '? hosts detected: %s\n  Enter = wire all · names to pick (e.g. claude codex) · n = skip: ' "$labels" > /dev/tty
-  IFS= read -r ans < /dev/tty || ans=""
-  case "$ans" in
-    "") printf '%s' "$*" ;;
-    n|N|no|NO|none) printf '' ;;
-    *)
-      picked=""
-      # shellcheck disable=SC2086
-      for tok in $ans; do
-        case "$tok" in
-          claude|grok|codex) picked="${picked} ${tok}" ;;
-          *) printf '! ignoring unknown host: %s\n' "$tok" > /dev/tty ;;
-        esac
-      done
-      printf '%s' "$picked"
-      ;;
-  esac
 }
 
-distro_url() { printf '%s/%s.toml\n' "$DISTRO_BASE" "$1"; }
+daemon_is_live() {
+  aos status --json >/dev/null 2>&1
+}
+
+ensure_base() {
+  if ! daemon_is_live; then STARTED_DAEMON=1; fi
+  run_init ""
+}
 
 principal_for() {
   case "$1" in
     claude) printf 'claude-code\n' ;;
-    grok)   printf 'grok-code\n' ;;
-    codex)  printf 'codex-code\n' ;;
+    codex) printf 'codex-code\n' ;;
+    grok) printf 'grok-code\n' ;;
   esac
 }
 
-pretty() {
+capsules_for() {
   case "$1" in
-    claude) printf 'Claude Code\n' ;;
-    grok)   printf 'Grok Build\n' ;;
-    codex)  printf 'Codex\n' ;;
+    claude) printf '%s\n' astrid-mcp claude-install claude-runner ;;
+    codex) printf '%s\n' astrid-mcp codex-install codex-runner ;;
+    grok) printf '%s\n' astrid-mcp ;;
   esac
 }
 
-# --- plugins: detect, then update-or-install (verbs verified per host) -------
-
-claude_bin() {
-  if have claude; then command -v claude
-  elif [ -x "${HOME}/.claude/local/claude" ]; then printf '%s\n' "${HOME}/.claude/local/claude"
-  else printf ''
+ensure_principal() {
+  host=$1
+  principal=$2
+  if ! aos --principal default group show "$host" >/dev/null 2>&1; then
+    aos --principal default group create "$host" \
+      --caps 'self:*,delegate:self:*' \
+      --description "Unicity AOS $host host family" >/dev/null
   fi
+  if ! aos --principal default agent show "$principal" >/dev/null 2>&1; then
+    aos --principal default agent create "$principal" --group "$host" \
+      --inherit-from default --yes >/dev/null
+  fi
+  run_init "$principal"
 }
 
-# Version of an exactly-matching installed claude plugin id ('' if absent).
-claude_plugin_version() {
-  _cbin="$1"
-  "$_cbin" plugin list 2>/dev/null | awk -v id="$2" '
-    f && /Version:/ { print $2; exit }
-    $0 ~ (id "($|[^-A-Za-z0-9_])") { f = 1 }
-  '
+ensure_cosign() {
+  if have cosign; then COSIGN=$(command -v cosign); return; fi
+  have curl || die "curl is required to fetch the Sigstore verifier"
+  WORK=${WORK:-$(mktemp -d 2>/dev/null || mktemp -d -t aos-oracles)}
+  target=$(platform) || die "unsupported platform for Sigstore verification"
+  case "$target" in
+    darwin-arm64) digest=94b42a9e697be95675f6160ab031a9a5f1ec1e646d6f648d7b2f5cd59ececbc5 ;;
+    darwin-amd64) digest=14d2678dfbfde18798151e86fbd91ebdadbb7424b18412a42a155dd8a2df4c7a ;;
+    linux-arm64) digest=2ec865872e331c32fd12b08dae15332d3f92c0aa029219589684a4903ca85d11 ;;
+    linux-amd64) digest=ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc ;;
+  esac
+  COSIGN="$WORK/cosign"
+  curl -fsSL --max-time 120 \
+    "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-$target" \
+    -o "$COSIGN" || die "could not download the Sigstore verifier"
+  [ "$(sha256_file "$COSIGN")" = "$digest" ] || die "Sigstore verifier checksum mismatch"
+  chmod 700 "$COSIGN"
 }
 
-grok_plugin_installed() {
-  grok plugin list 2>/dev/null | grep -F ': astrid [' | grep -qF '(astrid-oracles)'
+verify_release_asset() {
+  asset=$1
+  bundle=$2
+  identity="https://github.com/$ORACLES_REPO/.github/workflows/release.yml@refs/tags/v$ORACLES_VERSION"
+  "$COSIGN" verify-blob --bundle "$bundle" \
+    --certificate-identity "$identity" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+    --use-signed-timestamps "$asset" >/dev/null \
+    || die "Sigstore verification failed for $(basename "$asset")"
 }
 
-codex_plugin_version() {
-  codex plugin list 2>/dev/null | grep -F 'astrid@astrid-oracles' | grep -v 'not installed' \
-    | grep 'installed' | head -n1 \
-    | awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^[0-9][0-9.]*$/) { print $i; exit } }'
+download_verified() {
+  name=$1
+  out=$2
+  base="https://github.com/$ORACLES_REPO/releases/download/v$ORACLES_VERSION"
+  curl -fsSL --max-time 120 "$base/$name" -o "$out" \
+    || die "could not download $name from v$ORACLES_VERSION"
+  curl -fsSL --max-time 60 "$base/$name.sigstore.json" -o "$out.sigstore.json" \
+    || die "could not download the Sigstore bundle for $name"
+  verify_release_asset "$out" "$out.sigstore.json"
+}
+
+validate_checksum_manifest() {
+  manifest=$1
+  [ -s "$manifest" ] || die "release checksum manifest is empty"
+  if grep -Ev '^[0-9a-f]{64}  [A-Za-z0-9][A-Za-z0-9._-]*$' "$manifest" >/dev/null; then
+    die "release checksum manifest has an invalid entry"
+  fi
+  names="$WORK/checksum-names.txt"
+  awk '{print $2}' "$manifest" | LC_ALL=C sort > "$names"
+  if [ -n "$(uniq -d "$names")" ]; then
+    die "release checksum manifest contains duplicate asset names"
+  fi
+  while IFS= read -r name; do
+    case "$name" in
+      astrid-mcp.capsule|\
+      claude-install.capsule|claude-pack.toml|claude-runner.capsule|\
+      codex-install.capsule|codex-pack.toml|codex-runner.capsule|\
+      grok-pack.toml|aos-oracle-plugins.tar.gz|runtime-compatibility.toml) ;;
+      *) die "release checksum manifest names an unknown asset: $name" ;;
+    esac
+  done < "$names"
+}
+
+expected_blake3() {
+  name=$1
+  awk -v name="$name" '$2 == name { print $1; found = 1 } END { exit !found }' \
+    "$RELEASE_STAGE/BLAKE3SUMS.txt"
+}
+
+verify_blake3() {
+  path=$1
+  name=$2
+  expected=$(expected_blake3 "$name") \
+    || die "release checksum manifest has no digest for $name"
+  actual=$(blake3_file "$path")
+  printf '%s\n' "$actual" | grep -Eq '^[0-9a-f]{64}$' \
+    || die "b3sum returned an invalid digest for $name"
+  [ "$actual" = "$expected" ] || die "BLAKE3 checksum mismatch for $name"
+}
+
+validate_plugin_archive() {
+  archive=$1
+  members="$WORK/plugin-members.txt"
+  entries="$WORK/plugin-entries.txt"
+  tar -tzf "$archive" > "$members" || die "could not inspect the plugin snapshot"
+  tar -tvzf "$archive" > "$entries" || die "could not inspect plugin snapshot entry types"
+  if grep -Ev '^[-d]' "$entries" >/dev/null; then
+    die "plugin snapshot contains a link or special entry"
+  fi
+  while IFS= read -r member; do
+    case "$member" in
+      ""|*[!A-Za-z0-9_./@+-]*) die "plugin snapshot contains an unsafe path: $member" ;;
+      /*|../*|*/../*|*/..) die "plugin snapshot contains an unsafe path: $member" ;;
+    esac
+  done < "$members"
+}
+
+stage_release_metadata() {
+  WORK=${WORK:-$(mktemp -d 2>/dev/null || mktemp -d -t aos-oracles)}
+  RELEASE_STAGE="$WORK/release"
+  mkdir -p "$RELEASE_STAGE"
+  if [ -n "$LOCAL_ASSETS" ]; then
+    ASSET_SOURCE=local
+    for asset in aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml; do
+      cp "$LOCAL_ASSETS/$asset" "$RELEASE_STAGE/$asset" \
+        || die "local release asset is missing: $asset"
+    done
+  else
+    ensure_cosign
+    for asset in aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml; do
+      download_verified "$asset" "$RELEASE_STAGE/$asset"
+    done
+  fi
+  validate_checksum_manifest "$RELEASE_STAGE/BLAKE3SUMS.txt"
+  verify_blake3 "$RELEASE_STAGE/aos-oracle-plugins.tar.gz" aos-oracle-plugins.tar.gz
+  verify_blake3 "$RELEASE_STAGE/runtime-compatibility.toml" runtime-compatibility.toml
+  PLUGIN_BLAKE3=$(expected_blake3 aos-oracle-plugins.tar.gz)
+  validate_plugin_archive "$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
+}
+
+prepare_plugin_snapshot() {
+  [ -z "$PLUGIN_SNAPSHOT" ] || return 0
+  archive="$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
+  plugins_root="$AOS_HOME_DIR/extensions/oracles/plugins"
+  destination="$plugins_root/$ORACLES_VERSION"
+  stage="$plugins_root/.${ORACLES_VERSION}.tmp.$$"
+  PLUGIN_STAGE=$stage
+  mkdir -p "$plugins_root"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  tar -xzf "$archive" -C "$stage" || die "could not extract the plugin snapshot"
+  if find "$stage" ! -type f ! -type d -print -quit | grep . >/dev/null; then
+    die "plugin snapshot extracted a link or special entry"
+  fi
+  for required in \
+    .agents/plugins/marketplace.json \
+    .claude-plugin/marketplace.json \
+    .grok-plugin/marketplace.json \
+    plugins/claude/.claude-plugin/plugin.json \
+    plugins/grok/.grok-plugin/plugin.json \
+    plugins/unicity-aos/.codex-plugin/plugin.json
+  do
+    [ -f "$stage/$required" ] && [ ! -L "$stage/$required" ] \
+      || die "plugin snapshot is missing a regular $required"
+  done
+  if [ -e "$destination" ]; then
+    if find "$destination" ! -type f ! -type d -print -quit | grep . >/dev/null; then
+      die "installed plugin snapshot $ORACLES_VERSION contains a link or special entry"
+    fi
+    diff -qr "$stage" "$destination" >/dev/null \
+      || die "installed plugin snapshot $ORACLES_VERSION differs from the staged release"
+    rm -rf "$stage"
+  else
+    mv "$stage" "$destination" || die "could not activate the plugin snapshot"
+  fi
+  PLUGIN_STAGE=""
+  PLUGIN_SNAPSHOT="$destination"
+}
+
+validate_pack() {
+  host=$1
+  principal=$2
+  pack=$3
+  grep -Fqx "host = \"$host\"" "$pack" || die "pack host mismatch"
+  grep -Fqx "principal = \"$principal\"" "$pack" || die "pack principal mismatch"
+  grep -Fqx "version = \"$ORACLES_VERSION\"" "$pack" || die "pack version mismatch"
+  aos_floor=$(sed -n 's/^aos-version = ">=\([^"]*\)"$/\1/p' "$pack")
+  [ -n "$aos_floor" ] || die "signed pack has no valid AOS version floor"
+  printf '%s\n' "$aos_floor" \
+    | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    || die "signed pack has invalid AOS version floor '$aos_floor'"
+  installed_aos=$(aos --version | awk 'NF { value = $NF } END { print value }')
+  printf '%s\n' "$installed_aos" \
+    | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    || die "could not determine the installed Unicity AOS version"
+  calendar_version_at_least "$installed_aos" "$aos_floor" \
+    || die "Unicity AOS $installed_aos does not satisfy pack requirement >=$aos_floor"
+  actual=$(sed -n '/^\[\[capsule\]\]$/,/^$/s/^name = "\([^"]*\)"/\1/p' "$pack")
+  expected=$(capsules_for "$host")
+  [ "$actual" = "$expected" ] || die "signed $host pack capsule set is not the expected release set"
+}
+
+stage_pack() {
+  host=$1
+  WORK=${WORK:-$(mktemp -d 2>/dev/null || mktemp -d -t aos-oracles)}
+  stage="$WORK/$host"
+  mkdir -p "$stage"
+  if [ -n "$LOCAL_ASSETS" ]; then
+    cp "$LOCAL_ASSETS/$host.toml" "$stage/Pack.toml" \
+      || die "local $host pack manifest is missing"
+    for capsule in $(capsules_for "$host"); do
+      cp "$LOCAL_ASSETS/$capsule.capsule" "$stage/$capsule.capsule" \
+        || die "local capsule is missing: $capsule"
+    done
+  else
+    ensure_cosign
+    download_verified "$host-pack.toml" "$stage/Pack.toml"
+    for capsule in $(capsules_for "$host"); do
+      download_verified "$capsule.capsule" "$stage/$capsule.capsule"
+    done
+  fi
+  verify_blake3 "$stage/Pack.toml" "$host-pack.toml"
+  for capsule in $(capsules_for "$host"); do
+    verify_blake3 "$stage/$capsule.capsule" "$capsule.capsule"
+  done
+  STAGED_PACK=$stage
+}
+
+install_pack() {
+  host=$1
+  principal=$(principal_for "$host")
+  ensure_principal "$host" "$principal"
+  stage_pack "$host"
+  stage=$STAGED_PACK
+  validate_pack "$host" "$principal" "$stage/Pack.toml"
+
+  for capsule in $(capsules_for "$host"); do
+    if [ "$ASSUME_YES" -eq 1 ]; then
+      if [ "$host" = claude ] && [ "$capsule" = claude-runner ]; then
+        if [ "$CLAUDE_AUTH_MODE" = api_key ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+          die "ANTHROPIC_API_KEY is required for --yes --host claude with --claude-auth api_key"
+        fi
+        ASTRID_VAR_INTERACTION_MODE="$CLAUDE_INTERACTION_MODE" \
+          ASTRID_VAR_AUTH_MODE="$CLAUDE_AUTH_MODE" \
+          ASTRID_VAR_API_KEY="${ANTHROPIC_API_KEY:-}" \
+          aos --principal "$principal" capsule install \
+            "$stage/$capsule.capsule" --yes
+      else
+        aos --principal "$principal" capsule install "$stage/$capsule.capsule" --yes
+      fi
+    elif [ -r /dev/tty ]; then
+      aos --principal "$principal" capsule install "$stage/$capsule.capsule" </dev/tty
+    else
+      aos --principal "$principal" capsule install "$stage/$capsule.capsule"
+    fi
+  done
+
+  set -- aos --principal default agent modify "$principal"
+  for capsule in $(capsules_for "$host"); do
+    set -- "$@" --add-capsule "$capsule"
+  done
+  "$@" >/dev/null
+  say "✓ $host oracle capsules ready as $principal"
 }
 
 install_plugin() {
-  host="$1"
-  label="$(pretty "$host")"
-  spin_start "$label plugin"
+  host=$1
   case "$host" in
     claude)
-      cbin="$(claude_bin)"
-      if [ -z "$cbin" ]; then fail "$label plugin (no claude CLI)"; return 1; fi
-      q "$cbin" plugin marketplace add "$ORACLES_REPO" || true
-      q "$cbin" plugin marketplace update astrid-oracles || true
-      legacy="$(claude_plugin_version "$cbin" "astrid@astrid")"
-      if [ -n "$legacy" ]; then
-        q "$cbin" plugin uninstall astrid@astrid || true
-      fi
-      cur="$(claude_plugin_version "$cbin" "astrid@astrid-oracles")"
-      if [ -n "$cur" ]; then
-        q "$cbin" plugin update astrid@astrid-oracles || true
-        new="$(claude_plugin_version "$cbin" "astrid@astrid-oracles")"
-        if [ -n "$new" ] && [ "$new" != "$cur" ]; then
-          ok "$label plugin ${new} (updated from ${cur}${legacy:+; removed legacy astrid@astrid})"
-        else
-          ok "$label plugin ${cur} (up to date${legacy:+; removed legacy astrid@astrid})"
-        fi
-      else
-        if q "$cbin" plugin install astrid@astrid-oracles; then
-          new="$(claude_plugin_version "$cbin" "astrid@astrid-oracles")"
-          ok "$label plugin${new:+ ${new}} (installed${legacy:+; replaced legacy astrid@astrid})"
-        else
-          fail "$label plugin (claude plugin install astrid@astrid-oracles)"
-          return 1
-        fi
-      fi
-      ;;
-    grok)
-      if ! have grok; then fail "$label plugin (no grok CLI)"; return 1; fi
-      q grok plugin marketplace add "$ORACLES_REPO" || true
-      q grok plugin marketplace update || true
-      if grok_plugin_installed; then
-        gout="$(grok plugin update astrid </dev/null 2>&1)" || true
-        if [ "$VERBOSE" -eq 1 ]; then say "$gout"; fi
-        vers="$(printf '%s' "$gout" | sed -n 's/.*(\([^ ]*\) -> \([^)]*\)).*/\1 \2/p' | head -n1)"
-        vfrom="${vers%% *}"
-        vto="${vers##* }"
-        if [ -n "$vers" ] && [ "$vfrom" != "$vto" ]; then
-          ok "$label plugin ${vto} (updated from ${vfrom})"
-        else
-          ok "$label plugin${vto:+ ${vto}} (up to date)"
-        fi
-      else
-        # grok pins marketplace plugins by repo shorthand: astrid@owner/repo
-        if q grok plugin install "astrid@${ORACLES_REPO}" --trust; then
-          ok "$label plugin (installed)"
-        else
-          fail "$label plugin (grok plugin install astrid@${ORACLES_REPO})"
-          return 1
-        fi
-      fi
+      have claude || die "Claude Code is not installed"
+      claude plugin marketplace remove unicity-aos-oracles >/dev/null 2>&1 || true
+      claude plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
+      claude plugin install unicity-aos@unicity-aos-oracles >/dev/null
+      claude plugin uninstall astrid@astrid-oracles >/dev/null 2>&1 || true
       ;;
     codex)
-      if ! have codex; then fail "$label plugin (no codex CLI)"; return 1; fi
-      q codex plugin marketplace add "$ORACLES_REPO" || true
-      q codex plugin marketplace upgrade astrid-oracles || true
-      cur="$(codex_plugin_version)"
-      # `codex plugin add` is idempotent and doubles as the upgrade path.
-      if q codex plugin add astrid@astrid-oracles; then
-        new="$(codex_plugin_version)"
-        if [ -n "$cur" ] && [ -n "$new" ] && [ "$new" != "$cur" ]; then
-          ok "$label plugin ${new} (updated from ${cur})"
-        elif [ -n "$cur" ]; then
-          ok "$label plugin ${cur} (up to date)"
-        else
-          ok "$label plugin${new:+ ${new}} (installed)"
-        fi
+      have codex || die "Codex is not installed"
+      if codex plugin marketplace list 2>/dev/null \
+        | awk '$1 == "unicity-aos-oracles" { found = 1 } END { exit !found }'
+      then
+        codex plugin marketplace remove unicity-aos-oracles >/dev/null 2>&1 || true
+        codex plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
       else
-        if [ -n "$cur" ]; then
-          ok "$label plugin ${cur} (kept)"
-        else
-          fail "$label plugin (codex plugin add astrid@astrid-oracles)"
-          return 1
-        fi
+        codex plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
       fi
+      codex plugin add unicity-aos@unicity-aos-oracles >/dev/null
+      codex plugin remove astrid@astrid-oracles >/dev/null 2>&1 || true
+      ;;
+    grok)
+      have grok || die "Grok Build is not installed"
+      grok plugin install "$PLUGIN_SNAPSHOT/plugins/grok" --trust >/dev/null
+      grok plugin uninstall astrid >/dev/null 2>&1 || true
       ;;
   esac
+  say "✓ $host marketplace plugin installed"
 }
 
-principal_has_lock() {
-  _home="${ASTRID_HOME:-$HOME/.astrid}"
-  [ -f "$_home/home/$1/.config/distro.lock" ] || [ -f "$_home/home/$1/.config/Distro.lock" ]
-}
-
-install_capsules() {
-  host="$1"
-  p="$(principal_for "$host")"
-  d="$(distro_url "$host")"
-  label="$(pretty "$host")"
-  spin_start "$label capsules"
-
-  # Forward-compat: a newer CLI grants the target principal access to the
-  # capsules the distro installs (`astrid init --grant-capsules`). Feature-detect
-  # it so older CLIs keep their exact current behaviour (empty flag = no arg).
-  grant_flag=""
-  if "$ASTRID" init --help 2>/dev/null | grep -q -- --grant-capsules; then
-    grant_flag="--grant-capsules"
-  fi
-
-  # Seed default once if empty (daemon uplink); init is a no-op when lock fresh.
-  if ! principal_has_lock default; then
-    # shellcheck disable=SC2086 # grant_flag is one token or empty; must not quote
-    q "$ASTRID" init --distro "$d" $grant_flag -y || true
-  fi
-
-  had_lock=0
-  if principal_has_lock "$p"; then had_lock=1; fi
-  # shellcheck disable=SC2086 # grant_flag is one token or empty; must not quote
-  iout="$("$ASTRID" init --distro "$d" $grant_flag --principal "$p" -y </dev/null 2>&1)" && rc=0 || rc=$?
-  if [ "$VERBOSE" -eq 1 ]; then say "$iout"; fi
-  if [ "$rc" -eq 0 ]; then
-    if [ "$had_lock" -eq 1 ]; then
-      ok "$label capsules (up to date · $p)"
-    else
-      ok "$label capsules (installed · $p)"
+write_receipt() {
+  host=$1
+  principal=$2
+  pack_stage=$3
+  receipt_root="$AOS_HOME_DIR/extensions/oracles/$host"
+  releases="$receipt_root/releases"
+  destination="$releases/$ORACLES_VERSION"
+  stage="$receipt_root/.receipt-${ORACLES_VERSION}.$$"
+  RECEIPT_STAGE=$stage
+  mkdir -p "$releases"
+  rm -rf "$stage"
+  mkdir -p "$stage"
+  cp "$pack_stage/Pack.toml" "$stage/Pack.lock"
+  cp "$RELEASE_STAGE/BLAKE3SUMS.txt" "$stage/BLAKE3SUMS.txt"
+  cp "$RELEASE_STAGE/runtime-compatibility.toml" "$stage/runtime-compatibility.toml"
+  for bundle in \
+    "$pack_stage/Pack.toml.sigstore.json" \
+    "$pack_stage"/*.capsule.sigstore.json \
+    "$RELEASE_STAGE/BLAKE3SUMS.txt.sigstore.json" \
+    "$RELEASE_STAGE/runtime-compatibility.toml.sigstore.json" \
+    "$RELEASE_STAGE/aos-oracle-plugins.tar.gz.sigstore.json"
+  do
+    [ -f "$bundle" ] || continue
+    cp "$bundle" "$stage/$(basename "$bundle")"
+  done
+  {
+    printf 'schema-version = 1\n'
+    printf 'oracle-version = "%s"\n' "$ORACLES_VERSION"
+    printf 'host = "%s"\n' "$host"
+    printf 'principal = "%s"\n' "$principal"
+    printf 'source = "%s"\n' "$ASSET_SOURCE"
+    printf 'plugin-snapshot = "../../../plugins/%s"\n' "$ORACLES_VERSION"
+    printf 'plugin-blake3 = "%s"\n' "$PLUGIN_BLAKE3"
+  } > "$stage/Receipt.toml"
+  chmod 700 "$stage"
+  find "$stage" -type f -exec chmod 600 {} \;
+  if [ -e "$destination" ]; then
+    if find "$destination" ! -type f ! -type d -print -quit | grep . >/dev/null; then
+      die "installed $host receipt $ORACLES_VERSION contains a link or special entry"
     fi
+    diff -qr "$stage" "$destination" >/dev/null \
+      || die "installed $host receipt $ORACLES_VERSION differs from the staged release"
+    rm -rf "$stage"
   else
-    if principal_has_lock "$p"; then
-      ok "$label capsules (kept · $p)"
-    else
-      fail "$label capsules ($p) — need GH_TOKEN? re-run with --verbose"
-    fi
+    mv "$stage" "$destination" || die "could not commit the $host oracle receipt"
   fi
-}
+  RECEIPT_STAGE=""
 
-main() {
-  ensure_cli
-  ensure_base
-
-  hosts="$(detect_hosts)"
-  # shellcheck disable=SC2086
-  set -- $hosts
-
-  if [ "$#" -eq 0 ]; then
-    ok "hosts (none detected — base only)"
+  atomic_symlink "releases/$ORACLES_VERSION" "$receipt_root/current"
+  atomic_symlink current/Pack.lock "$receipt_root/Pack.lock" 1
+  if [ -f "$destination/Pack.toml.sigstore.json" ]; then
+    atomic_symlink current/Pack.toml.sigstore.json \
+      "$receipt_root/Pack.lock.sigstore.json" 1
   else
-    chosen="$(choose_hosts "$@")"
-    # shellcheck disable=SC2086
-    set -- $chosen
-    if [ "$#" -eq 0 ]; then
-      ok "hosts (skipped — base only)"
-    else
-      for h in "$@"; do
-        install_plugin "$h" || true
-        install_capsules "$h"
-      done
-    fi
+    rm -f "$receipt_root/Pack.lock.sigstore.json"
   fi
-
-  if [ "$FAILED" -gt 0 ]; then
-    say "— ${FAILED} step(s) failed · retry loudly: curl -fsSL https://astridos.org/install.sh | sh -s -- --verbose"
-    exit 1
-  fi
+  say "✓ $host oracle pack $ORACLES_VERSION committed"
 }
 
-main
+ensure_b3sum
+hosts=$(detect_hosts)
+[ -n "$(printf '%s' "$hosts" | tr -d ' ')" ] \
+  || die "no supported host detected; pass --host claude, --host codex, or --host grok"
+ensure_aos
+acquire_install_lock
+stage_release_metadata
+ensure_base
+for host in $hosts; do
+  install_pack "$host"
+  prepare_plugin_snapshot
+  install_plugin "$host"
+  write_receipt "$host" "$(principal_for "$host")" "$STAGED_PACK"
+done
+
+say "Unicity AOS oracle installation complete. Start a new host session to load the plugin."

@@ -147,7 +147,7 @@ fn canonical_topic_for_resolves_all_known_hooks() {
 #[test]
 fn envelope_parses_minimal_shape() {
     // Canonical envelope shape published by `astrid-emit` once the
-    // core PR for unicity-astrid/astrid#814 lands.
+    // core PR for astrid-runtime/astrid#814 lands.
     let raw = r#"{
         "hook": "before_tool_call",
         "payload": "eyJ0b29sIjoiZnMifQ==",

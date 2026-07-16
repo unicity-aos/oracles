@@ -1,0 +1,97 @@
+#!/usr/bin/env sh
+# Unicity AOS HUD for Claude Code.
+# stdin is Claude's JSON status payload; stdout is exactly one rendered line.
+set -eu
+
+input="$(cat 2>/dev/null || true)"
+
+AOS_PLUGIN_ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." 2>/dev/null && pwd -P)" \
+  || AOS_PLUGIN_ROOT="$(dirname "$(dirname "$0")")"
+export AOS_PLUGIN_ROOT
+# shellcheck source=lib-aos-resolve.sh
+. "$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"
+AOS=""
+aos_resolve_apply 2>/dev/null || AOS=""
+
+PRINCIPAL="${CLAUDE_PLUGIN_OPTION_PRINCIPAL:-${CLAUDE_PLUGIN_OPTION_principal:-${AOS_PRINCIPAL_ID:-claude-code}}}"
+case "$PRINCIPAL" in
+  ""|'${user_config.principal}') PRINCIPAL=claude-code ;;
+esac
+
+ESC=$(printf '\033')
+C_RESET="${ESC}[0m"; C_DIM="${ESC}[2m"; C_CY="${ESC}[36m"
+C_GN="${ESC}[32m"; C_YE="${ESC}[33m"; C_GY="${ESC}[90m"
+
+# A short product-owned cache avoids a CLI round trip on every UI refresh.
+AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
+CACHE_DIR="$AOS_HOME_DIR/cache/oracles"
+HEALTH_CACHE="$CACHE_DIR/hud-health"
+HEALTH_TTL=15
+NOW="$(date +%s 2>/dev/null || echo 0)"
+GATE=""
+
+if [ -r "$HEALTH_CACHE" ]; then
+  cached="$(cat "$HEALTH_CACHE" 2>/dev/null || true)"
+  c_ts="${cached%% *}"; c_state="${cached#* }"
+  if [ -n "$c_ts" ] && [ "$NOW" -gt 0 ] && [ "$c_ts" -eq "$c_ts" ] 2>/dev/null; then
+    age=$((NOW - c_ts))
+    [ "$age" -ge 0 ] && [ "$age" -lt "$HEALTH_TTL" ] && GATE="$c_state"
+  fi
+fi
+
+if [ -z "$GATE" ]; then
+  if [ -n "$AOS" ] && [ -x "$AOS" ]; then
+    st="$( { if command -v timeout >/dev/null 2>&1; then
+                timeout 2 "$AOS" status --json
+              else
+                "$AOS" status --json
+              fi; } 2>/dev/null || true )"
+    if ! printf '%s' "$st" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"'; then
+      GATE=down
+    elif printf '%s' "$st" | grep -Eq '"loaded_capsules"[[:space:]]*:[[:space:]]*\[[^]]*"astrid-mcp"'; then
+      GATE=up
+    else
+      GATE=degraded
+    fi
+  else
+    GATE=down
+  fi
+  mkdir -p "$CACHE_DIR" 2>/dev/null || true
+  chmod 700 "$CACHE_DIR" 2>/dev/null || true
+  printf '%s %s\n' "$NOW" "$GATE" > "$HEALTH_CACHE" 2>/dev/null || true
+fi
+
+case "$GATE" in
+  up) DOT="${C_GN}●${C_RESET}" ;;
+  degraded) DOT="${C_YE}◐${C_RESET}" ;;
+  *) DOT="${C_GY}○${C_RESET}" ;;
+esac
+
+MODEL=""; DIR=""; PCT=""; COST=""
+if [ -n "$input" ] && command -v jq >/dev/null 2>&1; then
+  MODEL="$(printf '%s' "$input" | jq -r '.model.display_name // .model.id // empty' 2>/dev/null || true)"
+  DIR="$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // empty' 2>/dev/null || true)"
+  PCT="$(printf '%s' "$input" | jq -r '.context_window.used_percentage // empty' 2>/dev/null | cut -d. -f1 || true)"
+  COST="$(printf '%s' "$input" | jq -r '.cost.total_cost_usd // empty' 2>/dev/null || true)"
+fi
+[ -n "$DIR" ] || DIR="$PWD"
+DIRBASE="$(basename "$DIR" 2>/dev/null || printf '%s' "$DIR")"
+BRANCH="$(git -C "$DIR" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+
+OUT="${C_CY}⬡ aos:${PRINCIPAL}${C_RESET} ${DOT}"
+[ -z "$MODEL" ] || OUT="${OUT} ${C_GY}│${C_RESET} ${C_DIM}${MODEL}${C_RESET}"
+OUT="${OUT} ${C_GY}│${C_RESET} ${DIRBASE}"
+[ -z "$BRANCH" ] || OUT="${OUT} ${C_DIM}⎇ ${BRANCH}${C_RESET}"
+if [ -n "$PCT" ] && [ "$PCT" -eq "$PCT" ] 2>/dev/null; then
+  bw=10; fill=$((PCT * bw / 100))
+  [ "$fill" -ge 0 ] || fill=0
+  [ "$fill" -le "$bw" ] || fill="$bw"
+  empty=$((bw - fill)); bar=""; n=0
+  while [ "$n" -lt "$fill" ]; do bar="${bar}▓"; n=$((n + 1)); done
+  n=0
+  while [ "$n" -lt "$empty" ]; do bar="${bar}░"; n=$((n + 1)); done
+  OUT="${OUT} ${C_GY}│${C_RESET} ${bar} ${PCT}%"
+fi
+[ -z "$COST" ] || OUT="${OUT} ${C_GY}│${C_RESET} ${C_YE}\$${COST}${C_RESET}"
+
+printf '%s\n' "$OUT"

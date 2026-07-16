@@ -1,7 +1,7 @@
 //! `handle_settings_set` business logic.
 //!
 //! Split out of `lib.rs` to keep that file under the 1000-line CI gate.
-//! The interceptor wrapper lives on the `Sage` impl in `lib.rs`; this
+//! The interceptor wrapper lives on the `ClaudeRunner` impl in `lib.rs`; this
 //! module owns the partial-patch / validate / persist / publish chain
 //! and emits both the new settings-changed topic and the relink trigger.
 //!
@@ -39,6 +39,7 @@
 //! admin-action-shaped and not the right home.
 
 use astrid_sdk::prelude::*;
+use oracle_host::ids::{resolve_principal, stamped_principal};
 use std::time::Duration;
 
 use crate::config;
@@ -60,7 +61,8 @@ const RELINK_COMPLETE_DEADLINE: Duration = Duration::from_secs(5);
 /// return Ok (interceptor contract — publishers don't see handler
 /// errors). The caller (the interceptor in `lib.rs`) just returns the
 /// `Ok(())` we return here.
-pub(crate) fn apply(req: SettingsSetRequest) -> Result<(), SysError> {
+pub(crate) fn apply(mut req: SettingsSetRequest) -> Result<(), SysError> {
+    req.principal_id = stamped_principal(&req.principal_id)?.to_string();
     // Untrusted input gate. principal_id flows into the relink payload
     // and audit publish; reject anything outside the standard alphabet
     // before the value escapes into formatted strings.
@@ -222,6 +224,9 @@ pub(crate) fn apply(req: SettingsSetRequest) -> Result<(), SysError> {
             let step = remaining_ms.min(2_000);
             if let Ok(result) = sub.recv(step) {
                 for msg in result.messages {
+                    if resolve_principal(&req.principal_id, msg.principal.verified()).is_err() {
+                        continue;
+                    }
                     match classify_install_complete(&msg.payload, &req.principal_id) {
                         InstallEnvelope::Skip => {}
                         env => {
@@ -235,7 +240,7 @@ pub(crate) fn apply(req: SettingsSetRequest) -> Result<(), SysError> {
         }
 
         match outcome {
-            Some(InstallEnvelope::Success(_)) => {
+            Some(InstallEnvelope::Success) => {
                 // Happy path — claude-install finished the rewrite before
                 // we publish settings.changed.
             }

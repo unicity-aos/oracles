@@ -1,0 +1,136 @@
+#!/usr/bin/env sh
+# Read-only SessionStart health check for the Unicity AOS Codex plugin.
+set -eu
+
+MODE=human
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --format)
+      MODE="${2:-human}"
+      shift 2
+      ;;
+    --format=*)
+      MODE="${1#--format=}"
+      shift
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+
+if [ "$MODE" = hook ]; then
+  cat >/dev/null 2>&1 || true
+fi
+
+if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
+  AOS_PLUGIN_ROOT="${CODEX_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}"
+fi
+if [ -z "$AOS_PLUGIN_ROOT" ]; then
+  AOS_PLUGIN_ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." 2>/dev/null && pwd -P)" \
+    || AOS_PLUGIN_ROOT="$(dirname "$(dirname "$0")")"
+fi
+export AOS_PLUGIN_ROOT
+
+RESOLVE="$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"
+if [ ! -f "$RESOLVE" ]; then
+  RESOLVE="$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P)/lib-aos-resolve.sh"
+fi
+# shellcheck source=lib-aos-resolve.sh
+. "$RESOLVE"
+
+json_escape() {
+  printf '%s' "$1" \
+    | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+    | awk 'NR>1{printf "\\n"} {printf "%s", $0}'
+}
+
+emit() {
+  report="$1"
+  if [ "$MODE" != hook ]; then
+    printf '%s\n' "$report"
+    return 0
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    jq -n --arg ctx "$report" \
+      '{hookSpecificOutput:{hookEventName:"SessionStart",additionalContext:$ctx}}'
+  else
+    printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
+      "$(json_escape "$report")"
+  fi
+}
+
+if ! aos_resolve_apply; then
+  emit "Unicity AOS is not installed, so this Codex session has no governed AOS tools.
+
+Install it with:
+
+    curl -fsSL https://aos.unicity.ai/install.sh | sh
+
+Then start a new Codex session."
+  exit 0
+fi
+
+PRINCIPAL="${ASTRID_PRINCIPAL_ID:-codex-code}"
+case "$PRINCIPAL" in
+  ""|*[!A-Za-z0-9_-]*) PRINCIPAL=codex-code ;;
+esac
+
+VERSION="$("$AOS" --version 2>/dev/null | head -n1 || true)"
+
+if ! "$AOS" capsule show astrid-mcp --agent "$PRINCIPAL" >/dev/null 2>&1; then
+  emit "Unicity AOS — Codex principal '$PRINCIPAL' is not provisioned for the oracle pack.
+
+Install the signed Codex oracle pack, then start a new Codex session:
+
+    curl -fsSL https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh | sh -s -- --host codex
+
+The base AOS installation alone does not add the host broker capsules."
+  exit 0
+fi
+
+STATUS="$("$AOS" status --json 2>/dev/null || true)"
+
+if [ -z "$STATUS" ] || ! printf '%s' "$STATUS" | grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"'; then
+  emit "Unicity AOS — Codex principal '$PRINCIPAL'.
+
+The AOS runtime is not reachable yet. The MCP adapter normally starts it on
+demand. If tools do not appear, run:
+
+    aos start
+
+Then reconnect the Unicity AOS MCP server."
+  exit 0
+fi
+
+if ! printf '%s' "$STATUS" | grep -Eq '"loaded_capsules"[[:space:]]*:[[:space:]]*\[[^]]*"astrid-mcp"'; then
+  emit "Unicity AOS — Codex principal '$PRINCIPAL' is provisioned, but its broker is not loaded.
+
+The runtime is reachable, but astrid-mcp is absent from the live capsule set.
+Stop and restart the product runtime once, then reconnect this MCP server:
+
+    aos stop
+
+The next AOS command starts the current signed fleet."
+  exit 0
+fi
+
+if command -v jq >/dev/null 2>&1; then
+  PIDLINE="PID $(printf '%s' "$STATUS" | jq -r '.pid // "unknown"' 2>/dev/null || printf unknown)"
+  CAPCOUNT="Capsules: $(printf '%s' "$STATUS" | jq -r '.loaded_capsules | length' 2>/dev/null || printf unknown) loaded"
+else
+  PIDLINE="PID $(printf '%s' "$STATUS" | sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p')"
+  CAPCOUNT="Capsules: live inventory includes astrid-mcp"
+fi
+
+emit "Unicity AOS is ready for this Codex session.
+
+  Principal: $PRINCIPAL
+  Version:   ${VERSION:-unknown}
+  Runtime:   $PIDLINE
+  $CAPCOUNT
+
+Use the mcp__aos__* tools for governed operations. The public AOS CLI owns
+runtime startup and authentication; tool execution remains scoped to this
+principal and enforced by the Astrid engine broker."
+exit 0

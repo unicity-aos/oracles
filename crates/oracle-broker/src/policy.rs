@@ -3,7 +3,7 @@
 //!
 //! # Two planes, one rule engine
 //!
-//! Every `mcp__astrid__*` tool the supervised Claude invokes funnels through
+//! Every `mcp__aos__*` tool the supervised Claude invokes funnels through
 //! [`crate::broker::handle_mcp_call`] before
 //! [`crate::execute::dispatch_with_approval`] fans it out on the bus. That
 //! is the ONE capsule-space point that holds the parsed `(tool_name,
@@ -20,7 +20,7 @@
 //! capable session can edit, the gate call is one Claude could skip, and the
 //! platform fails open. So it is defence-in-depth on top of the host sandbox
 //! and the binding `--disallowedTools` deny-list — never a substitute for
-//! the in-process gate the `mcp__astrid__*` plane enjoys. One operator rule
+//! the in-process gate the `mcp__aos__*` plane enjoys. One operator rule
 //! set, two enforcement strengths.
 //!
 //! # What it adds over the host capability PEP (non-redundancy)
@@ -44,7 +44,7 @@
 //!   and a command deny is evadable by quoting / encoding. The ROBUST
 //!   shapes are ALLOWLIST-style (`eq` / `prefix` against a closed set,
 //!   e.g. an egress-host allowlist), not denylists.
-//! * The reachable surface is the `mcp__astrid__*` capsule tools Claude is
+//! * The reachable surface is the `mcp__aos__*` capsule tools Claude is
 //!   allowed; the built-in shell/file tools are already removed by
 //!   `REQUIRED_DENIES`, so a `rm -rf` rule guards a tool that may not even
 //!   exist in the surface.
@@ -131,7 +131,7 @@ pub(crate) struct Rule {
     pub id: String,
     /// Effect when this rule fires.
     pub effect: Effect,
-    /// Glob over the RAW tool name (no `mcp__astrid__` prefix — the broker
+    /// Glob over the RAW tool name (no `mcp__aos__` prefix — the broker
     /// receives raw names). `*` matches any run, `?` any character.
     pub tool: String,
     /// Argument predicates; ALL must hold. Empty = tool-scoped rule.
@@ -337,7 +337,7 @@ fn audit_load_failure(reason: &str) {
 #[cfg(test)]
 mod tests {
     fn install_test_profile() {
-        crate::profile::install_astrid();
+        crate::profile::install_aos();
     }
 
     use super::*;
@@ -478,7 +478,7 @@ mod tests {
     #[test]
     fn glob_matches_runs_and_single_chars() {
         install_test_profile();
-        assert!(glob_match("mcp__astrid__*", "mcp__astrid__fs_read"));
+        assert!(glob_match("mcp__aos__*", "mcp__aos__fs_read"));
         assert!(glob_match("fs_*", "fs_write"));
         assert!(glob_match("a?c", "abc"));
         assert!(glob_match("*", "anything"));

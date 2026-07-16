@@ -1,0 +1,66 @@
+package unicity:aos-claude@1.0.0;
+
+/// Typed bus contracts for provisioning Claude under Unicity AOS.
+interface install {
+    /// Per-principal Claude settings. String fields use the exact JSON values
+    /// documented here because the bus encoding is snake_case while WIT names
+    /// are kebab-case.
+    record claude-principal-config {
+        /// "headless" or "repl".
+        interaction-mode: string,
+        /// "api_key" or "subscription".
+        auth-mode: string,
+        /// "default", "opus", "sonnet", or "haiku".
+        model: string,
+        /// Optional positive limit on agentic turns in one session.
+        max-turns: option<u32>,
+        /// Forward-compatibility version for this configuration shape.
+        schema-version: u32,
+    }
+
+    /// Request Claude home provisioning for the kernel-stamped caller.
+    record claude-install-request {
+        /// Claimed principal. The receiver requires this to match the
+        /// kernel-stamped caller identity.
+        principal-id: string,
+        /// Reconcile managed files even when the install marker is current.
+        force: option<bool>,
+        /// Settings to project into the principal's Claude home.
+        config: option<claude-principal-config>,
+    }
+
+    /// Request that the provisioner rewrite Claude-managed files.
+    record claude-relink-request {
+        /// Claimed principal. The receiver requires this to match the
+        /// kernel-stamped caller identity.
+        principal-id: string,
+        /// Settings to project into the principal's Claude home.
+        config: option<claude-principal-config>,
+    }
+
+    /// Progress published while Claude provisioning is in flight.
+    record claude-install-status {
+        /// Principal being provisioned.
+        principal-id: string,
+        /// Stable machine-readable step name.
+        step: string,
+        /// Optional operator-facing detail.
+        message: option<string>,
+    }
+
+    /// Terminal result of Claude provisioning or relinking.
+    record claude-install-complete {
+        /// Principal whose provisioning attempt completed.
+        principal-id: string,
+        /// True only when all managed artifacts were written successfully.
+        success: bool,
+        /// Principal home location. Empty only on failures from older senders.
+        home-path: string,
+        /// True when current artifacts already existed and no rewrite was needed.
+        already-installed: option<bool>,
+        /// Failure detail when success is false.
+        error: option<string>,
+        /// Effective settings echoed on success.
+        config: option<claude-principal-config>,
+    }
+}

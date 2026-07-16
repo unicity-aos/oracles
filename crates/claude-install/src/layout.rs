@@ -3,7 +3,7 @@
 //!
 //! Paths use the `home://` VFS scheme. The kernel resolves it at check
 //! time against the invoking principal's home root
-//! (`~/.astrid/home/<principal>/`, see core/crates/astrid-kernel/src/lib.rs:75),
+//! (`$AOS_HOME/runtime/home/<principal>/` in an AOS installation),
 //! so per-principal isolation is enforced by the host rather than
 //! encoded in the path string. principal_id is still validated as
 //! untrusted IPC input — it is used for the KV install-complete key
@@ -38,8 +38,8 @@ pub(crate) fn settings_path() -> String {
     "home://.claude/settings.local.json".to_string()
 }
 
-/// Path to `.claude/.mcp.json` — registers the `astrid` MCP server
-/// (`astrid mcp serve --principal <id>`) that claude calls `mcp__astrid__*`
+/// Path to `.claude/.mcp.json` — registers the `aos` MCP server
+/// (`aos --principal <id> mcp serve`) that claude calls `mcp__aos__*`
 /// tools against. See [`mcp_json`] for the body.
 pub(crate) fn mcp_path() -> String {
     "home://.claude/.mcp.json".to_string()
@@ -66,13 +66,13 @@ pub(crate) fn managed_settings_path() -> String {
     "home://.claude/managed-settings.json".to_string()
 }
 
-/// Name of the MCP server Astrid registers for the supervised `claude`
-/// session — the `astrid mcp serve` stdio shim onto the daemon's astrid-mcp
-/// broker. Claude prefixes its tools `mcp__astrid__*` and references it as the
+/// Name of the MCP server AOS registers for the supervised `claude`
+/// session — the `aos mcp serve` stdio shim onto the daemon's astrid-mcp
+/// broker. Claude prefixes its tools `mcp__aos__*` and references it as the
 /// `server` of the PreToolUse `mcp_tool` gate hook. Single source of truth
 /// for [`mcp_json`] and [`pretooluse_gate_handler`], so the gate's target
 /// server can never drift from the registered one.
-const MCP_SERVER_NAME: &str = "astrid";
+const MCP_SERVER_NAME: &str = "aos";
 
 /// Raw tool name of the native-tool PreToolUse policy gate the `mcp_tool`
 /// hook calls on the [`MCP_SERVER_NAME`] server. The astrid-mcp broker
@@ -86,7 +86,7 @@ const MCP_SERVER_NAME: &str = "astrid";
 /// would treat the hook's call as an unknown tool, reply `isError`, and the
 /// hook would fail OPEN — the native tool runs ungoverned). A presence test
 /// in each crate anchors the value.
-const PRETOOLUSE_GATE_TOOL: &str = "astrid_pretooluse_gate";
+const PRETOOLUSE_GATE_TOOL: &str = "aos_pretooluse_gate";
 
 /// KV key marking a completed install for `principal_id`.
 ///
@@ -220,7 +220,7 @@ const REQUIRED_DENIES: &[&str] = &[
 /// model. With `--permission-mode dontAsk` (binding via argv) only tools
 /// matched here — or read-only sandboxed Bash — run without a prompt;
 /// everything else, including the [`REQUIRED_DENIES`] escape surface, is
-/// auto-denied. `mcp__astrid__*` keeps the registered Astrid MCP server
+/// auto-denied. `mcp__aos__*` keeps the registered Astrid MCP server
 /// reachable for Astrid-specific operations. Bounds on what these tools can
 /// DO come from the sandbox (Astrid host + Claude inner), not this list.
 ///
@@ -242,7 +242,7 @@ const NATIVE_ALLOW: &[&str] = &[
     "Grep",
     "LSP",
     "TodoWrite",
-    "mcp__astrid__*",
+    "mcp__aos__*",
 ];
 
 /// The Claude hook events the runner declares in `settings.local.json`. Each
@@ -465,8 +465,8 @@ fn pretooluse_gate_handler() -> serde_json::Value {
 /// dontAsk` auto-denies any tool not allow-listed (fail-secure, no prompt),
 /// `--sandbox` bounds Claude's native tools (under the Astrid host
 /// sandbox), `--disallowedTools <REQUIRED_DENIES>` binds the escape-surface
-/// deny, `--strict-mcp-config` + `--mcp-config` register the `astrid mcp
-/// serve` MCP server for Astrid-specific ops, and `--no-session-persistence`
+/// deny, `--strict-mcp-config` + `--mcp-config` register the `aos mcp
+/// serve` MCP server for governed ops, and `--no-session-persistence`
 /// suppresses Claude's own JSONL. Those flags cannot be overridden from
 /// within the session.
 ///
@@ -616,42 +616,70 @@ pub(crate) fn managed_settings_json(cfg: &PrincipalConfig) -> serde_json::Value 
 
 /// `.claude/.mcp.json` body for the given principal config.
 ///
-/// Registered identically in BOTH modes: the `astrid` MCP server as
-/// `astrid mcp serve --principal <principal_id>` — the stdio MCP server
-/// that fronts the daemon's astrid-mcp broker (unicity-astrid/astrid#880).
+/// Registered identically in BOTH modes: the `aos` MCP server as
+/// `aos --principal <principal_id> mcp serve` — the stdio MCP server
+/// that fronts the daemon's astrid-mcp broker (astrid-runtime/astrid#880).
 /// `principal_id` is the sanitised invoking principal, baked in so the
-/// server stamps the right identity on its broker requests (`astrid mcp
+/// server stamps the right identity on its broker requests (`aos mcp
 /// serve` does NOT infer it — absent `--principal` it falls back to the
 /// active/default principal, mis-scoping tools).
 ///
 /// * [`InteractionMode::Headless`]: claude loads exactly this file via
 ///   `--strict-mcp-config --mcp-config .claude/.mcp.json` (see
 ///   `claude_runner::spawn`), does the native MCP handshake, and discovers the
-///   `mcp__astrid__*` tools.
+///   `mcp__aos__*` tools.
 /// * [`InteractionMode::Repl`]: the operator drives `claude` interactively
 ///   in this folder; auto-discovered `.claude/.mcp.json` registers the same
-///   Astrid server, so the REPL session is "on Astrid" with the capsule
-///   tool surface available. The operator may add more servers; Astrid only
-///   guarantees the Astrid one is present.
+///   AOS server, so the REPL session has the governed capsule tool surface
+///   available. The operator may add more servers; AOS only guarantees its
+///   own server is present.
 pub(crate) fn mcp_json(_cfg: &PrincipalConfig, principal_id: &str) -> serde_json::Value {
-    // Register the Astrid MCP server in BOTH modes. This is what makes a
-    // session "on Astrid": `astrid mcp serve` is the stdio shim onto the
+    // Register the AOS MCP server in BOTH modes. This is what makes a
+    // session an AOS session: `aos mcp serve` is the stdio shim onto the
     // daemon's astrid-mcp broker, so Claude — headless OR the interactive
     // REPL the operator drives in this folder — discovers and calls the
-    // capsule tool surface (`mcp__astrid__*`). The principal is baked in so
+    // capsule tool surface (`mcp__aos__*`). The principal is baked in so
     // the daemon scopes tool execution to this identity. The operator can
-    // still add their own MCP servers to this file in repl mode; Astrid only
-    // guarantees the Astrid server is present.
+    // still add their own MCP servers to this file in repl mode; AOS only
+    // guarantees its own server is present.
     let mut servers = serde_json::Map::new();
     servers.insert(
         MCP_SERVER_NAME.to_string(),
         serde_json::json!({
-            "command": "astrid",
-            "args": ["mcp", "serve", "--principal", principal_id],
+            "command": "aos",
+            "args": ["--principal", principal_id, "mcp", "serve"],
             "env": {}
         }),
     );
     serde_json::json!({ "mcpServers": serde_json::Value::Object(servers) })
+}
+
+/// Merge the AOS server into a user-owned REPL MCP document.
+///
+/// REPL mode does not own the complete `.mcp.json`: preserve unrelated root
+/// keys and servers, replace only the `aos` entry, and remove the retired
+/// first-party `astrid` entry so one runtime is not registered twice.
+pub(crate) fn merge_repl_mcp(
+    mut existing: serde_json::Value,
+    principal_id: &str,
+) -> Result<serde_json::Value, SysError> {
+    let root = existing.as_object_mut().ok_or_else(|| {
+        SysError::ApiError(".claude/.mcp.json must contain a JSON object".to_string())
+    })?;
+    let servers = root
+        .entry("mcpServers")
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()
+        .ok_or_else(|| {
+            SysError::ApiError(".claude/.mcp.json mcpServers must be a JSON object".to_string())
+        })?;
+    servers.remove("astrid");
+    let aos = mcp_json(&PrincipalConfig::default(), principal_id)
+        .pointer("/mcpServers/aos")
+        .cloned()
+        .ok_or_else(|| SysError::ApiError("AOS MCP template is missing".to_string()))?;
+    servers.insert(MCP_SERVER_NAME.to_string(), aos);
+    Ok(existing)
 }
 
 #[cfg(test)]
@@ -759,7 +787,7 @@ mod tests {
     // surface (deny list + helper pinning + hook declaration) is the
     // critical invariant — every change must keep it intact for the
     // headless+api_key default, otherwise `claude` could escape the
-    // mcp__astrid__* sandbox.
+    // mcp__aos__* sandbox.
     // ------------------------------------------------------------------
 
     fn cfg(im: InteractionMode, am: AuthMode) -> PrincipalConfig {
@@ -857,7 +885,7 @@ mod tests {
             v.pointer("/disableSkillShellExecution").is_none(),
             "repl: disableSkillShellExecution must be omitted"
         );
-        // Repl is the user's own environment — sage imposes no native-tools
+        // Repl is the user's own environment — AOS imposes no native-tools
         // posture: no dontAsk mode, no sandbox object.
         assert!(
             v.pointer("/permissions/defaultMode").is_none(),
@@ -1140,51 +1168,83 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn mcp_headless_registers_sage_server() {
+    fn mcp_headless_registers_aos_server() {
         for am in [AuthMode::ApiKey, AuthMode::Subscription] {
             let v = mcp_json(&cfg(InteractionMode::Headless, am), "alice");
             assert_eq!(
-                v.pointer("/mcpServers/astrid/command")
+                v.pointer("/mcpServers/aos/command")
                     .and_then(|x| x.as_str()),
-                Some("astrid"),
-                "headless ({am:?}): the Astrid MCP server command must be `astrid`"
+                Some("aos"),
+                "headless ({am:?}): the AOS MCP server command must be `aos`"
             );
             let args: Vec<&str> = v
-                .pointer("/mcpServers/astrid/args")
+                .pointer("/mcpServers/aos/args")
                 .and_then(|x| x.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
                 .unwrap_or_default();
             assert_eq!(
                 args,
-                vec!["mcp", "serve", "--principal", "alice"],
-                "headless ({am:?}): Astrid server must be `astrid mcp serve --principal <id>` with the baked principal"
+                vec!["--principal", "alice", "mcp", "serve"],
+                "headless ({am:?}): AOS server must be `aos --principal <id> mcp serve` with the baked principal"
             );
         }
     }
 
     #[test]
-    fn mcp_repl_mode_also_registers_sage_server() {
-        // The interactive REPL must be "on Astrid" too: it auto-discovers
-        // this `.mcp.json` and gets the same Astrid MCP server headless does.
+    fn mcp_repl_mode_also_registers_aos_server() {
+        // The interactive REPL auto-discovers this `.mcp.json` and gets the
+        // same AOS MCP server as headless mode.
         for am in [AuthMode::ApiKey, AuthMode::Subscription] {
             let v = mcp_json(&cfg(InteractionMode::Repl, am), "alice");
             assert_eq!(
-                v.pointer("/mcpServers/astrid/command")
+                v.pointer("/mcpServers/aos/command")
                     .and_then(|x| x.as_str()),
-                Some("astrid"),
-                "repl ({am:?}): the Astrid MCP server must be registered"
+                Some("aos"),
+                "repl ({am:?}): the AOS MCP server must be registered"
             );
             let args: Vec<&str> = v
-                .pointer("/mcpServers/astrid/args")
+                .pointer("/mcpServers/aos/args")
                 .and_then(|x| x.as_array())
                 .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
                 .unwrap_or_default();
             assert_eq!(
                 args,
-                vec!["mcp", "serve", "--principal", "alice"],
-                "repl ({am:?}): server must be `astrid mcp serve --principal <id>`"
+                vec!["--principal", "alice", "mcp", "serve"],
+                "repl ({am:?}): server must be `aos --principal <id> mcp serve`"
             );
         }
+    }
+
+    #[test]
+    fn repl_mcp_merge_preserves_custom_servers_and_replaces_legacy_entry() {
+        let existing = serde_json::json!({
+            "custom": {"keep": true},
+            "mcpServers": {
+                "docs": {"command": "docs-server"},
+                "astrid": {"command": "astrid", "args": ["mcp", "serve"]},
+                "aos": {"command": "stale"}
+            }
+        });
+        let merged = merge_repl_mcp(existing, "alice").expect("merge");
+        assert_eq!(
+            merged.pointer("/custom/keep"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            merged.pointer("/mcpServers/docs/command"),
+            Some(&serde_json::json!("docs-server"))
+        );
+        assert!(merged.pointer("/mcpServers/astrid").is_none());
+        assert_eq!(
+            merged.pointer("/mcpServers/aos/args"),
+            Some(&serde_json::json!(["--principal", "alice", "mcp", "serve"]))
+        );
+    }
+
+    #[test]
+    fn repl_mcp_merge_rejects_non_object_documents() {
+        assert!(merge_repl_mcp(serde_json::json!([]), "alice").is_err());
+        assert!(merge_repl_mcp(serde_json::json!({"mcpServers": []}), "alice").is_err());
     }
 
     // ------------------------------------------------------------------
@@ -1235,12 +1295,12 @@ mod tests {
     #[test]
     fn pretooluse_gate_tool_name_is_pinned() {
         // Value anchor for the cross-crate SYNC with
-        // `sage_mcp::broker::PRETOOLUSE_GATE_TOOL`. No dependency edge between
+        // `oracle_broker::broker::PRETOOLUSE_GATE_TOOL`. No dependency edge between
         // the crates, so the name is mirrored, not shared; the astrid-mcp side
         // pins the same literal in `gate_tool_name_is_pinned`. A rename on one
         // side without the other silently disables the gate, so both anchor
         // the exact string and a deliberate edit must touch both tests.
-        assert_eq!(PRETOOLUSE_GATE_TOOL, "astrid_pretooluse_gate");
+        assert_eq!(PRETOOLUSE_GATE_TOOL, "aos_pretooluse_gate");
     }
 
     // ------------------------------------------------------------------

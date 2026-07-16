@@ -20,7 +20,7 @@
 //! When replying to an SDK-side MCP tool call via `control_response`, the
 //! payload MUST be wrapped as `{"mcp_response":{"content":[...],
 //! "isError":...}}`. Omitting the wrapper triggers a 60 s CLI timeout —
-//! one of the load-bearing footguns of the protocol.
+//! a protocol constraint the codec preserves.
 
 use serde_json::{Value, json};
 
@@ -54,9 +54,9 @@ impl core::fmt::Display for CodecError {
 
 /// An outbound frame from host -> claude stdin.
 ///
-/// Sage only ever writes USER TURNS now — tool results no longer flow
-/// through here. Tool execution is owned by the registered `astrid mcp
-/// serve` MCP server (claude calls it directly), so the inline
+/// The runner only writes user turns now; tool results no longer flow
+/// through here. Tool execution is owned by the registered `aos mcp
+/// serve` MCP server (Claude calls it directly), so the inline
 /// tool-result / control-response write-back is gone.
 pub(crate) enum Outbound<'a> {
     /// A user-turn message. Encoded as
@@ -93,8 +93,8 @@ pub(crate) fn encode(frame: &Outbound<'_>) -> String {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AssistantBlock {
     /// A `{type:"text",text:...}` block. `tool_use` blocks are dropped at
-    /// decode: claude executes `mcp__astrid__*` tools directly against the
-    /// registered `astrid mcp serve` MCP server, so the runner never sees or
+    /// decode: claude executes `mcp__aos__*` tools directly against the
+    /// registered `aos mcp serve` MCP server, so the runner never sees or
     /// dispatches them (the only assistant content the runner relays is text).
     Text { text: String },
 }
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn decode_control_request() {
         let mut dec = LineDecoder::new();
-        let line = r#"{"type":"sdk_control_request","request":{"subtype":"mcp_message","request_id":"mcp_1","server_name":"astrid"}}"#;
+        let line = r#"{"type":"sdk_control_request","request":{"subtype":"mcp_message","request_id":"mcp_1","server_name":"aos"}}"#;
         let r: Vec<_> = dec.feed(format!("{line}\n").as_bytes()).collect();
         match &r[0] {
             Ok(Decoded::ControlRequest {
@@ -555,7 +555,7 @@ mod tests {
             }) => {
                 assert_eq!(request_id, "mcp_1");
                 assert_eq!(subtype, "mcp_message");
-                assert_eq!(payload["server_name"], "astrid");
+                assert_eq!(payload["server_name"], "aos");
             }
             other => panic!("expected ControlRequest, got {other:?}"),
         }

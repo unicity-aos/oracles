@@ -1,7 +1,7 @@
 [package]
 name = "codex-install"
 version = "0.1.0"
-description = "Per-principal Codex config provisioner for Astrid"
+description = "Per-principal Codex config provisioner for Unicity AOS"
 authors = [
     "Joshua J. Bouw <dev@joshuajbouw.com>",
     "Unicity Labs <info@unicity-labs.com>",
@@ -18,9 +18,9 @@ kv = []
 fs = ["home://"]
 
 [subscribe]
-"codex.v1.install.run" = { wit = "opaque", handler = "handle_install" }
-"codex.v1.install.relink" = { wit = "opaque", handler = "handle_relink" }
+"codex.v1.install.run" = { wit = "codex-install-request", handler = "handle_install" }
+"codex.v1.install.relink" = { wit = "codex-relink-request", handler = "handle_relink" }
 
 [publish]
-"codex.v1.install.status" = "opaque"
-"codex.v1.install.complete" = "opaque"
+"codex.v1.install.status" = "codex-install-status"
+"codex.v1.install.complete" = "codex-install-complete"

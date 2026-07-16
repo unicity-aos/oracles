@@ -11,8 +11,8 @@
 //!   broadcast `tool.v1.response.describe.*` into the cache via CAS.
 //!
 //! Both publish `astrid.v1.tools.list` with MCP-shaped descriptors whose
-//! names are prefixed `mcp__astrid__<original>` so the agent runner can
-//! pass them straight to Claude via `--allowed-tools mcp__astrid__*`.
+//! names are prefixed `mcp__aos__<original>` so the agent runner can
+//! pass them straight to Claude via `--allowed-tools mcp__aos__*`.
 
 use astrid_sdk::prelude::*;
 
@@ -29,7 +29,7 @@ fn tools_list_topic() -> &'static str {
 }
 
 /// MCP tool name prefix Astrid exposes to Claude. The `--allowed-tools
-/// mcp__astrid__*` flag on the agent subprocess matches against this.
+/// mcp__aos__*` flag on the agent subprocess matches against this.
 fn mcp_tool_prefix() -> &'static str {
     crate::profile::mcp_tool_prefix()
 }
@@ -136,7 +136,7 @@ fn snapshot_outcome(discovered: &[McpToolDescriptor]) -> SnapshotOutcome {
 /// `title`/`capabilities`) for the broker reply body.
 ///
 /// Unlike [`publish_tools_list`], names are emitted RAW — the broker is
-/// a generic MCP front door, not Claude's `mcp__astrid__*` namespace, so
+/// a generic MCP front door, not Claude's `mcp__aos__*` namespace, so
 /// it must not stamp the agent-runner prefix onto the descriptors a
 /// third-party MCP client consumes.
 pub(crate) fn to_mcp_descriptors(descriptors: &[McpToolDescriptor]) -> Vec<serde_json::Value> {
@@ -145,7 +145,7 @@ pub(crate) fn to_mcp_descriptors(descriptors: &[McpToolDescriptor]) -> Vec<serde
 
 /// Shape one internal descriptor into an MCP tool-descriptor object.
 /// `prefix` is prepended to the name (empty for the broker surface,
-/// `mcp__astrid__` for the agent-runner surface).
+/// `mcp__aos__` for the agent-runner surface).
 fn mcp_descriptor_with_prefix(d: &McpToolDescriptor, prefix: &str) -> serde_json::Value {
     let mut obj = serde_json::Map::new();
     obj.insert(
@@ -502,8 +502,8 @@ fn remap_input_schema(mut value: serde_json::Value) -> serde_json::Value {
 }
 
 /// Publish the assembled MCP tool list. Names are prefixed
-/// `mcp__astrid__<original>` so the agent runner can pass them through
-/// `--allowed-tools mcp__astrid__*`. The cache stores raw names; the
+/// `mcp__aos__<original>` so the agent runner can pass them through
+/// `--allowed-tools mcp__aos__*`. The cache stores raw names; the
 /// prefix is purely a wire concern for the agent-facing topic.
 fn publish_tools_list(descriptors: &[McpToolDescriptor]) {
     let mcp_shaped: Vec<serde_json::Value> = descriptors
@@ -533,7 +533,7 @@ pub(crate) fn wall_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     fn install_test_profile() {
-        crate::profile::install_astrid();
+        crate::profile::install_aos();
     }
 
     use serde_json::json;

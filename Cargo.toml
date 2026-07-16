@@ -11,7 +11,7 @@ authors = [
     "Unicity Labs <info@unicity-labs.com>",
 ]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/unicity-astrid/oracles"
+repository = "https://github.com/unicity-aos/oracles"
 rust-version = "1.94"
 
 [workspace.dependencies]
@@ -19,9 +19,11 @@ oracle-core = { path = "crates/oracle-core" }
 oracle-broker = { path = "crates/oracle-broker" }
 oracle-host = { path = "crates/oracle-host" }
 astrid-sdk = { version = "0.7", features = ["derive"] }
+blake3 = { version = "1.8", default-features = false, features = ["pure"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = { version = "0.11", default-features = false }
+toml = "0.9"
 uuid = { version = "1.0", features = ["serde"] }
 
 [profile.release]

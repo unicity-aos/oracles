@@ -1,10 +1,13 @@
 ---
-description: List the Astrid capsules installed in this runtime (the tool surface available over MCP).
-allowed-tools: Bash(astrid capsule list:*)
+description: List the capsules installed for this Unicity AOS principal.
+allowed-tools: Bash(aos --principal * capsule list:*)
 ---
 
-List the installed Astrid capsules — these back the `mcp__astrid__*` tools this session can call.
+List the installed AOS capsules. These provide the `mcp__aos__*` tools visible
+to this session.
 
-!`astrid capsule list 2>/dev/null || echo "(unavailable — is the astrid CLI installed?)"`
+!`PRINCIPAL="${CLAUDE_PLUGIN_OPTION_PRINCIPAL:-${CLAUDE_PLUGIN_OPTION_principal:-claude-code}}"; aos --principal "$PRINCIPAL" capsule list 2>/dev/null || echo "(unavailable — is Unicity AOS installed?)"`
 
-Summarize which capability domains are available (filesystem, http, shell, system, skills, …) and which capsule provides each. Note that only capsules with tool handlers contribute callable tools.
+Summarize which capability domains are available and which capsule provides
+each one. `astrid-mcp` is the internal runtime broker and should be described as
+an implementation detail, not as the product.

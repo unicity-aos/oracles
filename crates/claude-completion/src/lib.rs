@@ -3,7 +3,7 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! claude-completion — Anthropic API LLM provider for Astrid OS.
+//! claude-completion — Anthropic API LLM provider for Unicity AOS.
 //!
 //! Implements the `astrid:llm@1.0.0` provider contract against
 //! Anthropic's Messages API. Subscribes to:
@@ -30,7 +30,7 @@ use astrid_sdk::types::{IpcPayload, StreamEvent};
 use crate::anthropic::{STREAM_TOPIC, execute_request, publish_stream};
 
 /// Provider id advertised on the registry describe-collect topic.
-const PROVIDER_ID: &str = "astrid";
+const PROVIDER_ID: &str = "claude";
 
 /// claude-completion provider.
 #[derive(Default)]

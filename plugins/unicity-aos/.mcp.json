@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "aos": {
+      "command": "./bin/aos-up",
+      "args": ["--principal", "codex-code"],
+      "cwd": ".",
+      "env": {}
+    }
+  }
+}

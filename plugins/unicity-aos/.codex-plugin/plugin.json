@@ -1,0 +1,37 @@
+{
+  "name": "unicity-aos",
+  "version": "0.1.2",
+  "description": "Connect Codex to Unicity AOS with governed capsule tools, health checks, policy hooks, and a principal-scoped identity.",
+  "author": {
+    "name": "Unicity Labs",
+    "email": "info@unicity-labs.com"
+  },
+  "homepage": "https://aos.unicity.ai",
+  "repository": "https://github.com/unicity-aos/oracles",
+  "license": "MIT OR Apache-2.0",
+  "keywords": [
+    "unicity-aos",
+    "aos",
+    "codex",
+    "agent",
+    "mcp",
+    "capsule"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Unicity AOS",
+    "shortDescription": "Connect Codex to Unicity AOS.",
+    "longDescription": "Adds Unicity AOS operating instructions, capsule tools over MCP, a SessionStart health check, and policy hooks for a principal-scoped Codex agent.",
+    "developerName": "Unicity Labs",
+    "category": "Productivity",
+    "capabilities": [
+      "mcp",
+      "hooks",
+      "skills"
+    ],
+    "defaultPrompt": [
+      "Use Unicity AOS tools for governed agent operations."
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 {
   "subagentStatusLine": {
     "type": "command",
-    "command": "${CLAUDE_PLUGIN_ROOT}/bin/astrid-subagent-statusline"
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/aos-subagent-statusline"
   }
 }

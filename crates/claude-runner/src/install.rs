@@ -1,7 +1,7 @@
 //! `#[astrid::install]` lifecycle hook business logic.
 //!
 //! Split out of `lib.rs` to keep that file under the 1000-line CI gate.
-//! The `on_install` wrapper on `Sage` (in `lib.rs`) delegates to
+//! The `on_install` wrapper on `ClaudeRunner` (in `lib.rs`) delegates to
 //! [`run`] here; this module owns the `[env]` read, the
 //! [`config::PrincipalConfig`] construction, validation, KV save, and
 //! the `claude.v1.audit.install_choices` audit publish.

@@ -1,17 +1,18 @@
 {
-  "name": "astrid",
-  "displayName": "Astrid",
+  "name": "unicity-aos",
+  "displayName": "Unicity AOS",
   "version": "0.1.4",
-  "description": "Run Grok Build as a governed Astrid agent: capsule tools over MCP, an ephemeral self-cleaning daemon, a SessionStart readiness doctor, /astrid:* operator commands, forge skill, and a grok-code principal. Installing this plugin turns a vanilla Grok session into an Astrid-integrated session.",
+  "description": "Connect Grok Build to Unicity AOS as a principal-scoped agent with capsule tools over MCP, a readiness doctor, operator commands, and the capsule forge skill.",
   "author": {
     "name": "Unicity Labs",
     "email": "info@unicity-labs.com"
   },
-  "homepage": "https://github.com/unicity-astrid/oracles",
-  "repository": "https://github.com/unicity-astrid/oracles",
+  "homepage": "https://github.com/unicity-aos/oracles",
+  "repository": "https://github.com/unicity-aos/oracles",
   "license": "MIT OR Apache-2.0",
   "keywords": [
-    "astrid",
+    "aos",
+    "unicity",
     "mcp",
     "agent",
     "runtime",

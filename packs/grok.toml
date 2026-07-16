@@ -1,0 +1,16 @@
+schema-version = 1
+
+[pack]
+id = "grok-oracle"
+name = "Unicity AOS for Grok Build"
+version = "0.2.0"
+host = "grok"
+principal = "grok-code"
+description = "Grok Build integration for Unicity AOS."
+repository = "https://github.com/unicity-aos/oracles"
+license = "MIT OR Apache-2.0"
+aos-version = ">=2026.1.0"
+
+[[capsule]]
+name = "astrid-mcp"
+asset = "astrid-mcp.capsule"

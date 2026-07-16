@@ -1,9 +1,10 @@
 ---
-description: Show the Astrid daemon status — PID, uptime, connected clients, loaded capsules.
+description: Show Unicity AOS runtime status for the grok-code principal.
 ---
 
-Report the live Astrid daemon status.
+Report the live AOS runtime state.
 
-!`astrid status 2>/dev/null || echo "(unavailable — is the astrid CLI installed / is the daemon up?)"`
+!`aos status --json 2>/dev/null || echo "(unavailable — is Unicity AOS installed?)"`
 
-Summarize: is the daemon up, what PID, how many capsules are loaded, and whether this looks healthy for a governed session.
+Summarize whether the runtime is reachable and whether the internal
+`astrid-mcp` broker is loaded.

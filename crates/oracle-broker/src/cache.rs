@@ -239,7 +239,7 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     fn install_test_profile() {
-        crate::profile::install_astrid();
+        crate::profile::install_aos();
     }
 
     use super::*;

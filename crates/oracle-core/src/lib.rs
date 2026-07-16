@@ -1,12 +1,12 @@
-//! Shared identity for Astrid oracles.
+//! Shared identity for Unicity AOS oracles.
 //!
 //! An **oracle** is an external coding runtime (Claude Code, Grok Build, Codex)
-//! bound into Astrid. The backend is always Astrid — one MCP namespace, one
-//! broker capsule. Hosts differ only where the host product forces it
+//! bound into Unicity AOS. AOS presents one MCP namespace over the neutral
+//! Astrid broker capsule. Hosts differ only where the host product forces it
 //! (plugin hooks, principal family, optional supervisor).
 //!
-//! Mythological product brands (Sage / Mimir / Sibyl) are retired: the legal
-//! and product surface is **Astrid**, not a co-branded third-party name.
+//! The host adapters are AOS product components; published Astrid ABI, topic,
+//! capsule and crate identifiers remain unchanged underneath them.
 
 #![deny(unsafe_code)]
 #![deny(clippy::all)]
@@ -20,6 +20,6 @@ mod newtypes;
 pub use host::{Host, HostProfile};
 pub use identity::OracleIdentity;
 pub use newtypes::{
-    AuditTopicPrefix, CapsuleName, DistroId, HostDisplayName, LogTag, McpNamespace, McpToolPrefix,
+    AuditTopicPrefix, CapsuleName, HostDisplayName, LogTag, McpNamespace, McpToolPrefix, PackId,
     PrincipalFamily, Topic,
 };

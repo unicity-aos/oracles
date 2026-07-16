@@ -1,10 +1,12 @@
 ---
-description: Show the Astrid daemon status — PID, uptime, connected clients, loaded capsules.
-allowed-tools: Bash(astrid status:*)
+description: Show Unicity AOS runtime status for this session.
+allowed-tools: Bash(aos status --json:*)
 ---
 
-Report the state of the Astrid runtime backing this session.
+Report the AOS runtime state for the configured principal.
 
-!`astrid status 2>/dev/null || echo "(unavailable — is the astrid CLI installed?)"`
+!`aos status --json 2>/dev/null || echo "(unavailable — is Unicity AOS installed?)"`
 
-Summarize: is the daemon up, how many clients are connected, and whether the tool-serving capsules (`astrid-mcp`, `astrid-capsule-cli`) are loaded. If it is not running, note that the plugin boots an ephemeral daemon automatically when the MCP server launches, or you can run `astrid start`.
+Summarize whether the runtime is reachable, the connected-client count, and
+whether the internal `astrid-mcp` broker is loaded. The MCP wrapper starts the
+bundled ephemeral runtime when the host connects; do not start a second daemon.

@@ -1,17 +1,18 @@
 {
-  "name": "astrid",
-  "displayName": "Astrid",
+  "name": "unicity-aos",
+  "displayName": "Unicity AOS",
   "version": "0.1.4",
-  "description": "Run Claude Code as a governed Astrid agent: capsule tools over MCP, an ephemeral self-cleaning daemon, a SessionStart readiness doctor, an Astrid HUD status line, /astrid:* operator commands, and an Astrid-agent identity. Installing this plugin turns a vanilla `claude` REPL into an Astrid-integrated session.",
+  "description": "Connect Claude Code to Unicity AOS as a principal-scoped agent with capsule tools over MCP, a readiness doctor, an AOS HUD, and /unicity-aos:* operator commands.",
   "author": {
     "name": "Unicity Labs",
     "email": "info@unicity-labs.com"
   },
-  "homepage": "https://github.com/unicity-astrid/oracles",
-  "repository": "https://github.com/unicity-astrid/oracles",
+  "homepage": "https://github.com/unicity-aos/oracles",
+  "repository": "https://github.com/unicity-aos/oracles",
   "license": "MIT OR Apache-2.0",
   "keywords": [
-    "astrid",
+    "aos",
+    "unicity",
     "mcp",
     "agent",
     "runtime",
@@ -23,8 +24,8 @@
   "userConfig": {
     "principal": {
       "type": "string",
-      "title": "Astrid principal",
-      "description": "The Astrid principal this Claude Code session acts as. Scopes tool execution, capability checks, and audit to this identity. Defaults to 'claude-code' \u2014 a least-authority agent in the 'claude' family group (self-scoped only, NOT the admin 'default'), auto-provisioned on first launch. Set to 'default' to run with admin authority, or any name to run as that scoped agent. Run `astrid agent list` to see principals.",
+      "title": "AOS principal",
+      "description": "The Unicity AOS principal this Claude Code session acts as. It scopes tool execution, capability checks, and audit to this identity. Defaults to 'claude-code', a least-authority agent in the Claude family. Provision principals explicitly with the AOS oracle installer. Run `aos agent list` to inspect them.",
       "required": true,
       "default": "claude-code"
     }

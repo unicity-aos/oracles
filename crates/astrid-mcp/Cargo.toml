@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Astrid oracle MCP broker capsule (shared by all host plugins)"
+description = "Neutral Astrid broker capsule behind the Unicity AOS MCP surface"
 publish = false
 
 [lib]

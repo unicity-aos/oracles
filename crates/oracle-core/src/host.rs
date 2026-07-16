@@ -1,11 +1,11 @@
 //! Host adapters — Claude Code / Grok Build / Codex.
 //!
-//! Hosts are not product brands. They are the external runtime Astrid
-//! plugs into. Wire identity is always [`crate::OracleIdentity::ASTRID`].
+//! Hosts are not product brands. They are external runtimes Unicity AOS
+//! integrates. Wire identity is always [`crate::OracleIdentity::AOS`].
 
-use crate::newtypes::{DistroId, HostDisplayName, PrincipalFamily};
+use crate::newtypes::{HostDisplayName, PackId, PrincipalFamily};
 
-/// Which external coding host this plugin/distro targets.
+/// Which external coding host this oracle pack targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Host {
@@ -32,10 +32,7 @@ impl Host {
         }
     }
 
-    /// Parse from distro id or short name (`claude`, `grok`, `codex`).
-    ///
-    /// Accepts retired brand aliases (`sage`→Claude, `mimir`→Grok, `sibyl`→Codex)
-    /// so older paths keep resolving during migration.
+    /// Parse from a pack id or short host name (`claude`, `grok`, `codex`).
     #[must_use]
     pub fn from_id(id: &str) -> Option<Self> {
         let stem = id
@@ -43,9 +40,9 @@ impl Host {
             .or_else(|| id.strip_suffix("-install"))
             .unwrap_or(id);
         match stem {
-            "claude" | "sage" => Some(Host::Claude),
-            "grok" | "mimir" => Some(Host::Grok),
-            "codex" | "sibyl" => Some(Host::Codex),
+            "claude" => Some(Host::Claude),
+            "grok" => Some(Host::Grok),
+            "codex" => Some(Host::Codex),
             _ => None,
         }
     }
@@ -53,7 +50,7 @@ impl Host {
 
 impl core::fmt::Display for Host {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str(self.profile().distro_id.as_str())
+        f.write_str(self.profile().pack_id.as_str())
     }
 }
 
@@ -62,9 +59,9 @@ impl core::fmt::Display for Host {
 pub struct HostProfile {
     /// Discriminant.
     pub host: Host,
-    /// `astrid init --distro` id.
-    pub distro_id: DistroId,
-    /// Pretty distro name.
+    /// Additive oracle-pack id.
+    pub pack_id: PackId,
+    /// Pretty pack name.
     pub pretty_name: &'static str,
     /// Default principal family for this host's plugin.
     pub principal_family: PrincipalFamily,
@@ -76,8 +73,8 @@ impl HostProfile {
     /// Claude Code host.
     pub const CLAUDE: Self = Self {
         host: Host::Claude,
-        distro_id: DistroId("claude"),
-        pretty_name: "Astrid for Claude Code",
+        pack_id: PackId("claude"),
+        pretty_name: "Unicity AOS for Claude Code",
         principal_family: PrincipalFamily("claude-code"),
         host_display: HostDisplayName("Claude Code"),
     };
@@ -85,8 +82,8 @@ impl HostProfile {
     /// Grok Build host.
     pub const GROK: Self = Self {
         host: Host::Grok,
-        distro_id: DistroId("grok"),
-        pretty_name: "Astrid for Grok Build",
+        pack_id: PackId("grok"),
+        pretty_name: "Unicity AOS for Grok Build",
         principal_family: PrincipalFamily("grok-code"),
         host_display: HostDisplayName("Grok Build"),
     };
@@ -94,8 +91,8 @@ impl HostProfile {
     /// Codex host.
     pub const CODEX: Self = Self {
         host: Host::Codex,
-        distro_id: DistroId("codex"),
-        pretty_name: "Astrid for Codex",
+        pack_id: PackId("codex"),
+        pretty_name: "Unicity AOS for Codex",
         principal_family: PrincipalFamily("codex-code"),
         host_display: HostDisplayName("Codex"),
     };
@@ -115,11 +112,10 @@ mod tests {
     }
 
     #[test]
-    fn from_id_accepts_host_and_retired_brands() {
+    fn from_id_accepts_only_live_host_ids() {
         assert_eq!(Host::from_id("claude"), Some(Host::Claude));
-        assert_eq!(Host::from_id("sage"), Some(Host::Claude));
-        assert_eq!(Host::from_id("mimir"), Some(Host::Grok));
-        assert_eq!(Host::from_id("sibyl-mcp"), Some(Host::Codex));
+        assert_eq!(Host::from_id("grok"), Some(Host::Grok));
+        assert_eq!(Host::from_id("codex-mcp"), Some(Host::Codex));
         assert_eq!(Host::from_id("codex"), Some(Host::Codex));
         assert_eq!(Host::from_id("unknown"), None);
     }

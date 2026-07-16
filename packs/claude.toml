@@ -1,0 +1,24 @@
+schema-version = 1
+
+[pack]
+id = "claude-oracle"
+name = "Unicity AOS for Claude Code"
+version = "0.2.0"
+host = "claude"
+principal = "claude-code"
+description = "Claude Code integration for Unicity AOS."
+repository = "https://github.com/unicity-aos/oracles"
+license = "MIT OR Apache-2.0"
+aos-version = ">=2026.1.0"
+
+[[capsule]]
+name = "astrid-mcp"
+asset = "astrid-mcp.capsule"
+
+[[capsule]]
+name = "claude-install"
+asset = "claude-install.capsule"
+
+[[capsule]]
+name = "claude-runner"
+asset = "claude-runner.capsule"

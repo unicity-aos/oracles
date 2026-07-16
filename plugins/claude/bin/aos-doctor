@@ -1,0 +1,108 @@
+#!/usr/bin/env sh
+# Read-only readiness report for an AOS-backed oracle host session.
+set -eu
+
+FORMAT=human
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --format)
+      shift
+      FORMAT="${1:-human}"
+      ;;
+    -h|--help)
+      printf '%s\n' 'usage: aos-doctor [--format human|hook]'
+      exit 0
+      ;;
+    *) ;;
+  esac
+  shift
+done
+
+case "$FORMAT" in
+  human|hook) ;;
+  *) printf 'aos-doctor: unsupported format: %s\n' "$FORMAT" >&2; exit 2 ;;
+esac
+
+emit() { printf '%s\n' "$1"; }
+
+if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
+  AOS_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}}"
+fi
+if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
+  AOS_PLUGIN_ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." 2>/dev/null && pwd -P)" \
+    || AOS_PLUGIN_ROOT="$(dirname "$(dirname "$0")")"
+fi
+export AOS_PLUGIN_ROOT
+
+if [ -z "${AOS_HOST:-}" ]; then
+  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
+    AOS_HOST=grok
+  else
+    AOS_HOST=claude
+  fi
+fi
+export AOS_HOST
+
+RESOLVE="$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"
+if [ ! -f "$RESOLVE" ]; then
+  RESOLVE="$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P)/lib-aos-resolve.sh"
+fi
+# shellcheck source=lib-aos-resolve.sh
+. "$RESOLVE"
+
+if ! aos_resolve_apply; then
+  emit "Unicity AOS is not installed, so this session has no AOS capsule tools.
+
+Install and provision this host explicitly:
+
+    $(dirname "$0")/aos-install --host $AOS_HOST
+
+The supported AOS installer is https://aos.unicity.ai/install.sh. The oracle
+installer uses it and then provisions the '$AOS_HOST' host; MCP startup never
+installs software or mutates product configuration."
+  exit 0
+fi
+
+case "$AOS_HOST" in
+  grok) DEFAULT_PRINCIPAL=grok-code ;;
+  *) DEFAULT_PRINCIPAL=claude-code ;;
+esac
+
+PRINCIPAL="${CLAUDE_PLUGIN_OPTION_PRINCIPAL:-${CLAUDE_PLUGIN_OPTION_principal:-${AOS_PRINCIPAL_ID:-$DEFAULT_PRINCIPAL}}}"
+case "$PRINCIPAL" in
+  ""|'${user_config.principal}') PRINCIPAL="$DEFAULT_PRINCIPAL" ;;
+esac
+
+VERSION="$("$AOS" --version 2>/dev/null | head -n1 || true)"
+
+# `capsule show` is an on-disk, read-only query. It verifies both that the host
+# principal was provisioned and that the internal broker capsule is present.
+if ! "$AOS" capsule show astrid-mcp --agent "$PRINCIPAL" >/dev/null 2>&1; then
+  emit "Unicity AOS — principal '$PRINCIPAL' is not provisioned for this oracle host.
+
+The internal astrid-mcp broker capsule is absent from that principal's AOS
+profile. Run the explicit oracle installer, then reconnect the 'aos' MCP server:
+
+    $(dirname "$0")/aos-install --host $AOS_HOST
+
+Do not copy capsules or edit the private runtime home by hand."
+  exit 0
+fi
+
+if "$AOS" status --json >/dev/null 2>&1; then
+  DAEMON_NOTE="Runtime: reachable."
+else
+  DAEMON_NOTE="Runtime: currently stopped; the AOS MCP command quiet-starts its bundled ephemeral runtime when this host connects."
+fi
+
+emit "Unicity AOS — governed oracle session ready.
+
+Product:    ${VERSION:-Unicity AOS}
+Host:       $AOS_HOST
+Principal:  $PRINCIPAL
+MCP server: aos (visible tools use mcp__aos__*)
+Broker:     astrid-mcp provisioned
+$DAEMON_NOTE
+
+Native host tools remain governed by the host application's own sandbox.
+Calls through mcp__aos__* additionally cross the AOS capability and audit boundary."

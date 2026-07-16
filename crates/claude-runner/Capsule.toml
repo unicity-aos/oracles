@@ -16,7 +16,7 @@ type = "executable"
 [capabilities]
 host_process = ["claude"]
 # Persistent-tier sub-grant (astrid#873): `spawn-persistent` requires this
-# in ADDITION to `host_process`. Sage spawns `claude -p` on the persistent
+# in ADDITION to `host_process`. The runner spawns `claude -p` on the persistent
 # tier so the child outlives a runner capsule reload — the supervisor re-
 # `attach`es by ProcessId and keeps driving the same conversation instead of
 # abandoning it. Without this grant the host denies `spawn-persistent` with
@@ -24,14 +24,13 @@ host_process = ["claude"]
 allow_persistent = true
 kv = []
 # The `home://` scheme resolves dynamically at check time against the
-# per-invocation principal's home root (`~/.astrid/home/<principal>/` in
-# the FHS layout; see core/crates/astrid-kernel/src/lib.rs:75). Sage
-# writes the identity prompt file under `home://.claude/`; restricting
-# the write scope keeps it the only mutable subdirectory.
+# per-invocation principal's home root (`$AOS_HOME/runtime/home/<principal>/`
+# in AOS). The supervised agent owns that principal home, matching a normal
+# operating-system user boundary; sibling principal homes remain inaccessible.
 fs_read = ["home://"]
-fs_write = ["home://.claude/"]
+fs_write = ["home://"]
 
-# Per-principal Claude host configuration. Three orthogonal knobs are
+# Per-principal Claude host configuration. Three knobs are
 # elicited at install time and stored by the kernel (typed values land
 # in the per-principal env JSON; secrets land in SecretStore). All
 # three are read back with `astrid_sdk::env::var(...)` — the
@@ -40,19 +39,19 @@ fs_write = ["home://.claude/"]
 # `kv://claude.principal.config`.
 #
 # * `interaction_mode` — "headless" (Astrid spawns `claude -p` and
-#   restricts tools to `mcp__astrid__*`) or "repl" (the operator drives
+#   restricts tools to `mcp__aos__*`) or "repl" (the operator drives
 #   `claude` directly inside the principal folder; the runner refuses to
 #   spawn and only audits via the placeholder hook bridge).
 # * `auth_mode` — "api_key" (read the `api_key` secret and forward as
-#   `ANTHROPIC_API_KEY`) or "subscription" (delegate to `claude /login`
-#   inside the principal folder; the runner never sets the env var and omits
-#   the `apiKeyHelper` pin).
+#   `ANTHROPIC_API_KEY`) or "subscription" (delegate to Claude Code's
+#   interactive login). Subscription is valid only with `repl`; headless
+#   execution always requires an API key.
 # * `api_key` — kernel walks every `[env]` key unconditionally (no
 #   `when=` semantics today), so the secret is always offered. Empty
 #   values are not persisted, so subscription-mode operators leave it
 #   blank.
 [env]
-interaction_mode = { type = "select", enum_values = ["headless", "repl"], default = "headless", request = "Interaction mode: 'headless' (Astrid drives claude -p) or 'repl' (you run claude directly)" }
+interaction_mode = { type = "select", enum_values = ["headless", "repl"], default = "headless", request = "Interaction mode: 'headless' (Unicity AOS supervises claude -p) or 'repl' (you run Claude directly)" }
 auth_mode = { type = "select", enum_values = ["api_key", "subscription"], default = "api_key", request = "Auth mode: 'api_key' or 'subscription' (see README: macOS Keychain is HOME-blind)" }
 api_key = { type = "secret", request = "Anthropic API key (leave blank for subscription mode)", placeholder = "sk-ant-..." }
 
@@ -69,7 +68,7 @@ api_key = { type = "secret", request = "Anthropic API key (leave blank for subsc
 # subprocess and return a session handle.
 "claude.v1.request.spawn" = { wit = "opaque", handler = "handle_spawn" }
 # Update the per-principal settings (interaction_mode / auth_mode).
-# Sage owns `kv://claude.principal.config` (canonical source of truth) and
+# The runner owns `kv://claude.principal.config` (canonical source of truth) and
 # re-emits `claude.v1.install.relink` so claude-install rewrites the on-disk
 # `.claude/settings.local.json` + `.mcp.json` with the new shape.
 "claude.v1.request.settings.set" = { wit = "opaque", handler = "handle_settings_set" }
@@ -78,14 +77,14 @@ api_key = { type = "secret", request = "Anthropic API key (leave blank for subsc
 # Dynamic subscribes opened inside `#[astrid::run]`. Listed here so
 # the kernel admits them; no handler key — the run loop polls them.
 # NB: tool-call and approval routing are deliberately absent — claude
-# drives `mcp__astrid__*` tools directly against the registered
-# `astrid mcp serve` MCP server (which owns its own approval/timeout
+# drives `mcp__aos__*` tools directly against the registered
+# `aos mcp serve` MCP server (which owns its own approval/timeout
 # handling), so the runner never sees tool calls, results, or approvals.
 "claude.v1.request.stop.*" = "opaque"
-"claude.v1.install.complete" = "opaque"
+"claude.v1.install.complete" = "claude-install-complete"
 "tool.v1.execute.save_identity.result" = "opaque"
 # Hook validator drain: `astrid-emit` (astrid#814) publishes
-# per-Claude-hook envelopes here with a per-session token. Sage's
+# per-Claude-hook envelopes here with a per-session token. The runner's
 # run loop verifies the token, then republishes on `hook.v1.event.*`
 # (canonical) or `claude.v1.notification`. Token mismatches drop and
 # audit on `claude.v1.audit.hook_spoof_attempt`.
@@ -124,12 +123,12 @@ api_key = { type = "secret", request = "Anthropic API key (leave blank for subsc
 # Install-trigger published by `ensure_install` when no completion
 # marker is in KV. claude-install consumes it and replies on
 # `claude.v1.install.complete`.
-"claude.v1.install.run" = "opaque"
+"claude.v1.install.run" = "claude-install-request"
 # Re-link an existing principal after the operator changes
 # interaction_mode / auth_mode via `claude.v1.request.settings.set`.
 # claude-install subscribes to this topic and rewrites
 # `.claude/settings.local.json` + `.mcp.json` with the new shape.
-"claude.v1.install.relink" = "opaque"
+"claude.v1.install.relink" = "claude-relink-request"
 # Settings-changed broadcast emitted after claude-install confirms the
 # on-disk rewrite. Carries the new `PrincipalConfig` so subscribers
 # (dashboards, audit sinks) can mirror the operator's choice without

@@ -1,0 +1,94 @@
+#!/usr/bin/env sh
+# Explicit Unicity AOS + oracle provisioning entrypoint for host plugins.
+# MCP startup never invokes this script automatically.
+set -eu
+
+log() { printf 'aos-install: %s\n' "$*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+if [ -z "${AOS_HOST:-}" ]; then
+  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
+    AOS_HOST=grok
+  else
+    AOS_HOST=claude
+  fi
+fi
+
+INSTALL_URL="${AOS_ORACLES_INSTALL_URL:-https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh}"
+HOST="$AOS_HOST"
+ASSUME_YES=0
+NO_MIGRATE_PROMPT=0
+AOS_CHANNEL=""
+AOS_VERSION=""
+ORACLE_VERSION=""
+
+usage() {
+  cat >&2 <<'USAGE'
+aos-install — install Unicity AOS and provision an oracle host plugin.
+
+Usage: aos-install [--host claude|grok] [installer options]
+
+  --aos-channel C      follow the AOS stable, dev, or nightly channel
+  --aos-version V      install an exact AOS calendar-semver release
+  --oracle-version V   install an exact signed oracle-pack release
+  --no-migrate-prompt  skip the optional Astrid state-import prompt
+  --yes, -y            non-interactive provisioning
+
+This is an explicit consent surface. It downloads the Unicity AOS oracle
+installer, which installs the signed AOS product when needed and provisions
+the selected host. MCP startup never installs or mutates the system.
+USAGE
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --host)
+      shift
+      HOST="${1:-}"
+      [ -n "$HOST" ] || die "--host needs claude or grok"
+      ;;
+    -y|--yes) ASSUME_YES=1 ;;
+    --no-migrate-prompt) NO_MIGRATE_PROMPT=1 ;;
+    --aos-channel)
+      shift
+      AOS_CHANNEL="${1:-}"
+      [ -n "$AOS_CHANNEL" ] || die "--aos-channel needs stable, dev, or nightly"
+      ;;
+    --aos-version)
+      shift
+      AOS_VERSION="${1:-}"
+      [ -n "$AOS_VERSION" ] || die "--aos-version needs a calendar-semver release"
+      ;;
+    --oracle-version)
+      shift
+      ORACLE_VERSION="${1:-}"
+      [ -n "$ORACLE_VERSION" ] || die "--oracle-version needs a semantic version"
+      ;;
+    -h|--help) usage; exit 0 ;;
+    *) die "unknown argument: $1" ;;
+  esac
+  shift
+done
+
+case "$HOST" in
+  claude|grok) ;;
+  *) die "unsupported host '$HOST' (want claude or grok)" ;;
+esac
+
+command -v curl >/dev/null 2>&1 || die "curl is required"
+TMP="$(mktemp -d 2>/dev/null || mktemp -d -t aos-oracles-install)" \
+  || die "could not create a temporary directory"
+trap 'rm -rf "$TMP"' EXIT HUP INT TERM
+
+log "downloading the Unicity AOS oracle installer..."
+curl --proto '=https' --tlsv1.2 -fsSL "$INSTALL_URL" -o "$TMP/install.sh" \
+  || die "could not download $INSTALL_URL"
+chmod 700 "$TMP/install.sh"
+
+set -- --host "$HOST"
+[ "$ASSUME_YES" -eq 0 ] || set -- "$@" --yes
+[ "$NO_MIGRATE_PROMPT" -eq 0 ] || set -- "$@" --no-migrate-prompt
+[ -z "$AOS_CHANNEL" ] || set -- "$@" --aos-channel "$AOS_CHANNEL"
+[ -z "$AOS_VERSION" ] || set -- "$@" --aos-version "$AOS_VERSION"
+[ -z "$ORACLE_VERSION" ] || set -- "$@" --oracle-version "$ORACLE_VERSION"
+exec sh "$TMP/install.sh" "$@"

@@ -3,7 +3,7 @@
 //! This is astrid-mcp's SECOND front door, sitting over the SAME
 //! discovery ([`crate::discovery`]) and execute ([`crate::execute`])
 //! internals as the agent-runner path. Where the agent path serves the
-//! `mcp__astrid__*` namespace Claude consumes via `--allowed-tools`, the
+//! `mcp__aos__*` namespace Claude consumes via `--allowed-tools`, the
 //! broker serves a generic, third-party MCP client through a
 //! shim/proxy.
 //!
@@ -35,7 +35,7 @@
 //! sanitized `astrid.v1.*` surface. All `tool.v1.*` fan-out lives
 //! behind [`crate::execute::dispatch_with_approval`], which charset-gates
 //! the tool name before it can reach a routed topic. The list reply
-//! carries RAW MCP descriptors (no `mcp__astrid__` prefix) because the
+//! carries RAW MCP descriptors (no `mcp__aos__` prefix) because the
 //! broker is a standard MCP server, not the agent runner.
 //!
 //! ## Confused-deputy gate (state-mutating calls)
@@ -82,10 +82,10 @@ const MAX_REQ_ID_LEN: usize = 128;
 /// intentionally-unlisted tool the broker special-cases is invoked normally
 /// — no descriptor injection needed.
 ///
-/// ## Why a hook, when the `mcp__astrid__*` plane is gated in-process
+/// ## Why a hook, when the `mcp__aos__*` plane is gated in-process
 ///
 /// Native tools execute INSIDE the `claude` process and reach no Astrid
-/// chokepoint — unlike the `mcp__astrid__*` tools, which funnel through
+/// chokepoint — unlike the `mcp__aos__*` tools, which funnel through
 /// [`handle_mcp_call`] where the same [`crate::policy`] PDP refuses to
 /// dispatch a denied call un-bypassably. For native tools there is no such
 /// in-process point, so the PreToolUse hook is the ONLY per-call lever. The
@@ -102,14 +102,14 @@ const MAX_REQ_ID_LEN: usize = 128;
 /// DENY on top, and only ever NARROWS (an `Allow` defers to Claude's
 /// existing permission flow rather than asserting an explicit allow).
 ///
-/// SYNC (load-bearing): must equal `sage_install::layout::PRETOOLUSE_GATE_TOOL`
-/// — sage-install authors the hook with this exact `tool` name. The two
+/// Must equal `claude_install::layout::PRETOOLUSE_GATE_TOOL` — claude-install
+/// authors the hook with this exact `tool` name. The two
 /// crates share no dependency edge, so the constant is mirrored, not shared;
 /// a drift silently DISABLES the gate (the hook would call a name the broker
 /// does not special-case, so `dispatch_with_approval` treats it as an
 /// unknown tool, drains to `isError`, and the hook fails open). A presence
 /// test in each crate anchors the value.
-pub(crate) const PRETOOLUSE_GATE_TOOL: &str = "astrid_pretooluse_gate";
+pub(crate) const PRETOOLUSE_GATE_TOOL: &str = "aos_pretooluse_gate";
 
 /// Inbound `astrid.v1.request.mcp.tools.list` payload.
 ///
@@ -125,7 +125,7 @@ struct ListRequest {
 ///
 /// Standard MCP `tools/call` shape (`name` + `arguments`) plus the
 /// proxy `req_id`. `name` is a RAW MCP tool name — the broker does not
-/// use the `mcp__astrid__` prefix.
+/// use the `mcp__aos__` prefix.
 #[derive(Debug, Deserialize)]
 struct CallRequest {
     req_id: String,
@@ -784,7 +784,7 @@ pub(crate) fn reply_topic(req_id: &str) -> Option<String> {
     Some(format!("{RESPONSE_PREFIX}{req_id}"))
 }
 
-/// Wrap a tool result into the MCP `content` block array sage already
+/// Wrap a tool result into the MCP `content` block array the host already
 /// emits elsewhere: `[{ "type":"text", "text":<string> }]`. Structured
 /// (non-string) results are serialized to JSON text so the wire stays
 /// UTF-8 string-shaped and the proxy needs no schema knowledge.
@@ -844,7 +844,7 @@ fn publish_reply(topic: &str, reply: &Value) {
 #[cfg(test)]
 mod tests {
     fn install_test_profile() {
-        crate::profile::install_astrid();
+        crate::profile::install_aos();
     }
 
     use super::*;
@@ -1113,13 +1113,13 @@ mod tests {
     fn gate_tool_name_is_pinned() {
         install_test_profile();
         // Value anchor for the cross-crate SYNC with
-        // `sage_install::layout::PRETOOLUSE_GATE_TOOL`. No dependency edge
+        // `claude_install::layout::PRETOOLUSE_GATE_TOOL`. No dependency edge
         // between the crates, so the name is mirrored, not shared; the
-        // sage-install side pins the same literal in
+        // claude-install pins the same literal in
         // `pretooluse_gate_tool_name_is_pinned`. A rename on one side without
         // the other silently disables the gate (fail-open), so both anchor the
         // exact string and a deliberate edit must touch both tests.
-        assert_eq!(PRETOOLUSE_GATE_TOOL, "astrid_pretooluse_gate");
+        assert_eq!(PRETOOLUSE_GATE_TOOL, "aos_pretooluse_gate");
     }
 
     #[test]

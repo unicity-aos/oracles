@@ -8,7 +8,7 @@
 //! to `claude.v1.hook.*` and routes each event through
 //! `lookup_token` + `tokens_match` + canonical-topic republish;
 //! `shutdown::stop_session` and `supervisor::evict` call `forget_token`
-//! on every session-end path. See unicity-astrid/astrid#814 (binary) and
+//! on every session-end path. See astrid-runtime/astrid#814 (binary) and
 //! rfcs#30 (capability-token forward direction) for the broader design
 //! and the residual Linux env-stealability gap.
 //!
@@ -17,7 +17,7 @@
 //! The native `astrid-emit` binary (shipping separately in core) reads
 //! a per-session token from the spawned `claude -p` process env
 //! (`ASTRID_HOOK_TOKEN`) and includes it in every published
-//! `claude.v1.hook.*` event. Sage's run loop looks the token
+//! `claude.v1.hook.*` event. The runner's loop looks the token
 //! up in KV at `claude.hook_token.<principal>.<session>` and only
 //! republishes on the canonical `hook.v1.event.*` topics when the
 //! claimed token matches the stored one.
@@ -58,7 +58,7 @@ const TOKEN_BYTES: usize = 32;
 /// `claude.v1.notification` instead.
 ///
 /// SYNC: the SET of tails here MUST equal the set of `claude.v1.hook.<tail>`
-/// values in `sage_install::layout::HOOK_TOPIC_MAP` (claude-install/src/layout.rs).
+/// values in `claude_install::layout::HOOK_TOPIC_MAP` (claude-install/src/layout.rs).
 /// The two crates have no dependency edge, so the table is mirrored. A tail
 /// authored on the spawn side but absent here is published by `astrid-emit`
 /// yet dropped by the validator (`unknown_hook`); the reverse is dead. The
@@ -191,7 +191,7 @@ pub(crate) fn tokens_match(claimed: &str, stored: &str) -> bool {
 
 /// Wire shape of an `claude.v1.hook.<name>` envelope as
 /// published by the native `astrid-emit` binary (core PR for
-/// unicity-astrid/astrid#814). `principal_id`, `session_id`, and
+/// astrid-runtime/astrid#814). `principal_id`, `session_id`, and
 /// `token` are claim-only transport fields — the runner trusts none of
 /// them until [`tokens_match`] succeeds against the KV-stored token.
 #[derive(Debug, Deserialize)]

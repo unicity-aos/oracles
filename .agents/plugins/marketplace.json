@@ -1,8 +1,20 @@
 {
-  "name": "astrid-oracles",
-  "owner": { "name": "Unicity Labs" },
-  "metadata": { "description": "Astrid for Codex" },
+  "name": "unicity-aos-oracles",
+  "interface": {
+    "displayName": "Unicity AOS Oracles"
+  },
   "plugins": [
-    { "name": "astrid", "source": "./plugins/codex", "description": "Astrid — Codex host plugin" }
+    {
+      "name": "unicity-aos",
+      "source": {
+        "source": "local",
+        "path": "./plugins/unicity-aos"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
   ]
 }

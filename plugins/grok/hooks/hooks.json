@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"/bin/astrid-doctor --format hook",
+            "command": "\"${GROK_PLUGIN_ROOT}\"/bin/aos-doctor --format hook",
             "timeout": 15
           }
         ]

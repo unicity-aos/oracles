@@ -16,6 +16,7 @@ crate-type = ["cdylib"]
 oracle-core.workspace = true
 oracle-host.workspace = true
 astrid-sdk.workspace = true
+blake3.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true

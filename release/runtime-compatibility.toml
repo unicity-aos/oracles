@@ -1,0 +1,13 @@
+schema-version = 1
+
+[runtime]
+repository = "astrid-runtime/astrid"
+version = "0.9.4"
+tag = "v0.9.4"
+version-requirement = "=0.9.4"
+release-workflow-identity = "https://github.com/unicity-astrid/astrid/.github/workflows/release.yml@refs/tags/v0.9.4"
+release-ready = false
+
+# This pin deliberately blocks an oracle release until the approved Astrid
+# release containing the neutral authenticated init and channel contracts exists.
+# Update every field together; never point a release build at a moving channel.

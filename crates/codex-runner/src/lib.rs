@@ -3,17 +3,20 @@
 #![deny(unreachable_pub)]
 #![warn(missing_docs)]
 
-//! Codex host runner on Astrid OS.
+//! Codex host runner on Unicity AOS.
 //!
-//! Host adapter: bounded `codex exec` turns under Astrid. The first
+//! Host adapter: bounded `codex exec` turns under AOS. The first
 //! slice uses bounded `codex exec` calls rather than pretending Codex has the
 //! same long-lived stdin/stdout contract as `claude -p`.
 
 use astrid_sdk::prelude::*;
+use oracle_host::ids::stamped_principal;
 use oracle_host::ids::validate_id as host_validate_id;
 // InteractionMode re-exported above
 use serde::{Deserialize, Serialize};
 use std::time::UNIX_EPOCH;
+
+mod provision;
 
 const SETTINGS_KEY: &str = "codex.principal.config";
 const SESSION_KEY_PREFIX: &str = "codex.session";
@@ -113,7 +116,7 @@ fn default_sandbox_mode() -> String {
 }
 
 fn default_profile() -> Option<String> {
-    Some("astrid".to_string())
+    Some("aos".to_string())
 }
 
 fn default_mirror_json_events() -> bool {
@@ -397,7 +400,8 @@ struct HookAudit {
 impl CodexRunner {
     /// Spawn a Codex headless turn.
     #[astrid::interceptor("handle_spawn")]
-    pub fn handle_spawn(&self, req: SpawnRequest) -> Result<(), SysError> {
+    pub fn handle_spawn(&self, mut req: SpawnRequest) -> Result<(), SysError> {
+        req.principal_id = stamped_principal(&req.principal_id)?.to_string();
         validate_principal_id("principal_id", &req.principal_id)?;
         let session_id = req
             .session_id
@@ -413,6 +417,15 @@ impl CodexRunner {
                 Some(&req.principal_id),
                 Some(&session_id),
                 "interaction_mode_is_repl: run Codex directly for this principal",
+            )?;
+            return Ok(());
+        }
+
+        if let Err(reason) = provision::ensure(&req.principal_id) {
+            publish_error(
+                Some(&req.principal_id),
+                Some(&session_id),
+                &format!("install_failed: {reason}"),
             )?;
             return Ok(());
         }
@@ -449,6 +462,7 @@ impl CodexRunner {
             publish_error(None, Some(&req.session_id), "unknown_session")?;
             return Ok(());
         };
+        stamped_principal(&session.principal_id)?;
         if cfg.interaction_mode == InteractionMode::Repl {
             publish_error(
                 Some(&session.principal_id),
@@ -463,7 +477,8 @@ impl CodexRunner {
 
     /// Patch per-principal Codex settings.
     #[astrid::interceptor("handle_settings_set")]
-    pub fn handle_settings_set(&self, req: SettingsSetRequest) -> Result<(), SysError> {
+    pub fn handle_settings_set(&self, mut req: SettingsSetRequest) -> Result<(), SysError> {
+        req.principal_id = stamped_principal(&req.principal_id)?.to_string();
         validate_principal_id("principal_id", &req.principal_id)?;
         let mut cfg = load_config()?;
         if let Some(mode) = req.interaction_mode {
@@ -511,7 +526,8 @@ impl CodexRunner {
 
     /// Record a Codex hook emitted by the native/plugin shim.
     #[astrid::interceptor("handle_hook")]
-    pub fn handle_hook(&self, env: HookEnvelope) -> Result<(), SysError> {
+    pub fn handle_hook(&self, mut env: HookEnvelope) -> Result<(), SysError> {
+        env.principal_id = stamped_principal(&env.principal_id)?.to_string();
         validate_principal_id("principal_id", &env.principal_id)?;
         validate_topic_segment("session_id", &env.session_id)?;
         validate_topic_segment("event", &env.event)?;
@@ -907,9 +923,9 @@ mod tests {
     }
 
     #[test]
-    fn config_defaults_to_astrid_profile_and_event_mirroring() {
+    fn config_defaults_to_aos_profile_and_event_mirroring() {
         let cfg = PrincipalConfig::default();
-        assert_eq!(cfg.profile.as_deref(), Some("astrid"));
+        assert_eq!(cfg.profile.as_deref(), Some("aos"));
         assert!(cfg.mirror_json_events);
         assert!(!cfg.ignore_user_config);
     }

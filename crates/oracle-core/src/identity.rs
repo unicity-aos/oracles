@@ -1,14 +1,14 @@
-//! Singleton Astrid oracle wire identity.
+//! Singleton Unicity AOS oracle identity over the neutral Astrid wire.
 //!
 //! Every host shares this. Host-specific data lives on [`crate::HostProfile`].
 
 use crate::newtypes::{AuditTopicPrefix, CapsuleName, LogTag, McpNamespace, McpToolPrefix, Topic};
 
-/// Astrid-side wire identity for the shared oracle broker.
+/// Product and runtime identities for the shared oracle broker.
 ///
-/// One backend: MCP tools are `mcp__astrid__*`, discovery/audit ride
-/// `astrid.v1.tools.*` / `astrid.v1.audit.*`. Host plugins only change
-/// how you *enter* Astrid, not what the broker is called.
+/// The product-facing MCP namespace is AOS. Published capsule names and
+/// transport topics remain Astrid identifiers so existing artifacts and wire
+/// contracts retain their provenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OracleIdentity {
     /// Capsule component id.
@@ -29,10 +29,10 @@ pub struct OracleIdentity {
 
 impl OracleIdentity {
     /// The only oracle identity. Host adapters do not get their own.
-    pub const ASTRID: Self = Self {
+    pub const AOS: Self = Self {
         capsule_name: CapsuleName("astrid-mcp"),
-        mcp_namespace: McpNamespace("astrid"),
-        mcp_tool_prefix: McpToolPrefix("mcp__astrid__"),
+        mcp_namespace: McpNamespace("aos"),
+        mcp_tool_prefix: McpToolPrefix("mcp__aos__"),
         log_tag: LogTag("astrid-mcp"),
         tools_list_topic: Topic("astrid.v1.tools.list"),
         tools_describe_topic: Topic("astrid.v1.tools.describe"),
@@ -48,7 +48,7 @@ impl OracleIdentity {
         out
     }
 
-    /// Allowed-tools glob (`mcp__astrid__*`).
+    /// Allowed-tools glob (`mcp__aos__*`).
     #[must_use]
     pub fn allowed_tools_glob(&self) -> String {
         let mut out = String::with_capacity(self.mcp_tool_prefix.as_str().len() + 1);
@@ -63,14 +63,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn astrid_identity_is_internally_consistent() {
-        let id = OracleIdentity::ASTRID;
+    fn aos_identity_preserves_the_astrid_runtime_wire() {
+        let id = OracleIdentity::AOS;
         assert_eq!(id.capsule_name.as_str(), "astrid-mcp");
-        assert_eq!(id.mcp_namespace.as_str(), "astrid");
-        assert_eq!(id.mcp_tool_prefix.as_str(), "mcp__astrid__");
+        assert_eq!(id.mcp_namespace.as_str(), "aos");
+        assert_eq!(id.mcp_tool_prefix.as_str(), "mcp__aos__");
         assert_eq!(id.tools_list_topic.as_str(), "astrid.v1.tools.list");
         assert_eq!(id.tools_describe_topic.as_str(), "astrid.v1.tools.describe");
         assert_eq!(id.audit_topic("policy_deny"), "astrid.v1.audit.policy_deny");
-        assert_eq!(id.allowed_tools_glob(), "mcp__astrid__*");
+        assert_eq!(id.allowed_tools_glob(), "mcp__aos__*");
     }
 }

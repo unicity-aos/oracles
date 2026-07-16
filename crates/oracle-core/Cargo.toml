@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared product identity types for Astrid oracles (Sage/Mimir/Sibyl)"
+description = "Shared product identity types for Unicity AOS oracle integrations"
 publish = false
 
 [dependencies]

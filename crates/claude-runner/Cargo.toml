@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Claude headless (claude -p) agent runner on Astrid OS"
+description = "Claude headless (claude -p) agent runner on Unicity AOS"
 publish = false
 
 [lib]

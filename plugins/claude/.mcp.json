@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "astrid": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/astrid-up",
+    "aos": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/bin/aos-up",
       "args": ["--principal", "${user_config.principal}"],
       "env": {}
     }

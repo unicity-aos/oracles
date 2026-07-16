@@ -20,16 +20,26 @@ pub(crate) fn write_settings(cfg: &PrincipalConfig) -> Result<(), SysError> {
 }
 
 /// Write the `.claude/.mcp.json` for the invoking principal, shaped by
-/// `cfg`. In headless mode it registers the `astrid` MCP server (`astrid mcp
-/// serve --principal <principal_id>`) that claude loads via
-/// `--strict-mcp-config --mcp-config` and discovers `mcp__astrid__*` from;
-/// in repl mode the body is an empty `mcpServers` object (the user wires
-/// native servers themselves). `principal_id` is baked into the headless
-/// server's argv so the spawned server scopes broker requests to the right
-/// identity (it does not infer the principal).
+/// `cfg`. It registers the `aos` MCP server (`aos --principal
+/// <principal_id> mcp serve`) that Claude loads and discovers
+/// `mcp__aos__*` from. `principal_id` is baked into the server argv so
+/// broker requests are always scoped to the intended identity.
 pub(crate) fn write_mcp(cfg: &PrincipalConfig, principal_id: &str) -> Result<(), SysError> {
     let path = layout::mcp_path();
-    let body = serde_json::to_vec_pretty(&layout::mcp_json(cfg, principal_id))?;
+    let value = match cfg.interaction_mode {
+        crate::config::InteractionMode::Headless => layout::mcp_json(cfg, principal_id),
+        crate::config::InteractionMode::Repl => {
+            let existing = if fs::exists(&path)? {
+                serde_json::from_str(&fs::read_to_string(&path)?).map_err(|error| {
+                    SysError::ApiError(format!("invalid existing .claude/.mcp.json: {error}"))
+                })?
+            } else {
+                serde_json::json!({})
+            };
+            layout::merge_repl_mcp(existing, principal_id)?
+        }
+    };
+    let body = serde_json::to_vec_pretty(&value)?;
     atomic::write_atomic(&path, &body)
 }
 
@@ -49,7 +59,7 @@ pub(crate) fn write_managed_settings(cfg: &PrincipalConfig) -> Result<(), SysErr
 }
 
 /// Write the `.claude/CLAUDE.md` for the invoking principal — the
-/// standalone Astrid grounding (what Astrid OS is and the role it runs
+/// standalone AOS grounding (what Unicity AOS is and the role it runs
 /// the agent in), branched on interaction mode. User-tier memory Claude
 /// loads every session; authored as plain UTF-8 markdown through
 /// [`oracle_host::fs::write_atomic`].

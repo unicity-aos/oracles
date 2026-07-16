@@ -1,0 +1,24 @@
+schema-version = 1
+
+[pack]
+id = "codex-oracle"
+name = "Unicity AOS for Codex"
+version = "0.2.0"
+host = "codex"
+principal = "codex-code"
+description = "Codex integration for Unicity AOS."
+repository = "https://github.com/unicity-aos/oracles"
+license = "MIT OR Apache-2.0"
+aos-version = ">=2026.1.0"
+
+[[capsule]]
+name = "astrid-mcp"
+asset = "astrid-mcp.capsule"
+
+[[capsule]]
+name = "codex-install"
+asset = "codex-install.capsule"
+
+[[capsule]]
+name = "codex-runner"
+asset = "codex-runner.capsule"

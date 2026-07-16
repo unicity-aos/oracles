@@ -1,29 +1,30 @@
-# Astrid plugin for Grok Build
+# Unicity AOS for Grok Build
 
-Astrid is the backend. This directory is the **Grok host adapter** (hooks + MCP wiring).
+This plugin connects Grok Build to Unicity AOS as the scoped `grok-code`
+principal. It registers the public `aos` MCP server, a read-only session-start
+doctor, operator commands, and capsule-authoring skills. Commands are available
+by their unqualified names; if another plugin defines the same command, use the
+host-qualified form such as `/unicity-aos:doctor`.
 
-## Contents
+Install and provision the product and Grok adapter explicitly:
 
-- **MCP** (`.mcp.json`) — `astrid` server via `bin/astrid-up`
-- **SessionStart doctor** (`bin/astrid-doctor` → `plugins/common`)
-- **Skills** — `astrid` identity + `forge` capsule authoring
-
-## Install
-
-```bash
-# Marketplace (when published) or local path:
-grok plugin marketplace add unicity-astrid/oracles   # or a local clone
-# or: grok plugin install /path/to/oracles/plugins/grok --trust
-grok plugin enable astrid
-
-# Distro (shared backend + principal):
-curl -fsSL https://astridos.org/install.sh | sh -s -- --host grok
-# or: astrid init --distro distros/grok.toml --principal grok-code -y
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh \
+  | sh -s -- --host grok
 ```
 
-Plugin name is **`astrid`** (matches `.grok-plugin/marketplace.json`). Shared
-shell logic lives in `plugins/common/bin/`; each host plugin ships a
-self-contained copy in its own `bin/` (materialized by `scripts/sync-plugins.sh`),
-so the marketplace-packaged plugin never reaches outside its own directory. The
-scripts self-derive the host from its plugin-root env var. SessionStart runs
-`bin/astrid-doctor` (runtime + plugin + distro update clocks, ~24h rate limit).
+Or install the local plugin during development:
+
+```sh
+grok plugin install /path/to/oracles/plugins/grok --trust
+grok plugin enable unicity-aos
+```
+
+`.mcp.json` executes `bin/aos-up --principal grok-code`. That wrapper delegates
+to `aos --principal grok-code mcp serve`; AOS owns authenticated runtime startup.
+The wrapper never provisions principals, installs capsules, or reaches into the
+private runtime home.
+
+Visible tools use `mcp__aos__*`. The internal broker capsule remains
+`astrid-mcp`, and its stable runtime topics remain `astrid.v1.*`.

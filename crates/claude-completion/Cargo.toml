@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Anthropic API LLM provider for Astrid OS (rfc:llm-provider.v1)"
+description = "Anthropic API LLM provider for Unicity AOS (rfc:llm-provider.v1)"
 publish = false
 
 [lib]

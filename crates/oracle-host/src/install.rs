@@ -40,6 +40,9 @@ pub struct InstallMarker {
     /// Optional home path echo (Claude install records this).
     #[serde(default)]
     pub home_path: String,
+    /// Provisioner-defined digest of inputs that determine authored files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_digest: Option<String>,
 }
 
 /// Progress event on `{host}.v1.install.status`.
@@ -96,6 +99,15 @@ pub trait HostProvisioner {
         "home://".into()
     }
 
+    /// Stable digest of context fields that affect authored files.
+    ///
+    /// Provisioners without config-bearing files keep the default `None`.
+    /// A legacy marker without a digest is stale when a provisioner now
+    /// returns `Some`, repairing the projection once after upgrade.
+    fn config_digest(_ctx: &Self::Context) -> Option<String> {
+        None
+    }
+
     /// Ensure host home dirs exist.
     fn ensure_dirs(ctx: &Self::Context) -> Result<(), SysError>;
 
@@ -119,14 +131,20 @@ pub fn run_install<P: HostProvisioner>(
     let topics = P::topics();
     let key = marker_key(&topics, principal);
     let home = P::home_path(ctx);
+    let config_digest = P::config_digest(ctx);
 
     if !force && let Some(marker) = kv::get_json_opt::<InstallMarker>(&key)? {
-        if marker.artifact_version >= P::ARTIFACT_VERSION {
+        if marker_is_current(&marker, P::ARTIFACT_VERSION, &config_digest) {
             return Ok(true);
         }
-        publish_status::<P>(principal, "reconcile_stale_artifacts", None)?;
+        let step = if marker.artifact_version < P::ARTIFACT_VERSION {
+            "reconcile_stale_artifacts"
+        } else {
+            "reconcile_changed_config"
+        };
+        publish_status::<P>(principal, step, None)?;
         P::reconcile_stale(ctx)?;
-        write_marker::<P>(&key, &home)?;
+        write_marker::<P>(&key, &home, config_digest)?;
         return Ok(true);
     }
 
@@ -136,7 +154,7 @@ pub fn run_install<P: HostProvisioner>(
     publish_status::<P>(principal, "write_config", None)?;
     P::write_files(ctx)?;
 
-    write_marker::<P>(&key, &home)?;
+    write_marker::<P>(&key, &home, config_digest)?;
     Ok(false)
 }
 
@@ -191,7 +209,19 @@ fn marker_key(topics: &HostTopics, principal: &PrincipalId) -> String {
     format!("{}.{}", topics.install_marker_prefix(), principal.as_str())
 }
 
-fn write_marker<P: HostProvisioner>(key: &str, home_path: &str) -> Result<(), SysError> {
+fn marker_is_current(
+    marker: &InstallMarker,
+    artifact_version: u32,
+    config_digest: &Option<String>,
+) -> bool {
+    marker.artifact_version >= artifact_version && &marker.config_digest == config_digest
+}
+
+fn write_marker<P: HostProvisioner>(
+    key: &str,
+    home_path: &str,
+    config_digest: Option<String>,
+) -> Result<(), SysError> {
     kv::set_json(
         key,
         &InstallMarker {
@@ -204,6 +234,40 @@ fn write_marker<P: HostProvisioner>(key: &str, home_path: &str) -> Result<(), Sy
                 .unwrap_or(u64::MAX),
             artifact_version: P::ARTIFACT_VERSION,
             home_path: home_path.to_string(),
+            config_digest,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn marker(config_digest: Option<&str>) -> InstallMarker {
+        InstallMarker {
+            version: "0.1.0".into(),
+            installed_at: 1,
+            artifact_version: 4,
+            home_path: "home://".into(),
+            config_digest: config_digest.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn current_marker_requires_the_exact_config_digest() {
+        let expected = Some("blake3:new".to_string());
+        assert!(marker_is_current(&marker(Some("blake3:new")), 4, &expected));
+        assert!(!marker_is_current(
+            &marker(Some("blake3:old")),
+            4,
+            &expected
+        ));
+        assert!(!marker_is_current(&marker(None), 4, &expected));
+    }
+
+    #[test]
+    fn configless_provisioner_keeps_legacy_cache_semantics() {
+        assert!(marker_is_current(&marker(None), 4, &None));
+        assert!(!marker_is_current(&marker(None), 5, &None));
+    }
 }

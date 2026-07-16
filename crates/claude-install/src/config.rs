@@ -107,6 +107,14 @@ impl PrincipalConfig {
                 "PrincipalConfig.max_turns must be >= 1 when set; 0 forbids all work".to_string(),
             );
         }
+        if self.interaction_mode == InteractionMode::Headless
+            && self.auth_mode == AuthMode::Subscription
+        {
+            return Err(
+                "subscription authentication requires repl interaction mode; headless Claude requires an API key"
+                    .to_string(),
+            );
+        }
         Ok(())
     }
 }
@@ -158,6 +166,25 @@ mod tests {
     #[test]
     fn validate_accepts_current_schema_version() {
         assert!(PrincipalConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_headless_subscription() {
+        let cfg = PrincipalConfig {
+            auth_mode: AuthMode::Subscription,
+            ..PrincipalConfig::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_repl_subscription() {
+        let cfg = PrincipalConfig {
+            interaction_mode: InteractionMode::Repl,
+            auth_mode: AuthMode::Subscription,
+            ..PrincipalConfig::default()
+        };
+        assert!(cfg.validate().is_ok());
     }
 
     /// Canonical fully-populated wire payload for schema_version=2. The

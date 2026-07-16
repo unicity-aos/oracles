@@ -143,6 +143,19 @@ impl Sessions {
             Ok(true)
         }
     }
+
+    /// Request another persisted-record recovery sweep on the next tick.
+    ///
+    /// Used when a post-spawn bookkeeping failure could not stop the
+    /// persistent child. Keeping the record and re-arming recovery is the only
+    /// safe alternative to deleting the last handle to a still-live process.
+    pub(crate) fn request_reload_recovery(&self) -> Result<(), SysError> {
+        let mut guard = self.reload_recovered.lock().map_err(|_| {
+            SysError::ApiError("claude-runner reload-recovery flag lock poisoned".into())
+        })?;
+        *guard = false;
+        Ok(())
+    }
 }
 
 /// Persist a session record to KV.

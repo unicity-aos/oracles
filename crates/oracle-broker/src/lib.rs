@@ -24,7 +24,7 @@ mod policy;
 mod profile;
 
 pub use oracle_core::{Host, HostProfile, OracleIdentity};
-pub use profile::{install, install_astrid};
+pub use profile::{install, install_aos};
 
 /// Capsule entry points — product-agnostic once [`install`] has run.
 ///

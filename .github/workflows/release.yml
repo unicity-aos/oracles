@@ -1,59 +1,240 @@
 name: Release
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 env:
+  B3SUM_VERSION: 1.8.5
   CARGO_TERM_COLOR: always
 
 jobs:
   release:
-    name: Build capsules and publish release
+    name: Build and publish signed oracle packs
     runs-on: ubuntu-latest
+    environment: release
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
         with:
-          toolchain: "1.94.0"
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: '1.94.0'
           targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: aos-oracles-release
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Validate immutable release inputs
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = tag || {
+            echo "release workflow must be dispatched with a vX.Y.Z tag selected" >&2
+            exit 1
+          }
+          printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$GITHUB_REF_NAME")"
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor HEAD origin/main || {
+            echo "release tag is not contained in origin/main" >&2
+            exit 1
+          }
+          git diff --exit-code
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import pathlib
+          import tomllib
 
-      # Componentize with astrid-build (from the astrid release) rather than
-      # raw cargo wasm. `astrid capsule install` expects a `.capsule`
-      # archive (wasm component + manifest + WIT), not a bare module.
-      - name: Fetch astrid-build from astrid release
+          version = "${{ github.ref_name }}".removeprefix("v")
+          runtime = tomllib.loads(pathlib.Path("release/runtime-compatibility.toml").read_text())["runtime"]
+          if runtime["release-ready"] is not True:
+              raise SystemExit("runtime compatibility pin is not release-ready")
+          for host in ("claude", "codex", "grok"):
+              pack = tomllib.loads(pathlib.Path(f"packs/{host}.toml").read_text())["pack"]
+              if pack["version"] != version:
+                  raise SystemExit(f"packs/{host}.toml version does not match tag")
+          print(f"RUNTIME_REPOSITORY={runtime['repository']}")
+          print(f"RUNTIME_VERSION={runtime['version']}")
+          print(f"RUNTIME_TAG={runtime['tag']}")
+          print(f"RUNTIME_IDENTITY={runtime['release-workflow-identity']}")
+          PY
+          marker="<!-- aos-oracles-source:${GITHUB_SHA} -->"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true || {
+              echo "published release already exists: $GITHUB_REF_NAME" >&2
+              exit 1
+            }
+            test "$(gh release view "$GITHUB_REF_NAME" --json tagName --jq .tagName)" = "$GITHUB_REF_NAME" || {
+              echo "existing draft is attached to another tag" >&2
+              exit 1
+            }
+            first_line=$(gh release view "$GITHUB_REF_NAME" --json body --jq .body | sed -n '1p')
+            test "$first_line" = "$marker" || {
+              echo "existing draft was created from another source commit" >&2
+              exit 1
+            }
+            echo "REUSE_RELEASE_DRAFT=true" >> "$GITHUB_ENV"
+          else
+            echo "REUSE_RELEASE_DRAFT=false" >> "$GITHUB_ENV"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Validate release source
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo test --workspace --locked --target x86_64-unknown-linux-gnu
+          cargo clippy --workspace --all-targets --locked \
+            --target x86_64-unknown-linux-gnu -- -D warnings
+          scripts/sync-plugins.sh
+          git diff --exit-code -- plugins/claude/bin plugins/grok/bin
+          python3 scripts/test_pack_contract.py
+          python3 scripts/test_brand_boundary.py
+          python3 scripts/test_wit_contract.py
+          python3 scripts/test_release_contract.py
+          scripts/test-install.sh
+
+      - name: Install pinned BLAKE3 tool
+        run: cargo install b3sum --locked --version "$B3SUM_VERSION"
+
+      - name: Download and verify the pinned runtime builder
+        run: |
+          set -euo pipefail
+          target=x86_64-unknown-linux-gnu
+          asset="astrid-${RUNTIME_VERSION}-${target}.tar.gz"
+          base="https://github.com/${RUNTIME_REPOSITORY}/releases/download/${RUNTIME_TAG}"
+          curl --proto '=https' --tlsv1.2 -fsSLO "$base/$asset"
+          curl --proto '=https' --tlsv1.2 -fsSLO "$base/BLAKE3SUMS.txt"
+          curl --proto '=https' --tlsv1.2 -fsSLo "$asset.sigstore.json" "$base/$asset.sigstore.json"
+          expected=$(awk -v name="$asset" '$2 == name {print $1; exit}' BLAKE3SUMS.txt)
+          test -n "$expected"
+          test "$(b3sum "$asset" | awk '{print $1}')" = "$expected"
+          cosign verify-blob \
+            --bundle "$asset.sigstore.json" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-identity "$RUNTIME_IDENTITY" \
+            --use-signed-timestamps \
+            "$asset"
+          mkdir -p runtime
+          tar -xzf "$asset" -C runtime
+          builder=$(find runtime -type f -name astrid-build -print -quit)
+          test -n "$builder"
+          chmod +x "$builder"
+          echo "ASTRID_BUILD=$builder" >> "$GITHUB_ENV"
+
+      - name: Build installable capsules and pack manifests
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          for crate in \
+            astrid-mcp \
+            claude-runner claude-install \
+            codex-runner codex-install
+          do
+            "$ASTRID_BUILD" "crates/$crate" --output artifacts
+          done
+          for host in claude codex grok; do
+            install -m 0644 "packs/$host.toml" "artifacts/$host-pack.toml"
+          done
+          tar --sort=name --mtime='UTC 1970-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf artifacts/aos-oracle-plugins.tar.gz \
+            .agents .claude-plugin .grok-plugin \
+            plugins/claude plugins/grok plugins/unicity-aos
+          cp release/runtime-compatibility.toml artifacts/runtime-compatibility.toml
+          cd artifacts
+          b3sum ./*.capsule ./*-pack.toml aos-oracle-plugins.tar.gz \
+            runtime-compatibility.toml > BLAKE3SUMS.txt
+
+      - name: Verify capsule-owned WIT contracts in release archives
+        run: AOS_WIT_ARTIFACTS=artifacts python3 scripts/test_wit_contract.py
+
+      - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            artifacts/*.capsule
+            artifacts/*-pack.toml
+            artifacts/aos-oracle-plugins.tar.gz
+            artifacts/BLAKE3SUMS.txt
+            artifacts/runtime-compatibility.toml
+
+      - name: Sign and verify every release asset
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          cd artifacts
+          identity="https://github.com/unicity-aos/oracles/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
+          for asset in ./*.capsule ./*-pack.toml aos-oracle-plugins.tar.gz \
+            BLAKE3SUMS.txt runtime-compatibility.toml; do
+            cosign sign-blob --yes --bundle "$asset.sigstore.json" "$asset"
+            cosign verify-blob \
+              --bundle "$asset.sigstore.json" \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              --certificate-identity "$identity" \
+              --use-signed-timestamps \
+              "$asset"
+          done
+
+      - name: Verify exact release inventory
+        run: |
+          set -euo pipefail
+          cd artifacts
+          {
+            printf '%s\n' \
+              astrid-mcp.capsule \
+              claude-install.capsule claude-runner.capsule \
+              codex-install.capsule codex-runner.capsule \
+              claude-pack.toml codex-pack.toml grok-pack.toml \
+              aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml
+            for asset in \
+              astrid-mcp.capsule \
+              claude-install.capsule claude-runner.capsule \
+              codex-install.capsule codex-runner.capsule \
+              claude-pack.toml codex-pack.toml grok-pack.toml \
+              aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml
+            do
+              printf '%s.sigstore.json\n' "$asset"
+            done
+          } | sort > ../expected-assets.txt
+          find . -maxdepth 1 -type f -exec basename {} \; | sort > ../actual-assets.txt
+          diff -u ../expected-assets.txt ../actual-assets.txt
+
+      - name: Stage, verify, and publish immutable GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release download --repo unicity-astrid/astrid \
-            --pattern 'astrid-*-x86_64-unknown-linux-gnu.tar.gz' --dir /tmp/astrid-cli
-          tar xzf /tmp/astrid-cli/*.tar.gz -C /tmp/astrid-cli
-          echo "$(dirname "$(find /tmp/astrid-cli -name astrid-build -type f | head -1)")" >> "$GITHUB_PATH"
+          marker="<!-- aos-oracles-source:${GITHUB_SHA} -->"
+          if [ "$REUSE_RELEASE_DRAFT" != true ]; then
+            gh release create "$GITHUB_REF_NAME" \
+              --verify-tag \
+              --target "$GITHUB_SHA" \
+              --draft \
+              --title "Unicity AOS Oracles ${GITHUB_REF_NAME#v}" \
+              --generate-notes \
+              --notes "$marker"
+          fi
 
-      - name: Build .capsule archives (one per capsule crate)
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          for crate in \
-            astrid-mcp \
-            claude-runner claude-install claude-completion \
-            codex-runner codex-install
-          do
-            astrid-build "crates/$crate" --output dist
-          done
-          ls -la dist/
+          gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: dist/*.capsule
-          generate_release_notes: true
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft)" = true
+          test "$(gh release view "$GITHUB_REF_NAME" --json tagName --jq .tagName)" = "$GITHUB_REF_NAME"
+          first_line=$(gh release view "$GITHUB_REF_NAME" --json body --jq .body | sed -n '1p')
+          test "$first_line" = "$marker"
+          gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name' \
+            | sort > remote-assets.txt
+          diff -u expected-assets.txt remote-assets.txt
+
+          gh release edit "$GITHUB_REF_NAME" --draft=false

@@ -11,16 +11,20 @@
 //!   6. Evict from the live session registry; `Process` drop reaps.
 //!
 //! Identity refresh follows the same termination path for every session
-//! owned by the principal whose identity was just saved, then writes a
-//! `claude.pending_restart.<principal_id>` KV marker carrying the
-//! terminated session_ids. The supervisor's tick respawns them with a
-//! freshly-fetched identity prompt on the next pass.
+//! owned by the principal whose identity was just saved, then immediately
+//! respawns them before returning from that principal-stamped IPC message.
+//! The config and secret are resolved once before teardown and passed through
+//! explicitly; a later message for another principal can never change the
+//! context used by the respawn.
 
 use astrid_sdk::prelude::*;
+use oracle_host::ids::{PrincipalId, resolve_principal};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-use crate::config::{AuthMode, load_or_default as load_principal_config};
+use crate::config::{
+    AuthMode, InteractionMode, PrincipalConfig, load_or_default as load_principal_config,
+};
 use crate::identity;
 use crate::spawn::{self, SpawnInputs};
 use crate::state::{self, RuntimeSession, SessionRecord, Sessions};
@@ -40,6 +44,18 @@ struct SaveIdentityResult {
     success: bool,
     #[serde(default)]
     principal_id: Option<String>,
+}
+
+fn identity_refresh_principal(
+    result: &SaveIdentityResult,
+    stamped: Option<&str>,
+) -> Result<PrincipalId, SysError> {
+    match result.principal_id.as_deref() {
+        Some(body) => resolve_principal(body, stamped),
+        None => PrincipalId::parse(
+            stamped.ok_or_else(|| SysError::ApiError("caller principal is required".into()))?,
+        ),
+    }
 }
 
 /// KV-persisted respawn marker. Pending session ids per principal so a
@@ -62,6 +78,49 @@ struct PendingRestartSession {
     /// outage doesn't pin a marker on the bus forever.
     #[serde(default)]
     attempts: u32,
+}
+
+/// Invocation-bound inputs captured while the verified identity result is
+/// still the active message. Secrets remain in memory and are never written to
+/// the pending-restart marker.
+struct RespawnContext {
+    principal_id: String,
+    home_path: String,
+    config: PrincipalConfig,
+    api_key: Option<String>,
+}
+
+impl RespawnContext {
+    fn capture(principal_id: &PrincipalId) -> Result<Self, SysError> {
+        let config = load_principal_config();
+        config.validate()?;
+        if config.interaction_mode != InteractionMode::Headless {
+            return Err(SysError::ApiError(format!(
+                "identity refresh found a live headless session for repl principal {principal_id}"
+            )));
+        }
+        let api_key = match config.auth_mode {
+            AuthMode::ApiKey => {
+                let key = env::var("api_key").unwrap_or_default();
+                if key.is_empty() {
+                    return Err(SysError::ApiError(format!(
+                        "identity refresh has no api_key for principal {principal_id}"
+                    )));
+                }
+                Some(key)
+            }
+            AuthMode::Subscription => None,
+        };
+
+        Ok(Self {
+            principal_id: principal_id.to_string(),
+            // Keep the kernel-resolved VFS scheme. Native child env/cwd
+            // translation belongs to the Astrid process host, not this guest.
+            home_path: "home://".to_string(),
+            config,
+            api_key,
+        })
+    }
 }
 
 /// Cap on consecutive respawn attempts before the marker is dropped
@@ -119,12 +178,9 @@ pub(crate) fn stop_session(
     //   * `None` — the supervisor's `drive_session` evicted it under us
     //     during phase 2 (and already published its own `exited` event);
     //     skip our publish to avoid a duplicate.
-    let prepared = sessions.with(|map| -> Option<PreparedKill> {
-        let session = map.remove(session_id)?;
-        Some(PreparedKill {
-            process: session.process.clone(),
-            principal_id: session.record.principal_id.clone(),
-        })
+    let prepared = sessions.with(|map| {
+        map.remove(session_id)
+            .map(|session| PreparedKill { session })
     })?;
 
     let final_exit = prepared.map(|p| {
@@ -134,37 +190,41 @@ pub(crate) fn stop_session(
         // reaps — dropping a `PersistentProcess` never reaps, so the host
         // slot must be freed explicitly below (`release` if already exited,
         // `stop` otherwise).
-        if let Ok(logs) = p.process.read_logs() {
+        if let Ok(logs) = p.session.process.read_logs() {
             summary.exit_code = logs.exit.and_then(|e| e.exit_code);
             summary.signal = logs.exit.and_then(|e| e.signal);
             summary.stdout_tail = trailing(&logs.stdout);
             summary.stderr_tail = trailing(&logs.stderr);
         }
-        if exited_clean {
+        let cleanup_error = if exited_clean {
             // Exited inside the grace window — just release the id (frees the
             // slot + drops the retained tail we already captured above).
-            if let Err(e) = p.process.release() {
-                summary.detail = Some(format!("release failed: {e:?}"));
-            }
+            p.session
+                .process
+                .clone()
+                .release()
+                .err()
+                .map(|error| format!("release failed: {error:?}"))
         } else {
             // Still running after the grace window: SIGTERM -> grace ->
             // SIGKILL and REMOVE the id. `stop` returns the real exit, which
             // supersedes whatever `read_logs` reported above.
-            match p.process.stop(None) {
+            match p.session.process.clone().stop(None) {
                 Ok(exit) => {
                     summary.exit_code = exit.exit_code;
                     summary.signal = exit.signal;
+                    None
                 }
-                Err(e) => {
-                    summary.detail = Some(format!("stop failed: {e:?}"));
-                }
+                Err(error) => Some(format!("stop failed: {error:?}")),
             }
-        }
-        (summary, p.principal_id)
+        };
+        summary.detail.clone_from(&cleanup_error);
+        (summary, p, cleanup_error)
     });
 
     match final_exit {
-        Some((summary, principal_id)) => {
+        Some((summary, p, None)) => {
+            let principal_id = &p.session.record.principal_id;
             publish_exited(session_id, reason, &summary);
             // Persisted record cleanup is best-effort — a stale row gets
             // cleaned up by the next reload-recovery sweep if delete fails.
@@ -177,11 +237,31 @@ pub(crate) fn stop_session(
             // `claude.v1.hook.*` event arriving after the
             // session is gone can no longer pass token validation. Best-
             // effort: log on failure (parallel to delete_record above).
-            if let Err(e) = crate::hooks::forget_token(&principal_id, session_id) {
+            if let Err(e) = crate::hooks::forget_token(principal_id, session_id) {
                 log::warn(format!(
                     "claude-runner: hook-token cleanup for {session_id} failed: {e:?}"
                 ));
             }
+        }
+        Some((summary, p, Some(cleanup_error))) => {
+            // The host did not confirm terminal cleanup. Put the exact runtime
+            // session back and retain its KV record + hook token; deleting
+            // them here would orphan a child that may still be running.
+            sessions.with(|map| {
+                map.insert(session_id.to_string(), p.session);
+            })?;
+            sessions.request_reload_recovery()?;
+            let _ = ipc::publish_json(
+                &format!("claude.v1.event.{session_id}.stop_failed"),
+                &serde_json::json!({
+                    "reason": reason,
+                    "error": cleanup_error,
+                    "detail": summary.detail,
+                }),
+            );
+            return Err(SysError::ApiError(format!(
+                "stop({session_id}) did not reach a terminal host state: {cleanup_error}"
+            )));
         }
         None => {
             // Supervisor's drive_session beat us to the eviction and
@@ -199,9 +279,10 @@ pub(crate) fn stop_session(
 }
 
 /// Handle a `tool.v1.execute.save_identity.result`.
-/// On `success=true` for a principal with live sessions: gracefully
-/// terminate each, persist a `PendingRestart` marker so the next
-/// supervisor tick respawns them with a freshly fetched identity.
+/// On `success=true` for a principal with live sessions: capture the verified
+/// principal's config and secret, gracefully terminate each session, and
+/// respawn it immediately with a freshly fetched identity. The whole operation
+/// completes before the run loop polls another subscription.
 pub(crate) fn handle_identity_refresh(
     sessions: &Sessions,
     msg: &ipc::Message,
@@ -219,15 +300,16 @@ pub(crate) fn handle_identity_refresh(
         return Ok(());
     }
 
-    // Principal source preference: payload field > IPC envelope principal.
-    let principal_id = result
-        .principal_id
-        .or_else(|| msg.principal.verified().map(str::to_string))
-        .unwrap_or_default();
-    if principal_id.is_empty() {
-        log::warn("claude-runner: save_identity success without resolvable principal; ignoring");
-        return Ok(());
-    }
+    let principal = match identity_refresh_principal(&result, msg.principal.verified()) {
+        Ok(principal) => principal,
+        Err(error) => {
+            log::warn(format!(
+                "claude-runner: rejected save_identity result with untrusted principal: {error}"
+            ));
+            return Ok(());
+        }
+    };
+    let principal_id = principal.to_string();
 
     // Snapshot the per-principal session list.
     let targets: Vec<PendingRestartSession> = sessions.with(|map| {
@@ -242,9 +324,15 @@ pub(crate) fn handle_identity_refresh(
             .collect()
     })?;
 
-    if targets.is_empty() {
+    let key = pending_restart_key(&principal_id);
+    let existing = kv::get_json_opt::<PendingRestart>(&key)?;
+    if targets.is_empty() && existing.is_none() {
         return Ok(());
     }
+
+    // Capture every ambient, principal-scoped input before teardown and before
+    // the run loop can poll a message for a different principal.
+    let context = RespawnContext::capture(&principal)?;
 
     log::info(format!(
         "claude-runner: identity refresh for {principal_id}; recycling {} session(s)",
@@ -259,105 +347,118 @@ pub(crate) fn handle_identity_refresh(
     // first round's pending list. KV doesn't expose CAS — best we can
     // do is read-modify-write per principal; the principal is the only
     // logical writer for its own marker.
-    let key = pending_restart_key(&principal_id);
-    let merged_sessions: Vec<PendingRestartSession> =
-        match kv::get_json_opt::<PendingRestart>(&key)? {
-            Some(existing) => {
-                let mut union = existing.sessions;
-                for new in &targets {
-                    if !union.iter().any(|s| s.session_id == new.session_id) {
-                        union.push(new.clone());
-                    }
+    let merged_sessions: Vec<PendingRestartSession> = match existing {
+        Some(existing) => {
+            let mut union = existing.sessions;
+            for new in &targets {
+                if !union.iter().any(|s| s.session_id == new.session_id) {
+                    union.push(new.clone());
                 }
-                union
             }
-            None => targets.clone(),
-        };
+            union
+        }
+        None => targets.clone(),
+    };
     let marker = PendingRestart {
         principal_id: principal_id.clone(),
         sessions: merged_sessions,
     };
     kv::set_json(&key, &marker)?;
 
+    let mut ready = marker.sessions.clone();
     for t in targets {
         if let Err(e) = stop_session(sessions, &t.session_id, "identity_refresh") {
             log::warn(format!(
                 "claude-runner: identity-refresh stop({}) failed: {e:?}",
                 t.session_id
             ));
+            // The old process and recovery state remain live. Do not create a
+            // second child for the same session id.
+            ready.retain(|pending| pending.session_id != t.session_id);
         }
     }
-    Ok(())
-}
 
-/// Tick-driven respawn sweep. Reads every
-/// `claude.pending_restart.<principal_id>` marker, attempts to rebuild
-/// each listed session, and clears the marker on success.
-///
-/// If respawn fails for a given session the marker is left in place so
-/// the next tick retries — but the session_id is removed from the
-/// marker if it succeeded for one but not another, so we don't
-/// double-spawn the survivors.
-pub(crate) fn respawn_pending(sessions: &Sessions) -> Result<(), SysError> {
-    let keys = kv::list_keys(&format!("{PENDING_RESTART_PREFIX}."))?;
-    if keys.is_empty() {
+    if ready.is_empty() {
+        kv::delete(&key)?;
         return Ok(());
     }
+    kv::set_json(
+        &key,
+        &PendingRestart {
+            principal_id: principal_id.clone(),
+            sessions: ready,
+        },
+    )?;
 
-    for key in keys {
-        let Some(marker): Option<PendingRestart> = kv::get_json_opt(&key)? else {
-            continue;
-        };
+    respawn_pending_with_context(sessions, &key, &context)
+}
 
-        let mut still_pending: Vec<PendingRestartSession> = Vec::new();
-        for mut s in marker.sessions {
-            match respawn_one(sessions, &marker.principal_id, &s) {
-                Ok(()) => log::info(format!(
-                    "claude-runner: respawned session {} for {} on identity refresh",
-                    s.session_id, marker.principal_id
-                )),
-                Err(e) => {
-                    s.attempts = s.attempts.saturating_add(1);
-                    if s.attempts >= MAX_RESPAWN_ATTEMPTS {
-                        log::warn(format!(
-                            "claude-runner: respawn({}) for {} failed after {} attempts; giving up — {e:?}",
-                            s.session_id, marker.principal_id, s.attempts
-                        ));
-                        let _ = ipc::publish_json(
-                            "claude.v1.audit.respawn_abandoned",
-                            &serde_json::json!({
-                                "principal_id": marker.principal_id,
-                                "session_id": s.session_id,
-                                "attempts": s.attempts,
-                                "error": format!("{e:?}"),
-                            }),
-                        );
-                        // Drop the session from the marker — caller has
-                        // to issue a fresh spawn request to recover.
-                    } else {
-                        log::warn(format!(
-                            "claude-runner: respawn({}) for {} failed (attempt {}); will retry — {e:?}",
-                            s.session_id, marker.principal_id, s.attempts
-                        ));
-                        still_pending.push(s);
-                    }
+/// Respawn one principal's pending sessions using the context captured from
+/// the same verified identity-result message. A failed item stays persisted,
+/// but is retried only when another verified result for that principal arrives;
+/// the generic supervisor tick must not re-resolve secrets under ambient state.
+fn respawn_pending_with_context(
+    sessions: &Sessions,
+    key: &str,
+    context: &RespawnContext,
+) -> Result<(), SysError> {
+    let Some(marker): Option<PendingRestart> = kv::get_json_opt(key)? else {
+        return Ok(());
+    };
+    if marker.principal_id != context.principal_id {
+        return Err(SysError::ApiError(format!(
+            "pending restart principal {} does not match bound context {}",
+            marker.principal_id, context.principal_id
+        )));
+    }
+
+    let mut still_pending: Vec<PendingRestartSession> = Vec::new();
+    for mut s in marker.sessions {
+        match respawn_one(sessions, context, &s) {
+            Ok(()) => log::info(format!(
+                "claude-runner: respawned session {} for {} on identity refresh",
+                s.session_id, context.principal_id
+            )),
+            Err(e) => {
+                s.attempts = s.attempts.saturating_add(1);
+                if s.attempts >= MAX_RESPAWN_ATTEMPTS {
+                    log::warn(format!(
+                        "claude-runner: respawn({}) for {} failed after {} attempts; giving up — {e:?}",
+                        s.session_id, context.principal_id, s.attempts
+                    ));
+                    let _ = ipc::publish_json(
+                        "claude.v1.audit.respawn_abandoned",
+                        &serde_json::json!({
+                            "principal_id": context.principal_id,
+                            "session_id": s.session_id,
+                            "attempts": s.attempts,
+                            "error": format!("{e:?}"),
+                        }),
+                    );
+                    // Drop the session from the marker — caller has
+                    // to issue a fresh spawn request to recover.
+                } else {
+                    log::warn(format!(
+                        "claude-runner: respawn({}) for {} failed (attempt {}); will retry — {e:?}",
+                        s.session_id, context.principal_id, s.attempts
+                    ));
+                    still_pending.push(s);
                 }
             }
         }
+    }
 
-        if still_pending.is_empty() {
-            // Clear the marker.
-            if let Err(e) = kv::delete(&key) {
-                log::warn(format!("claude-runner: clearing {key} failed: {e:?}"));
-            }
-        } else {
-            let updated = PendingRestart {
-                principal_id: marker.principal_id,
-                sessions: still_pending,
-            };
-            if let Err(e) = kv::set_json(&key, &updated) {
-                log::warn(format!("claude-runner: updating {key} failed: {e:?}"));
-            }
+    if still_pending.is_empty() {
+        if let Err(e) = kv::delete(key) {
+            log::warn(format!("claude-runner: clearing {key} failed: {e:?}"));
+        }
+    } else {
+        let updated = PendingRestart {
+            principal_id: marker.principal_id,
+            sessions: still_pending,
+        };
+        if let Err(e) = kv::set_json(key, &updated) {
+            log::warn(format!("claude-runner: updating {key} failed: {e:?}"));
         }
     }
     Ok(())
@@ -365,70 +466,16 @@ pub(crate) fn respawn_pending(sessions: &Sessions) -> Result<(), SysError> {
 
 fn respawn_one(
     sessions: &Sessions,
-    principal_id: &str,
+    context: &RespawnContext,
     s: &PendingRestartSession,
 ) -> Result<(), SysError> {
-    // Resolve the principal's home from the prior identity_path:
-    // ".../.claude/.claude-identity-<sid>" -> "..." (the home dir).
-    let home_scheme = home_from_identity_path(&s.identity_path).ok_or_else(|| {
-        SysError::ApiError(format!(
-            "respawn({}): can't derive home from identity_path {}",
-            s.session_id, s.identity_path
-        ))
-    })?;
-
-    // Identity fetch + write go through the VFS scheme so the kernel
-    // resolves them per-invocation-principal. The subprocess `HOME` /
-    // cwd, by contrast, must be a real OS path — `claude` does not
-    // interpret `home://` and would fall back to ambient `$HOME`,
-    // silently breaking per-principal isolation. Canonicalise here
-    // (mirrors claude-install's resolution on cold spawn) so the
-    // refreshed session is wired up the same way handle_spawn wires a
-    // fresh one. If canonicalisation isn't supported by the host (or
-    // the kernel rejects the scheme), fall back to the scheme string;
-    // the worst case is the original silent-isolation-break, which is
-    // no regression from current behaviour.
-    let resolved_home = fs::canonicalize(&home_scheme).unwrap_or_else(|_| home_scheme.clone());
-
-    // Auth mode branch — mirrors `lib.rs::handle_spawn` so respawn
-    // honours the per-principal AuthMode and the two-axis matrix
-    // (Headless|Repl × ApiKey|Subscription) is consistent across the
-    // cold-spawn and identity-refresh pipelines. In ApiKey mode the
-    // kernel-elicited `api_key` secret is required; an empty value
-    // hard-errors (the prior single-mode behaviour). In Subscription
-    // mode we skip the env::var read entirely so the cleartext never
-    // lands in this stack frame and `spawn::spawn_claude` omits the
-    // `.env("ANTHROPIC_API_KEY")` call — Claude falls back to its
-    // keychain OAuth path written by `claude /login`.
-    //
-    // NOTE: `respawn_pending` runs in the runner's supervisor loop under
-    // the runner's capsule principal — same context as `handle_spawn`'s
-    // interceptor — so `load_or_default()` reads the same canonical
-    // `claude.principal.config` record that the cold-spawn pipeline
-    // reads. The `principal_id` argument here is threaded through to
-    // the spawned subprocess inputs / audit fields, not the KV lookup.
-    let cfg = load_principal_config();
-    let api_key: Option<String> = match cfg.auth_mode {
-        AuthMode::ApiKey => {
-            let key = env::var("api_key").unwrap_or_default();
-            if key.is_empty() {
-                return Err(SysError::ApiError(format!(
-                    "respawn({}): no api_key configured for principal {principal_id}",
-                    s.session_id
-                )));
-            }
-            Some(key)
-        }
-        AuthMode::Subscription => None,
-    };
-
     // Fetch fresh identity prompt from spark + materialize a new
     // append-system-prompt file under <home>/.claude/. The identity
-    // crate writes through the `home://` VFS scheme regardless of
-    // what we pass for `home_path`, so the scheme string is fine
-    // here — only `spawn_claude` needs the resolved OS path.
-    let prompt = identity::fetch_prompt(principal_id, &s.session_id, &home_scheme)?;
-    let identity_path = identity::write_prompt_file(&home_scheme, &s.session_id, &prompt)?;
+    // crate writes through the `home://` VFS scheme. The same scheme is
+    // passed to the process request; translating guest VFS env/cwd/argv into
+    // sandbox-native paths is the Astrid process host's responsibility.
+    let prompt = identity::fetch_prompt(&context.principal_id, &s.session_id, &context.home_path)?;
+    let identity_path = identity::write_prompt_file(&context.home_path, &s.session_id, &prompt)?;
 
     // Mint a fresh per-(principal, session) hook token for the
     // respawned subprocess. The previous incarnation's token was deleted
@@ -438,20 +485,18 @@ fn respawn_one(
     // get dropped as forgeries. Mirrors the mint+persist pattern in
     // `handle_spawn` for cold spawns.
     let hook_token = crate::hooks::mint_token()?;
-    crate::hooks::persist_token(principal_id, &s.session_id, &hook_token)?;
+    crate::hooks::persist_token(&context.principal_id, &s.session_id, &hook_token)?;
 
     // `SpawnInputs::api_key` is `Option<&str>`; the subscription path
     // threads `None` so `spawn::spawn_claude` omits the env export.
-    let spawned = spawn::spawn_claude(&SpawnInputs {
-        principal_id,
-        session_id: &s.session_id,
-        home_path: &resolved_home,
-        identity_path: &identity_path,
-        api_key: api_key.as_deref(),
-        hook_token: &hook_token,
-        model: cfg.model,
-        max_turns: cfg.max_turns,
-    })?;
+    let inputs = bound_spawn_inputs(context, &s.session_id, &identity_path, &hook_token);
+    let spawned = match spawn::spawn_claude(&inputs) {
+        Ok(spawned) => spawned,
+        Err(error) => {
+            let _ = crate::hooks::forget_token(&context.principal_id, &s.session_id);
+            return Err(error);
+        }
+    };
 
     let now_ms = match time::now() {
         Ok(t) => t
@@ -462,25 +507,41 @@ fn respawn_one(
     };
 
     let record = SessionRecord {
-        principal_id: principal_id.to_string(),
+        principal_id: context.principal_id.clone(),
         session_id: s.session_id.clone(),
         identity_path,
         started_at_ms: now_ms,
         os_pid: spawned.os_pid,
         process_id: spawned.process_id,
     };
-    state::save_record(&record)?;
+    let cleanup_process = spawned.process.clone();
+    let recovery_process = spawned.process.clone();
+    if let Err(error) = state::save_record(&record) {
+        if let Err(cleanup_error) =
+            crate::cleanup_untracked_process(cleanup_process, &context.principal_id, &s.session_id)
+        {
+            crate::preserve_recovery_session(sessions, &record, recovery_process, &cleanup_error);
+        }
+        return Err(error);
+    }
 
-    sessions.with(|map| {
+    if let Err(error) = sessions.with(|map| {
         map.insert(
             s.session_id.clone(),
             RuntimeSession {
-                record,
+                record: record.clone(),
                 process: spawned.process,
                 codec: crate::codec::LineDecoder::default(),
             },
         );
-    })?;
+    }) {
+        if let Err(cleanup_error) =
+            crate::cleanup_untracked_process(cleanup_process, &context.principal_id, &s.session_id)
+        {
+            crate::preserve_recovery_session(sessions, &record, recovery_process, &cleanup_error);
+        }
+        return Err(error);
+    }
 
     // Audit parity with handle_spawn: emit `claude.v1.audit.spawn` so
     // downstream consumers don't need a separate path for refreshed
@@ -493,14 +554,14 @@ fn respawn_one(
     // (i.e. headless), so the mode is implicit.
     // `claude.v1.event.<sid>.respawned` is the session-scoped event for
     // UI / metrics.
-    let auth_mode_str = match cfg.auth_mode {
+    let auth_mode_str = match context.config.auth_mode {
         AuthMode::ApiKey => "api_key",
         AuthMode::Subscription => "subscription",
     };
     let _ = ipc::publish_json(
         "claude.v1.audit.spawn",
         &serde_json::json!({
-            "principal_id": principal_id,
+            "principal_id": context.principal_id,
             "session_id": s.session_id,
             "pid": spawned.os_pid,
             "flags_hash": spawned.flags_hash,
@@ -511,12 +572,30 @@ fn respawn_one(
     let _ = ipc::publish_json(
         &format!("claude.v1.event.{}.respawned", s.session_id),
         &serde_json::json!({
-            "principal_id": principal_id,
+            "principal_id": context.principal_id,
             "reason": "identity_refresh",
             "flags_hash": spawned.flags_hash,
         }),
     );
     Ok(())
+}
+
+fn bound_spawn_inputs<'a>(
+    context: &'a RespawnContext,
+    session_id: &'a str,
+    identity_path: &'a str,
+    hook_token: &'a str,
+) -> SpawnInputs<'a> {
+    SpawnInputs {
+        principal_id: &context.principal_id,
+        session_id,
+        home_path: &context.home_path,
+        identity_path,
+        api_key: context.api_key.as_deref(),
+        hook_token,
+        model: context.config.model,
+        max_turns: context.config.max_turns,
+    }
 }
 
 // ---- helpers -----------------------------------------------------------
@@ -532,17 +611,10 @@ struct ExitSummary {
 
 /// Hand-off package collected under `Sessions::with` in
 /// [`stop_session`]'s phase 3a and consumed in phase 3b outside the
-/// lock. Carries the cloned [`PersistentProcess`](process::PersistentProcess)
-/// handle so the host `read_logs` / `stop` / `release` calls can run with
-/// the sessions mutex released — same lock-discipline shape as the
-/// supervisor's `read_logs` drain in [`crate::supervisor`].
+/// lock. Carries the complete runtime session so a failed terminal host call
+/// can restore the process handle, decoder, and persisted recovery identity.
 struct PreparedKill {
-    process: process::PersistentProcess,
-    /// Snapshotted under the lock in phase 3a so phase 3b can build the
-    /// `claude.hook_token.<principal>.<session>` KV key without re-locking
-    /// the sessions map. Required for hook-token cleanup on session end
-    /// (the per-(principal, session) token minted at spawn time).
-    principal_id: String,
+    session: RuntimeSession,
 }
 
 /// Spin-wait outside the registry lock until either the session exits
@@ -630,22 +702,6 @@ fn trailing(s: &str) -> Option<String> {
     Some(s[idx..].to_string())
 }
 
-fn home_from_identity_path(identity_path: &str) -> Option<String> {
-    // Convention: identity paths live at "home://.claude/.claude-identity-<sid>".
-    // The home root is the `home://` VFS scheme — the kernel binds it
-    // to the invoking principal's home (`~/.astrid/home/<principal>/`,
-    // see core/crates/astrid-kernel/src/lib.rs:75). Validate the shape
-    // before returning so a stray legacy record from a pre-home://
-    // capsule incarnation surfaces as `None` instead of silently
-    // producing an unresolvable path.
-    let trimmed = identity_path.trim_end_matches('/');
-    let no_id = trimmed.rsplit_once('/')?.0;
-    if !no_id.ends_with(".claude") {
-        return None;
-    }
-    Some("home://".to_string())
-}
-
 fn pending_restart_key(principal_id: &str) -> String {
     format!("{PENDING_RESTART_PREFIX}.{principal_id}")
 }
@@ -653,33 +709,6 @@ fn pending_restart_key(principal_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn home_path_derivation_round_trip() {
-        let h = home_from_identity_path("home://.claude/.claude-identity-abc").unwrap();
-        assert_eq!(h, "home://");
-    }
-
-    #[test]
-    fn home_path_short_returns_none() {
-        assert!(home_from_identity_path("nope").is_none());
-    }
-
-    #[test]
-    fn home_path_rejects_legacy_tilde_record() {
-        // A SessionRecord left behind by a pre-home:// capsule version
-        // must NOT be silently respawned against an unresolvable path —
-        // the literal-tilde scheme falls through to workspace root in
-        // the kernel, which is exactly the failure mode this fix
-        // closes. Surfacing `None` forces the respawn sweep to abandon
-        // the record instead.
-        assert!(
-            home_from_identity_path(
-                "~/.astrid/principals/p1/something_other_than_dot_claude/.claude-identity-abc",
-            )
-            .is_none()
-        );
-    }
 
     #[test]
     fn trailing_returns_none_for_empty() {
@@ -703,5 +732,49 @@ mod tests {
     #[test]
     fn pending_restart_key_format() {
         assert_eq!(pending_restart_key("p1"), "claude.pending_restart.p1");
+    }
+
+    #[test]
+    fn respawn_inputs_remain_bound_after_an_interleaved_principal() {
+        let alice = RespawnContext {
+            principal_id: "alice".into(),
+            home_path: "home://".into(),
+            config: PrincipalConfig::default(),
+            api_key: Some("alice-secret".into()),
+        };
+        let bob = RespawnContext {
+            principal_id: "bob".into(),
+            home_path: "home://".into(),
+            config: PrincipalConfig::default(),
+            api_key: Some("bob-secret".into()),
+        };
+
+        let alice_inputs = bound_spawn_inputs(&alice, "alice-session", "home://alice-id", "hook");
+        let _bob_inputs = bound_spawn_inputs(&bob, "bob-session", "home://bob-id", "hook");
+
+        assert_eq!(alice_inputs.principal_id, "alice");
+        assert_eq!(alice_inputs.api_key, Some("alice-secret"));
+        assert_eq!(alice_inputs.home_path, "home://");
+    }
+
+    #[test]
+    fn identity_refresh_uses_the_stamped_principal_and_rejects_mismatch() {
+        let omitted = SaveIdentityResult {
+            success: true,
+            principal_id: None,
+        };
+        assert_eq!(
+            identity_refresh_principal(&omitted, Some("alice"))
+                .expect("stamped principal")
+                .as_str(),
+            "alice"
+        );
+
+        let forged = SaveIdentityResult {
+            success: true,
+            principal_id: Some("bob".to_string()),
+        };
+        assert!(identity_refresh_principal(&forged, Some("alice")).is_err());
+        assert!(identity_refresh_principal(&omitted, None).is_err());
     }
 }

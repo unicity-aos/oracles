@@ -1,0 +1,233 @@
+#!/bin/sh
+# Codex host entrypoint for Unicity AOS.
+#
+# The public `aos` command owns runtime startup, authentication, home layout,
+# and inherited CLI dispatch. This adapter only supplies the Codex principal,
+# turns Codex hooks into engine events, and launches Codex profiles.
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P) || HERE=$(dirname "$0")
+export ASTRID_HOST=codex
+export AOS_PLUGIN_ROOT="${AOS_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${PLUGIN_ROOT:-$HERE/..}}}"
+export CODEX_PLUGIN_ROOT="${CODEX_PLUGIN_ROOT:-$AOS_PLUGIN_ROOT}"
+export PLUGIN_ROOT="${PLUGIN_ROOT:-$AOS_PLUGIN_ROOT}"
+
+RESOLVE="$HERE/lib-aos-resolve.sh"
+# shellcheck source=lib-aos-resolve.sh
+. "$RESOLVE"
+
+if ! aos_resolve_apply; then
+  echo "aos-up: could not find an executable aos CLI" >&2
+  echo "aos-up: install Unicity AOS or set AOS_BIN" >&2
+  exit 127
+fi
+
+topic_segment() {
+  printf '%s' "$1" | sed 's/[^A-Za-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//'
+}
+
+json_id() {
+  printf '%s' "$1" | sed 's/[^A-Za-z0-9._:-]/-/g'
+}
+
+base64_file() {
+  base64 <"$1" | tr -d '\n'
+}
+
+base64_stream() {
+  base64 | tr -d '\n'
+}
+
+principal_id() {
+  candidate="${1:-${ASTRID_PRINCIPAL_ID:-codex-code}}"
+  candidate="$(topic_segment "$candidate")"
+  [ -n "$candidate" ] || candidate=codex-code
+  printf '%s\n' "$candidate"
+}
+
+new_session_id() {
+  if [ -n "${ASTRID_SESSION_ID:-}" ]; then
+    topic_segment "$ASTRID_SESSION_ID"
+    return
+  fi
+  if command -v uuidgen >/dev/null 2>&1; then
+    topic_segment "codex-$(uuidgen)"
+    return
+  fi
+  topic_segment "codex-$(date +%s)-$$"
+}
+
+mint_hook_token() {
+  if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
+    printf '%s' "$ASTRID_HOOK_TOKEN"
+    return
+  fi
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32 2>/dev/null && return
+  fi
+  if command -v uuidgen >/dev/null 2>&1; then
+    uuidgen | tr -d '-'
+    return
+  fi
+  printf '%s' "$(date +%s)-$$"
+}
+
+parent_codex_pid() {
+  hook_parent="${PPID:-$$}"
+  grandparent="$(ps -o ppid= -p "$hook_parent" 2>/dev/null | tr -d ' ' || true)"
+  if [ -n "$grandparent" ]; then
+    printf '%s' "$grandparent"
+  else
+    printf '%s' "$hook_parent"
+  fi
+}
+
+derive_session_id() {
+  payload_file="$1"
+  if [ -n "${ASTRID_SESSION_ID:-}" ]; then
+    sid="$(topic_segment "$ASTRID_SESSION_ID")"
+    if [ -n "$sid" ]; then
+      printf '%s' "$sid"
+      return
+    fi
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    from_payload="$(jq -r '.session_id // .thread_id // .threadId // .conversation_id // .conversationId // empty' "$payload_file" 2>/dev/null || true)"
+    if [ -n "$from_payload" ]; then
+      sid="$(topic_segment "codex-$from_payload")"
+      if [ -n "$sid" ]; then
+        printf '%s' "$sid"
+        return
+      fi
+    fi
+  fi
+  topic_segment "codex-pid-$(parent_codex_pid)"
+}
+
+derive_workspace_id() {
+  if [ -n "${ASTRID_WORKSPACE_ID:-}" ]; then
+    topic_segment "$ASTRID_WORKSPACE_ID"
+    return
+  fi
+  if command -v cksum >/dev/null 2>&1; then
+    hash="$(pwd | cksum | sed 's/ .*//')"
+    topic_segment "cwd-$hash"
+    return
+  fi
+  printf '%s' cwd
+}
+
+emit_hook() {
+  event="$(topic_segment "${1:-}")"
+  if [ -z "$event" ]; then
+    echo "usage: aos-up codex hook <event>" >&2
+    exit 2
+  fi
+
+  tmp="${TMPDIR:-/tmp}/aos-codex-hook.$$.$event.json"
+  trap 'rm -f "$tmp"' EXIT HUP INT TERM
+  cat >"$tmp" || true
+
+  principal="$(principal_id)"
+  session_id="$(derive_session_id "$tmp")"
+  workspace_id="$(derive_workspace_id)"
+  token="${ASTRID_HOOK_TOKEN:-$(mint_hook_token)}"
+  payload_b64="$(base64_file "$tmp")"
+  cwd_b64="$(pwd | base64_stream)"
+  workspace_json=null
+  if [ -n "$workspace_id" ]; then
+    workspace_json="\"$workspace_id\""
+  fi
+
+  envelope="$(printf '{"schema_version":1,"principal_id":"%s","session_id":"%s","event":"%s","workspace_id":%s,"pid":%s,"ppid":%s,"payload_b64":"%s","cwd_b64":"%s","token":"%s","transport":"codex-plugin"}' \
+    "$(json_id "$principal")" \
+    "$session_id" \
+    "$event" \
+    "$workspace_json" \
+    "$$" \
+    "${PPID:-0}" \
+    "$payload_b64" \
+    "$cwd_b64" \
+    "$(json_id "$token")")"
+
+  topic="codex.v1.hook.$session_id.$event"
+  if [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}" = "1" ]; then
+    printf '%s' "$envelope" | "$AOS" --principal "$principal" emit --topic "$topic" --stdin
+    return $?
+  fi
+  printf '%s' "$envelope" | "$AOS" --principal "$principal" emit --topic "$topic" --stdin >/dev/null 2>&1 || true
+}
+
+launch_codex() {
+  command -v codex >/dev/null 2>&1 || { echo "codex CLI not found on PATH" >&2; exit 127; }
+  principal="$(principal_id)"
+  ASTRID_PRINCIPAL_ID="$principal"
+  ASTRID_SESSION_ID="$(new_session_id)"
+  ASTRID_WORKSPACE_ID="$(derive_workspace_id)"
+  ASTRID_HOOK_TOKEN="$(mint_hook_token)"
+  export ASTRID_PRINCIPAL_ID ASTRID_SESSION_ID ASTRID_WORKSPACE_ID ASTRID_HOOK_TOKEN
+  exec codex --profile "${CODEX_PROFILE:-aos}" "$@"
+}
+
+launch_codex_exec() {
+  command -v codex >/dev/null 2>&1 || { echo "codex CLI not found on PATH" >&2; exit 127; }
+  principal="$(principal_id)"
+  ASTRID_PRINCIPAL_ID="$principal"
+  ASTRID_SESSION_ID="$(new_session_id)"
+  ASTRID_WORKSPACE_ID="$(derive_workspace_id)"
+  ASTRID_HOOK_TOKEN="$(mint_hook_token)"
+  export ASTRID_PRINCIPAL_ID ASTRID_SESSION_ID ASTRID_WORKSPACE_ID ASTRID_HOOK_TOKEN
+  exec codex exec --profile "${CODEX_PROFILE:-aos}" --json "$@"
+}
+
+mcp_serve() {
+  principal=""
+  if [ "${1:-}" = "--principal" ]; then
+    shift
+    principal="${1:-}"
+    [ "$#" -eq 0 ] || shift
+  fi
+  principal="$(principal_id "$principal")"
+  exec "$AOS" --principal "$principal" mcp serve "$@"
+}
+
+if [ "${1:-}" = codex ]; then
+  shift
+  case "${1:-}" in
+    ensure-principal)
+      exit 0
+      ;;
+    up|repl)
+      shift
+      launch_codex "$@"
+      ;;
+    exec)
+      shift
+      launch_codex_exec "$@"
+      ;;
+    session-start)
+      shift
+      emit_hook session_start
+      exit 0
+      ;;
+    hook)
+      shift
+      event="${1:-}"
+      [ "$#" -eq 0 ] || shift
+      emit_hook "$event"
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "${1:-}" = "--principal" ]; then
+  mcp_serve "$@"
+fi
+
+if [ "${1:-}" = mcp ] && [ "${2:-}" = serve ]; then
+  shift 2
+  set -- --principal "${ASTRID_PRINCIPAL_ID:-codex-code}" "$@"
+  mcp_serve "$@"
+fi
+
+exec "$AOS" "$@"

@@ -44,10 +44,10 @@ fn install_complete_empty_error_falls_back_to_unknown() {
 #[test]
 fn install_complete_success_path() {
     let payload =
-        r#"{"principal_id":"p1","success":true,"home_path":"/home/me/.astrid/principals/p1"}"#;
+        r#"{"principal_id":"p1","success":true,"home_path":"/home/me/.aos/runtime/home/p1"}"#;
     assert_eq!(
         classify_install_complete(payload, "p1"),
-        InstallEnvelope::Success("/home/me/.astrid/principals/p1".into()),
+        InstallEnvelope::Success,
     );
 }
 
@@ -57,25 +57,23 @@ fn install_complete_cache_hit_already_installed_is_success() {
     let payload = r#"{
         "principal_id": "p1",
         "success": true,
-        "home_path": "/home/me/.astrid/principals/p1",
+        "home_path": "/home/me/.aos/runtime/home/p1",
         "already_installed": true
     }"#;
     assert_eq!(
         classify_install_complete(payload, "p1"),
-        InstallEnvelope::Success("/home/me/.astrid/principals/p1".into()),
+        InstallEnvelope::Success,
     );
 }
 
 #[test]
-fn install_complete_success_without_home_path_returns_empty_string() {
-    // Older claude-install incarnations may omit `home_path` from the
-    // success envelope; surface as empty string so the caller can
-    // detect and fall back to the VFS scheme without misclassifying
-    // it as a failure.
+fn install_complete_success_does_not_trust_a_payload_home_path() {
+    // Older claude-install incarnations may omit `home_path`; it is
+    // informational either way because the runner always passes `home://`.
     let payload = r#"{"principal_id":"p1","success":true}"#;
     assert_eq!(
         classify_install_complete(payload, "p1"),
-        InstallEnvelope::Success(String::new()),
+        InstallEnvelope::Success,
     );
 }
 
@@ -174,4 +172,35 @@ fn repl_mode_short_circuits_spawn_with_rejection_payload() {
     // mode mints no session, so reflecting the caller-supplied id
     // would imply a binding that doesn't exist.
     assert!(payload.get("session_id").is_none());
+}
+
+#[test]
+fn failed_process_stop_preserves_recovery_state() {
+    use std::cell::Cell;
+
+    let cleaned = Cell::new(false);
+    let result = cleanup_after_stop::<&str>(Err("stop failed"), || cleaned.set(true));
+    assert_eq!(result, Err("stop failed"));
+    assert!(
+        !cleaned.get(),
+        "state must survive while the child may be live"
+    );
+
+    cleanup_after_stop::<&str>(Ok(()), || cleaned.set(true)).expect("terminal stop");
+    assert!(cleaned.get(), "terminal stop may delete token and record");
+}
+
+#[test]
+fn recovery_sweep_can_be_rearmed_after_post_spawn_failure() {
+    let sessions = Sessions::default();
+    assert!(sessions.take_reload_recovered_flag().expect("first sweep"));
+    assert!(!sessions.take_reload_recovered_flag().expect("one shot"));
+    sessions
+        .request_reload_recovery()
+        .expect("re-arm recovery sweep");
+    assert!(
+        sessions
+            .take_reload_recovered_flag()
+            .expect("recovery retry")
+    );
 }

@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+# Apply the cached Unicity AOS governance indicator to Claude subagent rows.
+set -eu
+
+input="$(cat 2>/dev/null || true)"
+command -v jq >/dev/null 2>&1 || exit 0
+
+ESC=$(printf '\033')
+C_RESET="${ESC}[0m"; C_GN="${ESC}[32m"; C_YE="${ESC}[33m"
+C_GY="${ESC}[90m"; C_DIM="${ESC}[2m"
+
+AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
+HEALTH_CACHE="$AOS_HOME_DIR/cache/oracles/hud-health"
+GATE=down
+if [ -r "$HEALTH_CACHE" ]; then
+  cached="$(cat "$HEALTH_CACHE" 2>/dev/null || true)"
+  case "${cached#* }" in
+    up|degraded|down) GATE="${cached#* }" ;;
+  esac
+fi
+
+case "$GATE" in
+  up) DOT="${C_GN}●${C_RESET}" ;;
+  degraded) DOT="${C_YE}◐${C_RESET}" ;;
+  *) DOT="${C_GY}○${C_RESET}" ;;
+esac
+
+printf '%s' "$input" | jq -c \
+  --arg dot "$DOT" --arg dim "$C_DIM" --arg rst "$C_RESET" '
+  .tasks[]? | {
+    id: .id,
+    content: (
+      $dot + " " + ((.name // .type // "subagent"))
+      + (if (.status // "") != "" then " " + $dim + "· " + .status + $rst else "" end)
+      + (if .tokenCount then " " + $dim + "· " + (.tokenCount|tostring) + " tok" + $rst else "" end)
+    )
+  }'

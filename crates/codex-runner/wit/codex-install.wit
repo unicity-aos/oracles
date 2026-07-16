@@ -1,0 +1,46 @@
+package unicity:aos-codex@1.0.0;
+
+/// Typed bus contracts for provisioning Codex under Unicity AOS.
+interface install {
+    /// Request Codex home provisioning for the kernel-stamped caller.
+    record codex-install-request {
+        /// Claimed principal. The receiver requires this to match the
+        /// kernel-stamped caller identity.
+        principal-id: string,
+        /// Reconcile managed files even when the install marker is current.
+        force: option<bool>,
+    }
+
+    /// Request that the provisioner rewrite Codex-managed files.
+    record codex-relink-request {
+        /// Claimed principal. The receiver requires this to match the
+        /// kernel-stamped caller identity.
+        principal-id: string,
+    }
+
+    /// Progress published while Codex provisioning is in flight.
+    record codex-install-status {
+        /// Principal being provisioned.
+        principal-id: string,
+        /// Stable machine-readable step name.
+        step: string,
+        /// Optional operator-facing detail.
+        message: option<string>,
+    }
+
+    /// Terminal result of Codex provisioning or relinking.
+    record codex-install-complete {
+        /// Principal whose provisioning attempt completed.
+        principal-id: string,
+        /// True only when all managed artifacts were written successfully.
+        success: bool,
+        /// True when current artifacts already existed and no rewrite was needed.
+        already-installed: option<bool>,
+        /// Failure detail when success is false.
+        error: option<string>,
+        /// Managed-artifact schema written by the provisioner.
+        artifact-version: option<u32>,
+        /// Principal home location when known.
+        home-path: option<string>,
+    }
+}

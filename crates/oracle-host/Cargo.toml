@@ -6,7 +6,7 @@ authors.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-description = "Shared host-adapter primitives for Astrid oracles (ids, install, atomic fs)"
+description = "Shared host-adapter primitives for Unicity AOS oracle integrations"
 publish = false
 
 [dependencies]

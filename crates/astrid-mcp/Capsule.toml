@@ -43,8 +43,8 @@ policy_rules = { type = "string", default = "", request = "Per-principal policy 
 # registry and reshaping into MCP tool descriptors, and brokers tool
 # execution over the `astrid.v1.*` MCP surface (dispatched via the
 # tool.v1 bus protocol). Tool calls arrive ONLY through that broker front
-# door — `astrid mcp serve` is the registered MCP server the supervised
-# `the host agent` calls directly; there is no `astrid.v1.tool.call.*`
+# door — `aos mcp serve` is the registered MCP server the supervised
+# host agent calls directly; there is no `astrid.v1.tool.call.*`
 # agent-runner leg (it would double-execute against the broker).
 [subscribe]
 "astrid.v1.tools.describe" = { wit = "opaque", handler = "describe_tools" }
@@ -57,7 +57,7 @@ policy_rules = { type = "string", default = "", request = "Per-principal policy 
 # Exact (segment-arity-fixed) topic; the payload is a bare ready-signal.
 "astrid.v1.capsules_loaded" = { wit = "opaque", handler = "handle_capsules_changed" }
 # Broker front door: the sanitized `astrid.v1.*` MCP surface for an MCP
-# client behind a shim/proxy (`astrid mcp serve`). The shim never sees
+# client behind a shim/proxy (`aos mcp serve`). The shim never sees
 # `tool.v1.*`. Both are exact (segment-arity-fixed) topics — the proxy
 # carries the correlation token in the body, not the topic, so no
 # wildcard suffix is needed here.
@@ -123,7 +123,7 @@ policy_rules = { type = "string", default = "", request = "Per-principal policy 
 
 [publish]
 "astrid.v1.tools.list" = "opaque"
-# Policy-gate audits emitted at the broker. The in-process `mcp__astrid__*`
+# Policy-gate audits emitted at the broker. The in-process `mcp__aos__*`
 # gate emits `astrid.v1.audit.policy_deny` (a tool call refused by a rule) and
 # `astrid.v1.audit.policy_load_failed` (rules unset/unparseable/over-cap →
 # policy degraded to the exec-time capability PEP); the native-tool
@@ -154,7 +154,7 @@ policy_rules = { type = "string", default = "", request = "Per-principal policy 
 "astrid.v1.approval.response.*" = "@unicity-astrid/wit/approval/response"
 "tool.v1.request.describe" = { wit = "@unicity-astrid/wit/tool/describe-request" }
 # Execute fan-out from `dispatch_with_approval` — the broker strips the
-# `mcp__astrid__` MCP prefix and forwards to the bare tool topic.
+# `mcp__aos__` MCP prefix and forwards to the bare tool topic.
 # Two patterns because the kernel `*` is single-segment: the first
 # matches one-segment tool names ("read_file"), the second matches
 # MCP-style dot-namespaced names ("fs.read"). Tool-name charset is

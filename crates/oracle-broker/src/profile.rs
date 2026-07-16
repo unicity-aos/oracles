@@ -1,7 +1,7 @@
 //! Active [`OracleIdentity`] for this broker instance.
 //!
-//! Thin capsule calls [`install`] once. Identity is always Astrid — hosts
-//! do not get separate wire namespaces.
+//! Thin capsule calls [`install`] once. The public namespace is always AOS;
+//! hosts do not get separate wire namespaces.
 
 use std::sync::OnceLock;
 
@@ -9,10 +9,10 @@ use oracle_core::OracleIdentity;
 
 static IDENTITY: OnceLock<&'static OracleIdentity> = OnceLock::new();
 
-/// Bind this process to the Astrid oracle identity.
+/// Bind this process to the Unicity AOS oracle identity.
 ///
 /// Idempotent. Panics only if a *different* identity pointer is installed
-/// (should never happen — there is only [`OracleIdentity::ASTRID`]).
+/// (should never happen — there is only [`OracleIdentity::AOS`]).
 pub fn install(identity: &'static OracleIdentity) {
     match IDENTITY.set(identity) {
         Ok(()) => {}
@@ -25,21 +25,21 @@ pub fn install(identity: &'static OracleIdentity) {
     }
 }
 
-/// Install the singleton Astrid identity if not already set.
+/// Install the singleton AOS identity if not already set.
 #[inline]
-pub fn install_astrid() {
-    install(&OracleIdentity::ASTRID);
+pub fn install_aos() {
+    install(&OracleIdentity::AOS);
 }
 
 /// The installed oracle identity.
 ///
 /// # Panics
-/// If [`install`] / [`install_astrid`] has not been called.
+/// If [`install`] / [`install_aos`] has not been called.
 #[inline]
 #[must_use]
 pub(crate) fn identity() -> &'static OracleIdentity {
     IDENTITY.get().copied().expect(
-        "oracle-broker: OracleIdentity not installed; call oracle_broker::install_astrid first",
+        "oracle-broker: OracleIdentity not installed; call oracle_broker::install_aos first",
     )
 }
 
@@ -50,7 +50,7 @@ pub(crate) fn log_tag() -> &'static str {
     identity().log_tag.as_str()
 }
 
-/// MCP tool name prefix (`mcp__astrid__`).
+/// MCP tool name prefix (`mcp__aos__`).
 #[inline]
 #[must_use]
 pub(crate) fn mcp_tool_prefix() -> &'static str {
@@ -76,10 +76,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_astrid_is_idempotent() {
-        install_astrid();
-        install_astrid();
+    fn install_aos_is_idempotent() {
+        install_aos();
+        install_aos();
         assert_eq!(identity().capsule_name.as_str(), "astrid-mcp");
-        assert_eq!(mcp_tool_prefix(), "mcp__astrid__");
+        assert_eq!(mcp_tool_prefix(), "mcp__aos__");
     }
 }

@@ -1,8 +1,8 @@
 {
-  "name": "astrid-oracles",
+  "name": "unicity-aos-oracles",
   "owner": { "name": "Unicity Labs" },
-  "metadata": { "description": "Astrid for Claude Code" },
+  "metadata": { "description": "Unicity AOS for Claude Code" },
   "plugins": [
-    { "name": "astrid", "source": "./plugins/claude", "description": "Astrid — Claude Code host plugin" }
+    { "name": "unicity-aos", "source": "./plugins/claude", "description": "Unicity AOS — Claude Code host plugin" }
   ]
 }

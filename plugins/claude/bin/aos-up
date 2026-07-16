@@ -1,0 +1,63 @@
+#!/usr/bin/env sh
+# Start the Unicity AOS MCP endpoint for one host principal.
+#
+# `aos --principal <name> mcp serve` owns authenticated runtime startup and
+# quiet-starts the bundled ephemeral daemon when necessary. This wrapper does
+# not provision principals, install capsules, or reach into the private runtime.
+# stdout belongs exclusively to the MCP JSON-RPC transport.
+set -eu
+
+log() { printf 'aos-up: %s\n' "$*" >&2; }
+
+if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
+  AOS_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}}"
+fi
+if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
+  AOS_PLUGIN_ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." 2>/dev/null && pwd -P)" \
+    || AOS_PLUGIN_ROOT="$(dirname "$(dirname "$0")")"
+fi
+export AOS_PLUGIN_ROOT
+
+if [ -z "${AOS_HOST:-}" ]; then
+  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
+    AOS_HOST=grok
+  else
+    AOS_HOST=claude
+  fi
+fi
+export AOS_HOST
+
+RESOLVE="$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"
+if [ ! -f "$RESOLVE" ]; then
+  RESOLVE="$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P)/lib-aos-resolve.sh"
+fi
+# shellcheck source=lib-aos-resolve.sh
+. "$RESOLVE"
+
+if ! aos_resolve_apply; then
+  INSTALLER="$AOS_PLUGIN_ROOT/bin/aos-install"
+  log "could not find the Unicity AOS command."
+  log "looked at AOS_BIN, AOS_HOME/bin/aos, this plugin's .mcp.json, ~/.aos/bin/aos, and PATH."
+  if [ -x "$INSTALLER" ]; then
+    log "install and provision this host explicitly, then reconnect the MCP server:"
+    log "    $INSTALLER --host $AOS_HOST"
+  else
+    log "install AOS from https://aos.unicity.ai/install.sh, then provision the $AOS_HOST oracle plugin."
+  fi
+  exit 127
+fi
+
+PRINCIPAL=""
+if [ "${1:-}" = "--principal" ]; then
+  shift
+  PRINCIPAL="${1:-}"
+  [ "$#" -gt 0 ] && shift
+fi
+case "$PRINCIPAL" in
+  ""|'${user_config.principal}') PRINCIPAL="${AOS_HOST}-code" ;;
+esac
+
+# AOS owns daemon startup, runtime keys, authentication, and home selection.
+# Any missing principal/capsule failure remains visible on stderr with the
+# product CLI's recovery guidance; this no-TTY transport never mutates setup.
+exec "$AOS" --principal "$PRINCIPAL" mcp serve "$@"

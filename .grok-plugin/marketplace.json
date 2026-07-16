@@ -1,8 +1,8 @@
 {
-  "name": "astrid-oracles",
+  "name": "unicity-aos-oracles",
   "owner": { "name": "Unicity Labs" },
-  "metadata": { "description": "Astrid for Grok Build" },
+  "metadata": { "description": "Unicity AOS for Grok Build" },
   "plugins": [
-    { "name": "astrid", "source": "./plugins/grok", "description": "Astrid — Grok Build host plugin" }
+    { "name": "unicity-aos", "source": "./plugins/grok", "description": "Unicity AOS — Grok Build host plugin" }
   ]
 }

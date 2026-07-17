@@ -61,7 +61,13 @@ if [ -n "${AOS_VAR_OPENAI_API_KEY:-}" ]; then
 fi
 case " $* " in
   *" status "*)
-    test -f "$TEST_STATE/default-initialized"
+    test -f "$TEST_STATE/runtime-running"
+    ;;
+  *" start "*)
+    : > "$TEST_STATE/runtime-running"
+    ;;
+  *" stop "*)
+    rm -f "$TEST_STATE/runtime-running"
     ;;
   *" agent show "*)
     principal=${*: -1}
@@ -166,6 +172,7 @@ lock="$AOS_HOME/extensions/oracles/codex/Pack.lock"
 cmp "$assets/codex.toml" "$lock"
 test ! -e "$home/.astrid"
 grep -Fq 'aos status --json' "$TEST_LOG"
+grep -Fq 'aos --principal default start' "$TEST_LOG"
 if grep -Fq 'aos --principal default status' "$TEST_LOG"; then
   echo "installer used the principal-scoped status probe" >&2
   exit 1

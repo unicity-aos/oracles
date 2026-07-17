@@ -295,7 +295,8 @@ daemon_is_live() {
 }
 
 ensure_base() {
-  if ! daemon_is_live; then STARTED_DAEMON=1; fi
+  daemon_was_live=1
+  if ! daemon_is_live; then daemon_was_live=0; fi
   profile="$AOS_HOME_DIR/runtime/etc/profiles/default.toml"
   if [ ! -f "$profile" ]; then
     say "Initializing Unicity CE..."
@@ -307,6 +308,13 @@ ensure_base() {
       aos --principal default init --offline
     fi
     [ -f "$profile" ] || die "Unicity CE initialization did not create the default product profile"
+  fi
+  if [ "$daemon_was_live" -eq 0 ]; then
+    STARTED_DAEMON=1
+    say "Starting Unicity CE..."
+    aos --principal default start >/dev/null
+    daemon_is_live \
+      || die "Unicity CE did not become reachable after the runtime reported readiness"
   fi
 }
 

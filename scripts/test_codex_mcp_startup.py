@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the Codex MCP bootstrap handshake without timing guesses."""
+"""Exercise blank-home Codex MCP bootstrap through the real plugin command."""
 
 from __future__ import annotations
 
@@ -9,26 +9,11 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
-import time
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVER = json.loads((ROOT / "plugins/unicity-aos/.mcp.json").read_text())["mcpServers"]["aos"]
-
-
-def wait_for(path: Path, process: subprocess.Popen[str], timeout: float = 5.0) -> None:
-    deadline = time.monotonic() + timeout
-    while not path.exists():
-        if process.poll() is not None:
-            stdout, stderr = process.communicate()
-            raise AssertionError(
-                f"MCP launcher exited before readiness marker: {stdout=} {stderr=}"
-            )
-        if time.monotonic() >= deadline:
-            process.kill()
-            process.wait()
-            raise AssertionError(f"timed out waiting for {path}")
-        time.sleep(0.01)
+PLUGIN = ROOT / "plugins/unicity-aos"
+SERVER = json.loads((PLUGIN / ".mcp.json").read_text())["mcpServers"]["aos"]
 
 
 def write_executable(path: Path, body: str) -> None:
@@ -37,104 +22,89 @@ def write_executable(path: Path, body: str) -> None:
     path.chmod(0o700)
 
 
-def launch(workspace: Path, environment: dict[str, str]) -> subprocess.Popen[str]:
-    return subprocess.Popen(
+def launch(environment: dict[str, str], plugin: Path = PLUGIN) -> subprocess.CompletedProcess[str]:
+    cwd = (plugin / SERVER["cwd"]).resolve()
+    return subprocess.run(
         [SERVER["command"], *SERVER["args"]],
-        cwd=workspace,
+        cwd=cwd,
         env=environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        timeout=10,
+        check=False,
     )
 
 
-def assert_success(process: subprocess.Popen[str]) -> None:
-    try:
-        stdout, stderr = process.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        process.kill()
-        stdout, stderr = process.communicate()
-        raise AssertionError(f"MCP launcher did not exit: {stdout=} {stderr=}") from None
-    if process.returncode != 0:
-        raise AssertionError(f"MCP launcher failed: {stdout=} {stderr=}")
-
-
 def main() -> None:
+    assert SERVER["command"] == "/bin/sh"
+    assert SERVER["args"] == ["./bin/aos-up", "--principal", "codex-code"]
+    assert SERVER["cwd"] == "."
+
     with tempfile.TemporaryDirectory(prefix="aos-codex-mcp-") as raw:
         root = Path(raw)
         home = root / "home" / ".aos"
-        workspace = root / "user-project"
-        fake_bin = root / "fake-bin"
-        wait_marker = root / "wait-observed"
-        wait_gate = root / "release-waiter"
-        cwd_log = root / "aos-cwd"
-        args_log = root / "aos-args"
-        workspace.mkdir(parents=True)
-        fake_bin.mkdir()
+        installer = root / "oracle-installer"
+        install_log = root / "installer-args"
+        aos_log = root / "aos-args"
 
         write_executable(
-            fake_bin / "sleep",
+            installer,
             "#!/bin/sh\n"
-            ': > "$TEST_WAIT_MARKER"\n'
-            'while [ ! -e "$TEST_WAIT_GATE" ]; do /bin/sleep 0.01; done\n',
+            "set -eu\n"
+            'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
+            '[ "$*" = "--host codex --skip-host-plugin --yes" ] '
+            '|| { printf "%s\\n" "unexpected installer arguments: $*" >&2; exit 91; }\n'
+            'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"\n'
+            'printf "%s\\n" ready > "$AOS_HOME/extensions/oracles/codex/Pack.lock"\n'
+            'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
+            "#!/bin/sh\n"
+            'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
+            'case " $* " in\n'
+            '  *" capsule show aos-mcp --agent codex-code "*) exit 0 ;;\n'
+            '  *" --principal codex-code mcp serve "*) printf "%s\\n" mcp-ready ;;\n'
+            '  *) exit 1 ;;\n'
+            "esac\n"
+            "AOS\n"
+            'chmod 700 "$AOS_HOME/bin/aos"\n',
         )
 
         environment = {
             "HOME": str(root / "home"),
             "AOS_HOME": str(home),
-            "PATH": f"{fake_bin}:/usr/bin:/bin",
-            "TEST_WAIT_MARKER": str(wait_marker),
-            "TEST_WAIT_GATE": str(wait_gate),
-            "TEST_AOS_CWD": str(cwd_log),
-            "TEST_AOS_ARGS": str(args_log),
+            "AOS_ORACLES_INSTALLER": str(installer),
+            "PATH": "/usr/bin:/bin",
+            "TEST_INSTALL_LOG": str(install_log),
+            "TEST_AOS_LOG": str(aos_log),
+            "TMPDIR": str(root),
         }
 
-        write_executable(
-            home / "bin/aos",
-            "#!/bin/sh\n"
-            'pwd -P > "$TEST_AOS_CWD"\n'
-            'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n',
-        )
+        first = launch(environment)
+        assert first.returncode == 0, (first.returncode, first.stdout, first.stderr)
+        assert first.stdout == "mcp-ready\n", first.stdout
+        assert first.stderr == "", first.stderr
+        assert (home / "extensions/oracles/codex/Pack.lock").is_file()
+        assert install_log.read_text().splitlines() == [
+            "--host codex --skip-host-plugin --yes"
+        ]
+        assert aos_log.read_text().splitlines() == [
+            "capsule show aos-mcp --agent codex-code",
+            "--principal codex-code mcp serve",
+        ]
 
-        process = launch(workspace, environment)
-        wait_for(wait_marker, process)
-        if process.poll() is not None:
-            raise AssertionError("MCP launcher did not wait for the Codex pack receipt")
-
-        receipt = home / "extensions/oracles/codex/Pack.lock"
-        receipt.parent.mkdir(parents=True)
-        receipt.write_text("ready\n")
-        wait_gate.touch()
-        assert_success(process)
-
-        actual_cwd = cwd_log.read_text().strip()
-        assert Path(actual_cwd) == workspace.resolve(), (actual_cwd, str(workspace.resolve()))
-        assert args_log.read_text().strip() == "--principal codex-code mcp serve"
-
-        (home / "bin/aos").unlink()
-        wait_marker.unlink()
-        wait_gate.unlink()
-        process = launch(workspace, environment)
-        wait_for(wait_marker, process)
-        if process.poll() is not None:
-            raise AssertionError("MCP launcher did not wait for the AOS executable")
-        write_executable(
-            home / "bin/aos",
-            "#!/bin/sh\n"
-            'pwd -P > "$TEST_AOS_CWD"\n'
-            'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n',
-        )
-        wait_gate.touch()
-        assert_success(process)
-
-        wait_marker.unlink()
-        wait_gate.unlink()
-        process = launch(workspace, environment)
-        assert_success(process)
-        assert not wait_marker.exists(), "ready startup unexpectedly entered the wait path"
+        second = launch(environment)
+        assert second.returncode == 0, (second.returncode, second.stdout, second.stderr)
+        assert second.stdout == "mcp-ready\n", second.stdout
+        assert second.stderr == "", second.stderr
+        assert install_log.read_text().splitlines() == [
+            "--host codex --skip-host-plugin --yes"
+        ], "ready startup unexpectedly re-entered provisioning"
 
         plugin_copy = root / "plugin-copy"
-        shutil.copytree(ROOT / "plugins/unicity-aos", plugin_copy)
+        shutil.copytree(PLUGIN, plugin_copy)
+        configured_environment = dict(environment)
+        configured_environment["AOS_BIN"] = str(home / "bin/aos")
+        configured_environment["AOS_PLUGIN_ROOT"] = str(plugin_copy)
         subprocess.run(
             [
                 "/bin/sh",
@@ -143,8 +113,8 @@ def main() -> None:
                 str(home / "bin"),
                 "--skip-codex-install",
             ],
-            cwd=workspace,
-            env=environment,
+            cwd=plugin_copy,
+            env=configured_environment,
             check=True,
             text=True,
             stdout=subprocess.PIPE,
@@ -153,8 +123,8 @@ def main() -> None:
         generated = json.loads((plugin_copy / ".mcp.json").read_text())["mcpServers"]["aos"]
         assert generated["command"] == SERVER["command"]
         assert generated["args"] == SERVER["args"]
+        assert generated["cwd"] == SERVER["cwd"]
         assert generated["startup_timeout_sec"] == SERVER["startup_timeout_sec"]
-        assert "cwd" not in generated
         assert generated["env"] == {"AOS_BIN": str(home / "bin/aos")}
 
 

@@ -49,8 +49,8 @@ distributions.
 
 | Host | Principal | Additions on top of Community Edition |
 |---|---|---|
-| Claude Code | `claude-code` | `aos-mcp`, `claude-install`, `claude-runner` |
-| Codex | `codex-code` | `aos-mcp`, `codex-install`, `codex-runner` |
+| Claude Code | `claude-code` | `aos-mcp` |
+| Codex | `codex-code` | `aos-mcp` |
 | Grok Build | `grok-code` | `aos-mcp` |
 
 Pack manifests live under `packs/`. Host plugins are installed from the signed

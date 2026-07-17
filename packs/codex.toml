@@ -14,11 +14,3 @@ aos-version = ">=2026.1.0"
 [[capsule]]
 name = "aos-mcp"
 asset = "aos-mcp.capsule"
-
-[[capsule]]
-name = "codex-install"
-asset = "codex-install.capsule"
-
-[[capsule]]
-name = "codex-runner"
-asset = "codex-runner.capsule"

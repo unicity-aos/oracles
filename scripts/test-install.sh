@@ -15,11 +15,7 @@ cp "$repo_root/release/runtime-compatibility.toml" "$assets/runtime-compatibilit
 (cd "$repo_root" && tar -czf "$assets/aos-oracle-plugins.tar.gz" \
   .agents .claude-plugin .grok-plugin \
   plugins/claude plugins/grok plugins/unicity-aos)
-for capsule in \
-  aos-mcp claude-install claude-runner codex-install codex-runner
-do
-  printf 'signed fixture for %s\n' "$capsule" > "$assets/$capsule.capsule"
-done
+printf 'signed fixture for aos-mcp\n' > "$assets/aos-mcp.capsule"
 
 product_assets="$work/product-assets"
 mkdir -p "$product_assets/capsules"
@@ -37,9 +33,8 @@ write_fixture_checksums() {
   : > "$root/BLAKE3SUMS.txt"
   for asset in \
     aos-mcp.capsule \
-    claude-install.capsule claude-pack.toml claude-runner.capsule \
-    codex-install.capsule codex-pack.toml codex-runner.capsule \
-    grok-pack.toml aos-oracle-plugins.tar.gz runtime-compatibility.toml
+    claude-pack.toml codex-pack.toml grok-pack.toml \
+    aos-oracle-plugins.tar.gz runtime-compatibility.toml
   do
     source_name=$asset
     case "$asset" in
@@ -257,16 +252,10 @@ if grep -Fq -- '--inherit-from' "$TEST_LOG"; then
   echo "oracle principal inherited another principal's state" >&2
   exit 1
 fi
-for capsule in aos-mcp codex-install codex-runner; do
-  grep -Eq "capsule install .*/$capsule\\.capsule" "$TEST_LOG"
-  grep -Fq -- "--add-capsule $capsule" "$TEST_LOG"
-done
-for capsule in aos-cli aos-fs; do
-  grep -Eq "capsule install .*/$capsule\\.capsule" "$TEST_LOG"
-  grep -Fq -- "--add-capsule $capsule" "$TEST_LOG"
-done
-if grep -Eq 'capsule install .*/aos-openai-compat\.capsule' "$TEST_LOG"; then
-  echo "host provisioning installed the standalone OpenAI provider" >&2
+grep -Eq 'capsule install .*/aos-mcp\.capsule' "$TEST_LOG"
+grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
+if grep -Eq '^aos --principal codex-code capsule install .*/aos-(cli|fs|openai-compat)\.capsule' "$TEST_LOG"; then
+  echo "oracle host provisioning installed a CE distribution capsule" >&2
   exit 1
 fi
 grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.0" "$TEST_LOG"
@@ -281,14 +270,13 @@ test ! -e "$AOS_HOME/extensions/oracles/.install.lock"
 minimal_assets="$work/minimal-assets"
 mkdir -p "$minimal_assets"
 for asset in \
-  aos-oracle-plugins.tar.gz runtime-compatibility.toml codex.toml \
-  aos-mcp.capsule codex-install.capsule codex-runner.capsule
+  aos-oracle-plugins.tar.gz runtime-compatibility.toml codex.toml aos-mcp.capsule
 do
   cp "$assets/$asset" "$minimal_assets/$asset"
 done
 : > "$minimal_assets/BLAKE3SUMS.txt"
 for asset in \
-  aos-mcp.capsule codex-pack.toml codex-install.capsule codex-runner.capsule \
+  aos-mcp.capsule codex-pack.toml \
   aos-oracle-plugins.tar.gz runtime-compatibility.toml
 do
   source_name=$asset
@@ -340,55 +328,26 @@ test -f "$grok_receipt"
 grep -Fq 'host = "grok"' "$grok_receipt"
 grep -Fq 'principal = "grok-code"' "$grok_receipt"
 
-# A fresh non-interactive Claude install must fail before grants, receipt, or
-# plugin installation when its selected API-key mode has no credential.
+# A host plugin uses the host application's existing authentication. Installing
+# the external Claude plugin must not require or consume an Anthropic API key.
 cp "$repo_root/packs/claude.toml" "$assets/claude.toml"
-for capsule in claude-install claude-runner; do
-  printf 'signed fixture for %s\n' "$capsule" > "$assets/$capsule.capsule"
-done
-if env -u ANTHROPIC_API_KEY \
-  "$repo_root/install.sh" --host claude --yes --no-install-aos \
-    --claude-auth subscription --claude-mode headless
-then
-  echo "Claude headless subscription mode unexpectedly succeeded" >&2
-  exit 1
-fi
 claude_start=$(wc -l < "$TEST_LOG")
-if env -u ANTHROPIC_API_KEY \
+env -u ANTHROPIC_API_KEY \
   "$repo_root/install.sh" --host claude --yes --no-install-aos
-then
-  echo "Claude --yes unexpectedly succeeded without ANTHROPIC_API_KEY" >&2
-  exit 1
-fi
-test ! -e "$AOS_HOME/extensions/oracles/claude/Pack.lock"
-tail -n "+$((claude_start + 1))" "$TEST_LOG" > "$work/claude-failed.log"
-if grep -Fq 'agent modify claude-code' "$work/claude-failed.log"; then
-  echo "failed Claude install modified its principal" >&2
-  exit 1
-fi
-if grep -Fq 'claude plugin' "$work/claude-failed.log"; then
-  echo "failed Claude install changed its plugin" >&2
-  exit 1
-fi
-
-# With the explicit secret present, the CLI's headless lifecycle responder is
-# selected and the pack converges normally without stdin.
-export ANTHROPIC_API_KEY=not-a-real-anthropic-key
-"$repo_root/install.sh" --host claude --yes --no-install-aos
 test -f "$AOS_HOME/extensions/oracles/claude/Pack.lock"
-grep -Eq 'capsule install .*/claude-runner\.capsule$' "$TEST_LOG"
-grep -Fq 'agent modify claude-code' "$TEST_LOG"
+tail -n "+$((claude_start + 1))" "$TEST_LOG" > "$work/claude-only.log"
+grep -Eq 'capsule install .*/aos-mcp\.capsule$' "$work/claude-only.log"
+grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
 grep -Fq "claude plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.0" "$TEST_LOG"
-
-# Subscription auth is an interactive Claude Code REPL mode and does not
-# require an API key.
-subscription_home="$home/subscription/.aos"
-env -u ANTHROPIC_API_KEY AOS_HOME="$subscription_home" \
-  "$repo_root/install.sh" --host claude --yes --no-install-aos \
-    --claude-auth subscription --claude-mode repl
-test -f "$subscription_home/extensions/oracles/claude/Pack.lock"
-grep -Fq 'claude-vars auth=subscription interaction=repl api-key-set=no' "$TEST_LOG"
+if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
+  echo "external Claude plugin installed an AOS-managed workload adapter" >&2
+  exit 1
+fi
+if grep -Fq 'claude-vars ' "$work/claude-only.log"; then
+  echo "external Claude plugin consumed workload authentication variables" >&2
+  exit 1
+fi
 
 # A plugin failure leaves no success receipt for a fresh installation.
 failed_plugin_home="$home/plugin-failure/.aos"
@@ -445,7 +404,7 @@ test ! -e "$exact_home/extensions/oracles/.install.lock"
 tampered_assets="$work/tampered-assets"
 mkdir -p "$tampered_assets"
 cp -R "$assets/." "$tampered_assets/"
-printf 'tampered\n' >> "$tampered_assets/codex-runner.capsule"
+printf 'tampered\n' >> "$tampered_assets/aos-mcp.capsule"
 tampered_home="$home/tampered/.aos"
 if AOS_HOME="$tampered_home" AOS_ORACLE_ASSETS="$tampered_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos

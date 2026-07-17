@@ -10,8 +10,8 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXPECTED = {
-    "claude": ["aos-mcp", "claude-install", "claude-runner"],
-    "codex": ["aos-mcp", "codex-install", "codex-runner"],
+    "claude": ["aos-mcp"],
+    "codex": ["aos-mcp"],
     "grok": ["aos-mcp"],
 }
 
@@ -40,6 +40,7 @@ class PackContractTests(unittest.TestCase):
             self.assertNotIn("astrid-capsule-cli", names)
             self.assertNotIn("astrid-capsule-system", names)
             self.assertNotIn("astrid-capsule-forge", names)
+            self.assertFalse(any(name.endswith(("-install", "-runner")) for name in names))
 
 
 if __name__ == "__main__":

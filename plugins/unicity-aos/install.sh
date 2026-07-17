@@ -73,9 +73,11 @@ write_mcp_config() {
     "aos": {
       "command": "/bin/sh",
       "args": [
-        "-c",
-        "home=\${AOS_HOME:-\$HOME/.aos}; aos=\${AOS_BIN:-\$home/bin/aos}; receipt=\$home/extensions/oracles/codex/Pack.lock; deadline=\$((\$(date +%s) + 300)); while [ ! -x \"\$aos\" ] || [ ! -r \"\$receipt\" ]; do if [ \"\$(date +%s)\" -ge \"\$deadline\" ]; then echo 'aos MCP startup timed out waiting for Codex oracle provisioning' >&2; exit 1; fi; sleep 0.1; done; exec \"\$aos\" --principal codex-code mcp serve"
+        "./bin/aos-up",
+        "--principal",
+        "codex-code"
       ],
+      "cwd": ".",
       "startup_timeout_sec": 305,
       "env": {
         "AOS_BIN": "$escaped_aos"

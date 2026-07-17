@@ -137,10 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          for crate in \
-            aos-mcp \
-            claude-runner claude-install \
-            codex-runner codex-install
+          for crate in aos-mcp
           do
             "$ASTRID_BUILD" "crates/$crate" --output artifacts
           done
@@ -194,14 +191,10 @@ jobs:
           {
             printf '%s\n' \
               aos-mcp.capsule \
-              claude-install.capsule claude-runner.capsule \
-              codex-install.capsule codex-runner.capsule \
               claude-pack.toml codex-pack.toml grok-pack.toml \
               aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml
             for asset in \
               aos-mcp.capsule \
-              claude-install.capsule claude-runner.capsule \
-              codex-install.capsule codex-runner.capsule \
               claude-pack.toml codex-pack.toml grok-pack.toml \
               aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml
             do

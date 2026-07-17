@@ -16,11 +16,93 @@ RESOLVE="$HERE/lib-aos-resolve.sh"
 # shellcheck source=lib-aos-resolve.sh
 . "$RESOLVE"
 
-if ! aos_resolve_apply; then
-  echo "aos-up: could not find an executable aos CLI" >&2
-  echo "aos-up: install Unicity AOS or set AOS_BIN" >&2
-  exit 127
-fi
+AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
+PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/codex/Pack.lock"
+INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
+INSTALLER="$HERE/aos-install"
+BOOTSTRAP_LOG=""
+
+cleanup_bootstrap_log() {
+  [ -z "$BOOTSTRAP_LOG" ] || rm -f "$BOOTSTRAP_LOG"
+  BOOTSTRAP_LOG=""
+}
+
+trap cleanup_bootstrap_log EXIT HUP INT TERM
+
+codex_ready() {
+  [ -r "$PACK_RECEIPT" ] \
+    && aos_resolve_apply 2>/dev/null \
+    && "$AOS" capsule show aos-mcp --agent codex-code >/dev/null 2>&1
+}
+
+install_lock_reclaimable() {
+  owner=""
+  [ -f "$INSTALL_LOCK/pid" ] && [ ! -L "$INSTALL_LOCK/pid" ] \
+    && IFS= read -r owner < "$INSTALL_LOCK/pid" \
+    && printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$' \
+    && ! kill -0 "$owner" 2>/dev/null
+}
+
+ensure_codex() {
+  codex_ready && return 0
+  [ -x "$INSTALLER" ] || {
+    echo "aos-up: could not find this plugin's AOS installer" >&2
+    return 127
+  }
+
+  log_dir="$AOS_HOME_DIR/cache/oracles"
+  mkdir -p "$log_dir"
+  chmod 700 "$log_dir"
+  BOOTSTRAP_LOG=$(mktemp "$log_dir/codex-mcp-bootstrap.XXXXXX") || return 1
+  deadline=$(($(date +%s) + 300))
+
+  while :; do
+    : > "$BOOTSTRAP_LOG"
+    if AOS_HOST=codex "$INSTALLER" --host codex --yes \
+      </dev/null >"$BOOTSTRAP_LOG" 2>&1
+    then
+      if codex_ready; then
+        cleanup_bootstrap_log
+        return 0
+      fi
+      echo "aos-up: Codex provisioning completed without a usable aos-mcp pack" >&2
+      return 1
+    fi
+
+    last_error=$(tail -n 1 "$BOOTSTRAP_LOG" 2>/dev/null || true)
+    case "$last_error" in
+      *"another oracle installation is active"*)
+        while [ -d "$INSTALL_LOCK" ] && ! install_lock_reclaimable; do
+          codex_ready && {
+            cleanup_bootstrap_log
+            return 0
+          }
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "aos-up: timed out waiting for Codex oracle provisioning" >&2
+            echo "aos-up: diagnostics: $BOOTSTRAP_LOG" >&2
+            return 1
+          fi
+          sleep 0.1
+        done
+        codex_ready && {
+          cleanup_bootstrap_log
+          return 0
+        }
+        ;;
+      *)
+        echo "aos-up: Codex provisioning failed${last_error:+: $last_error}" >&2
+        echo "aos-up: diagnostics: $BOOTSTRAP_LOG" >&2
+        return 1
+        ;;
+    esac
+
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "aos-up: timed out provisioning the Codex oracle pack" >&2
+      echo "aos-up: diagnostics: $BOOTSTRAP_LOG" >&2
+      return 1
+    fi
+  done
+}
 
 topic_segment() {
   printf '%s' "$1" | sed 's/[^A-Za-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//'
@@ -195,6 +277,7 @@ if [ "${1:-}" = codex ]; then
   shift
   case "${1:-}" in
     ensure-principal)
+      ensure_codex
       exit 0
       ;;
     up|repl)
@@ -221,13 +304,23 @@ if [ "${1:-}" = codex ]; then
 fi
 
 if [ "${1:-}" = "--principal" ]; then
+  ensure_codex
+  trap - EXIT HUP INT TERM
   mcp_serve "$@"
 fi
 
 if [ "${1:-}" = mcp ] && [ "${2:-}" = serve ]; then
+  ensure_codex
+  trap - EXIT HUP INT TERM
   shift 2
   set -- --principal "${ASTRID_PRINCIPAL_ID:-codex-code}" "$@"
   mcp_serve "$@"
+fi
+
+if ! aos_resolve_apply; then
+  echo "aos-up: could not find an executable aos CLI" >&2
+  echo "aos-up: install Unicity AOS or set AOS_BIN" >&2
+  exit 127
 fi
 
 exec "$AOS" "$@"

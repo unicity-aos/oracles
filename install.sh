@@ -413,9 +413,7 @@ principal_for() {
 
 capsules_for() {
   case "$1" in
-    claude) printf '%s\n' aos-mcp claude-install claude-runner ;;
-    codex) printf '%s\n' aos-mcp codex-install codex-runner ;;
-    grok) printf '%s\n' aos-mcp ;;
+    claude|codex|grok) printf '%s\n' aos-mcp ;;
   esac
 }
 
@@ -431,60 +429,6 @@ ensure_principal() {
     aos --principal default agent create "$principal" --group "$host" \
       --yes >/dev/null
   fi
-}
-
-ensure_product_for_principal() {
-  principal=$1
-  version=$(aos --version | awk 'NF { value = $NF } END { print value }')
-  release="$AOS_HOME_DIR/releases/$version"
-  inventory="$release/capsule-assets.txt"
-  [ -d "$release/capsules" ] && [ ! -L "$release/capsules" ] \
-    || die "installed Unicity AOS $version has no trusted capsule directory"
-  [ -f "$inventory" ] && [ ! -L "$inventory" ] \
-    || die "installed Unicity AOS $version has no capsule inventory"
-
-  set -- aos --principal default agent modify "$principal"
-  changed=0
-  found_cli=0
-  while IFS= read -r filename || [ -n "$filename" ]; do
-    case "$filename" in
-      aos-openai-compat.capsule)
-        continue
-        ;;
-      aos-*.capsule)
-        capsule=${filename%.capsule}
-        suffix=${capsule#aos-}
-        case "$suffix" in
-          ""|*[!A-Za-z0-9_-]*)
-            die "installed Unicity AOS $version has an invalid capsule inventory entry"
-            ;;
-        esac
-        ;;
-      *)
-        die "installed Unicity AOS $version has an invalid capsule inventory entry"
-        ;;
-    esac
-    [ "$capsule" != aos-cli ] || found_cli=1
-    if aos capsule show "$capsule" --agent "$principal" >/dev/null 2>&1; then
-      continue
-    fi
-    artifact="$release/capsules/$filename"
-    [ -f "$artifact" ] && [ ! -L "$artifact" ] \
-      || die "installed Unicity AOS $version is missing $filename"
-    if [ "$ASSUME_YES" -eq 1 ]; then
-      aos --principal "$principal" capsule install "$artifact" --yes </dev/null
-    elif [ -r /dev/tty ]; then
-      aos --principal "$principal" capsule install "$artifact" </dev/tty
-    else
-      aos --principal "$principal" capsule install "$artifact"
-    fi
-    set -- "$@" --add-capsule "$capsule"
-    changed=1
-  done < "$inventory"
-  [ "$found_cli" -eq 1 ] || die "installed Unicity AOS $version has no aos-cli capsule"
-  [ "$changed" -eq 0 ] || "$@" >/dev/null
-  aos capsule show aos-cli --agent "$principal" >/dev/null 2>&1 \
-    || die "Unicity CE was not provisioned for $principal"
 }
 
 ensure_cosign() {
@@ -543,9 +487,8 @@ validate_checksum_manifest() {
   while IFS= read -r name; do
     case "$name" in
       aos-mcp.capsule|\
-      claude-install.capsule|claude-pack.toml|claude-runner.capsule|\
-      codex-install.capsule|codex-pack.toml|codex-runner.capsule|\
-      grok-pack.toml|aos-oracle-plugins.tar.gz|runtime-compatibility.toml) ;;
+      claude-pack.toml|codex-pack.toml|grok-pack.toml|\
+      aos-oracle-plugins.tar.gz|runtime-compatibility.toml) ;;
       *) die "release checksum manifest names an unknown asset: $name" ;;
     esac
   done < "$names"
@@ -703,25 +646,11 @@ install_pack() {
   stage_pack "$host"
   stage=$STAGED_PACK
   validate_pack "$host" "$principal" "$stage/Pack.toml"
-  if [ "$host" = claude ] && [ "$ASSUME_YES" -eq 1 ] \
-    && [ "$CLAUDE_AUTH_MODE" = api_key ] && [ -z "${ANTHROPIC_API_KEY:-}" ]
-  then
-    die "ANTHROPIC_API_KEY is required for --yes --host claude with --claude-auth api_key"
-  fi
   ensure_principal "$host" "$principal"
-  ensure_product_for_principal "$principal"
 
   for capsule in $(capsules_for "$host"); do
     if [ "$ASSUME_YES" -eq 1 ]; then
-      if [ "$host" = claude ] && [ "$capsule" = claude-runner ]; then
-        AOS_VAR_INTERACTION_MODE="$CLAUDE_INTERACTION_MODE" \
-          AOS_VAR_AUTH_MODE="$CLAUDE_AUTH_MODE" \
-          AOS_VAR_API_KEY="${ANTHROPIC_API_KEY:-}" \
-          aos --principal "$principal" capsule install \
-            "$stage/$capsule.capsule" </dev/null
-      else
-        aos --principal "$principal" capsule install "$stage/$capsule.capsule" </dev/null
-      fi
+      aos --principal "$principal" capsule install "$stage/$capsule.capsule" </dev/null
     elif [ -r /dev/tty ]; then
       aos --principal "$principal" capsule install "$stage/$capsule.capsule" </dev/tty
     else

@@ -87,10 +87,10 @@ resolve_initial() {
 
 bootstrap_codex() {
   [ "$MODE" = hook ] || return 1
-  installer="$AOS_PLUGIN_ROOT/bin/aos-install"
-  [ -x "$installer" ] || return 1
+  launcher="$AOS_PLUGIN_ROOT/bin/aos-up"
+  [ -x "$launcher" ] || return 1
   log="${TMPDIR:-/tmp}/aos-codex-bootstrap.$$.log"
-  if AOS_HOST=codex "$installer" --host codex --yes >"$log" 2>&1; then
+  if AOS_HOST=codex "$launcher" codex ensure-principal >"$log" 2>&1; then
     rm -f "$log"
     aos_resolve_apply
     return $?

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import pathlib
 import os
-import tarfile
 import tomllib
 import unittest
 
@@ -80,22 +79,16 @@ class CapsuleOwnedWitTests(unittest.TestCase):
                 )
                 self.assertNotIn("opaque", declarations)
 
-    def test_release_archives_carry_the_capsule_owned_contracts(self) -> None:
+    def test_workload_adapters_are_not_in_the_external_plugin_release(self) -> None:
         artifacts_value = os.environ.get("AOS_WIT_ARTIFACTS")
         if artifacts_value is None:
             self.skipTest("AOS_WIT_ARTIFACTS is not set")
         artifacts = pathlib.Path(artifacts_value)
 
-        for host, spec in HOSTS.items():
-            expected = (spec["install"] / "wit" / f"{host}-install.wit").read_bytes()
+        for host in HOSTS:
             for role in ("install", "runner"):
                 archive = artifacts / f"{host}-{role}.capsule"
-                self.assertTrue(archive.is_file(), f"missing release archive: {archive}")
-                with tarfile.open(archive, "r:gz") as capsule:
-                    member = capsule.extractfile(f"wit/{host}-install.wit")
-                    self.assertIsNotNone(member, f"{archive} omits its local WIT package")
-                    assert member is not None
-                    self.assertEqual(member.read(), expected)
+                self.assertFalse(archive.exists(), f"workload adapter leaked into plugin release: {archive}")
 
 
 if __name__ == "__main__":

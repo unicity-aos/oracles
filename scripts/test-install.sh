@@ -169,6 +169,17 @@ test ! -e "$plugin_only_home/runtime"
 test ! -e "$plugin_only_home/extensions/oracles/codex/Pack.lock"
 test ! -e "$plugin_only_home/extensions/oracles/.install.lock"
 
+# b3sum prefixes glob-expanded paths with ./ in release builds. The signed
+# manifest parser accepts that exact producer form while still validating the
+# normalized asset allowlist.
+prefixed_assets="$work/prefixed-assets"
+cp -R "$assets" "$prefixed_assets"
+sed 's#  #  ./#' "$assets/BLAKE3SUMS.txt" > "$prefixed_assets/BLAKE3SUMS.txt"
+prefixed_home="$home/prefixed-checksums/.aos"
+AOS_HOME="$prefixed_home" AOS_ORACLE_ASSETS="$prefixed_assets" \
+  "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
+test -d "$prefixed_home/extensions/oracles/plugins/0.2.0"
+
 # An existing unrelated host pack is private state. Installing Codex must not
 # inspect, rewrite, remove, or provision Claude/Grok.
 mkdir -p "$AOS_HOME/extensions/oracles/claude"

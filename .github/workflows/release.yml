@@ -155,7 +155,7 @@ jobs:
           cp release/runtime-compatibility.toml artifacts/runtime-compatibility.toml
           cd artifacts
           b3sum ./*.capsule ./*-pack.toml aos-oracle-plugins.tar.gz \
-            runtime-compatibility.toml > BLAKE3SUMS.txt
+            runtime-compatibility.toml | sed 's#  \./#  #' > BLAKE3SUMS.txt
 
       - name: Verify capsule-owned WIT contracts in release archives
         run: AOS_WIT_ARTIFACTS=artifacts python3 scripts/test_wit_contract.py

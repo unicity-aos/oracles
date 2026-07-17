@@ -487,11 +487,12 @@ download_verified() {
 validate_checksum_manifest() {
   manifest=$1
   [ -s "$manifest" ] || die "release checksum manifest is empty"
-  if grep -Ev '^[0-9a-f]{64}  [A-Za-z0-9][A-Za-z0-9._-]*$' "$manifest" >/dev/null; then
+  if grep -Ev '^[0-9a-f]{64}  (\./)?[A-Za-z0-9][A-Za-z0-9._-]*$' "$manifest" >/dev/null; then
     die "release checksum manifest has an invalid entry"
   fi
   names="$WORK/checksum-names.txt"
-  awk '{print $2}' "$manifest" | LC_ALL=C sort > "$names"
+  awk '{ name = $2; sub(/^\.\//, "", name); print name }' "$manifest" \
+    | LC_ALL=C sort > "$names"
   if [ -n "$(uniq -d "$names")" ]; then
     die "release checksum manifest contains duplicate asset names"
   fi
@@ -508,7 +509,7 @@ validate_checksum_manifest() {
 
 expected_blake3() {
   name=$1
-  awk -v name="$name" '$2 == name { print $1; found = 1 } END { exit !found }' \
+  awk -v name="$name" '{ candidate = $2; sub(/^\.\//, "", candidate) } candidate == name { print $1; found = 1 } END { exit !found }' \
     "$RELEASE_STAGE/BLAKE3SUMS.txt"
 }
 

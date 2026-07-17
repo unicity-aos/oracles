@@ -376,19 +376,12 @@ daemon_is_live() {
 ensure_base() {
   daemon_was_live=1
   if ! daemon_is_live; then daemon_was_live=0; fi
-  profile="$AOS_HOME_DIR/runtime/etc/profiles/default.toml"
-  if [ ! -f "$profile" ]; then
-    say "Initializing Unicity CE..."
-    if [ "$ASSUME_YES" -eq 1 ]; then
-      aos --principal default init --yes --offline </dev/null
-    elif [ -r /dev/tty ]; then
-      aos --principal default init --offline </dev/tty
-    else
-      aos --principal default init --offline
-    fi
-    [ -f "$profile" ] || die "Unicity CE initialization did not create the default product profile"
-  fi
   if [ "$daemon_was_live" -eq 0 ]; then
+    version=$(aos --version | awk 'NF { value = $NF } END { print value }')
+    cli_artifact="$AOS_HOME_DIR/releases/$version/capsules/aos-cli.capsule"
+    [ -f "$cli_artifact" ] && [ ! -L "$cli_artifact" ] \
+      || die "installed Unicity AOS $version is missing aos-cli.capsule"
+    aos --principal default capsule install "$cli_artifact" --yes </dev/null
     say "Starting Unicity CE..."
     aos --principal default start >/dev/null
     daemon_is_live \
@@ -428,19 +421,56 @@ ensure_principal() {
 
 ensure_product_for_principal() {
   principal=$1
-  if ! aos capsule show aos-cli --agent "$principal" >/dev/null 2>&1; then
-    if [ "$ASSUME_YES" -eq 1 ]; then
-      aos --principal default init --target-principal "$principal" \
-        --yes --offline </dev/null
-    elif [ -r /dev/tty ]; then
-      aos --principal default init --target-principal "$principal" \
-        --offline </dev/tty
-    else
-      aos --principal default init --target-principal "$principal" --offline
+  version=$(aos --version | awk 'NF { value = $NF } END { print value }')
+  release="$AOS_HOME_DIR/releases/$version"
+  inventory="$release/capsule-assets.txt"
+  [ -d "$release/capsules" ] && [ ! -L "$release/capsules" ] \
+    || die "installed Unicity AOS $version has no trusted capsule directory"
+  [ -f "$inventory" ] && [ ! -L "$inventory" ] \
+    || die "installed Unicity AOS $version has no capsule inventory"
+
+  set -- aos --principal default agent modify "$principal"
+  changed=0
+  found_cli=0
+  while IFS= read -r filename || [ -n "$filename" ]; do
+    case "$filename" in
+      aos-openai-compat.capsule)
+        continue
+        ;;
+      aos-*.capsule)
+        capsule=${filename%.capsule}
+        suffix=${capsule#aos-}
+        case "$suffix" in
+          ""|*[!A-Za-z0-9_-]*)
+            die "installed Unicity AOS $version has an invalid capsule inventory entry"
+            ;;
+        esac
+        ;;
+      *)
+        die "installed Unicity AOS $version has an invalid capsule inventory entry"
+        ;;
+    esac
+    [ "$capsule" != aos-cli ] || found_cli=1
+    if aos capsule show "$capsule" --agent "$principal" >/dev/null 2>&1; then
+      continue
     fi
-    aos capsule show aos-cli --agent "$principal" >/dev/null 2>&1 \
-      || die "Unicity CE was not provisioned for $principal"
-  fi
+    artifact="$release/capsules/$filename"
+    [ -f "$artifact" ] && [ ! -L "$artifact" ] \
+      || die "installed Unicity AOS $version is missing $filename"
+    if [ "$ASSUME_YES" -eq 1 ]; then
+      aos --principal "$principal" capsule install "$artifact" --yes </dev/null
+    elif [ -r /dev/tty ]; then
+      aos --principal "$principal" capsule install "$artifact" </dev/tty
+    else
+      aos --principal "$principal" capsule install "$artifact"
+    fi
+    set -- "$@" --add-capsule "$capsule"
+    changed=1
+  done < "$inventory"
+  [ "$found_cli" -eq 1 ] || die "installed Unicity AOS $version has no aos-cli capsule"
+  [ "$changed" -eq 0 ] || "$@" >/dev/null
+  aos capsule show aos-cli --agent "$principal" >/dev/null 2>&1 \
+    || die "Unicity CE was not provisioned for $principal"
 }
 
 ensure_cosign() {
@@ -659,15 +689,17 @@ install_pack() {
   stage_pack "$host"
   stage=$STAGED_PACK
   validate_pack "$host" "$principal" "$stage/Pack.toml"
+  if [ "$host" = claude ] && [ "$ASSUME_YES" -eq 1 ] \
+    && [ "$CLAUDE_AUTH_MODE" = api_key ] && [ -z "${ANTHROPIC_API_KEY:-}" ]
+  then
+    die "ANTHROPIC_API_KEY is required for --yes --host claude with --claude-auth api_key"
+  fi
   ensure_principal "$host" "$principal"
   ensure_product_for_principal "$principal"
 
   for capsule in $(capsules_for "$host"); do
     if [ "$ASSUME_YES" -eq 1 ]; then
       if [ "$host" = claude ] && [ "$capsule" = claude-runner ]; then
-        if [ "$CLAUDE_AUTH_MODE" = api_key ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-          die "ANTHROPIC_API_KEY is required for --yes --host claude with --claude-auth api_key"
-        fi
         AOS_VAR_INTERACTION_MODE="$CLAUDE_INTERACTION_MODE" \
           AOS_VAR_AUTH_MODE="$CLAUDE_AUTH_MODE" \
           AOS_VAR_API_KEY="${ANTHROPIC_API_KEY:-}" \

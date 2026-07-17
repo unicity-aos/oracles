@@ -21,6 +21,17 @@ do
   printf 'signed fixture for %s\n' "$capsule" > "$assets/$capsule.capsule"
 done
 
+product_assets="$work/product-assets"
+mkdir -p "$product_assets/capsules"
+printf '%s\n' \
+  aos-cli.capsule \
+  aos-fs.capsule \
+  aos-openai-compat.capsule > "$product_assets/capsule-assets.txt"
+for capsule in aos-cli aos-fs aos-openai-compat; do
+  printf 'signed product fixture for %s\n' "$capsule" \
+    > "$product_assets/capsules/$capsule.capsule"
+done
+
 write_fixture_checksums() {
   root=$1
   : > "$root/BLAKE3SUMS.txt"
@@ -45,6 +56,8 @@ cat > "$fake_bin/aos" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = --version ]; then
+  mkdir -p "$AOS_HOME/releases/2026.1.0"
+  cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.1.0/"
   printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.1.0}"
   exit 0
 fi
@@ -86,9 +99,22 @@ case " $* " in
     principal=${5}
     : > "$TEST_STATE/agent-$principal"
     ;;
-  *" capsule show aos-cli --agent "*)
+  *" capsule show "*)
+    capsule=${3}
     principal=${*: -1}
-    test -f "$TEST_STATE/product-$principal"
+    test -f "$TEST_STATE/capsule-$principal-$capsule"
+    ;;
+  *" capsule install "*)
+    principal=default
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = --principal ]; then principal=$argument; break; fi
+      previous=$argument
+    done
+    source=${*: -1}
+    if [ "$source" = --yes ]; then source=${*: -2:1}; fi
+    capsule=$(basename "$source" .capsule)
+    : > "$TEST_STATE/capsule-$principal-$capsule"
     ;;
   *" init "*)
     target=""
@@ -147,6 +173,7 @@ export AOS_HOME="$home/.aos"
 export AOS_ORACLE_ASSETS="$assets"
 export TEST_LOG="$work/commands.log"
 export TEST_STATE="$work/state"
+export TEST_PRODUCT_ASSETS="$product_assets"
 mkdir -p "$TEST_STATE"
 : > "$TEST_LOG"
 
@@ -212,8 +239,10 @@ if grep -Fq 'aos --principal default status' "$TEST_LOG"; then
   echo "installer used the principal-scoped status probe" >&2
   exit 1
 fi
-test "$(grep -Fc 'aos --principal default init --yes --offline' "$TEST_LOG")" -eq 1
-grep -Fq 'aos --principal default init --target-principal codex-code --yes --offline' "$TEST_LOG"
+if grep -Eq '^aos .* init( |$)' "$TEST_LOG"; then
+  echo "oracle host provisioning initialized a default product workspace" >&2
+  exit 1
+fi
 grep -Fq 'aos --principal default agent create codex-code' "$TEST_LOG"
 grep -Fq 'aos --principal default agent create codex-code --group codex --yes' "$TEST_LOG"
 if grep -Fq -- '--bare' "$TEST_LOG"; then
@@ -228,6 +257,14 @@ for capsule in aos-mcp codex-install codex-runner; do
   grep -Eq "capsule install .*/$capsule\\.capsule" "$TEST_LOG"
   grep -Fq -- "--add-capsule $capsule" "$TEST_LOG"
 done
+for capsule in aos-cli aos-fs; do
+  grep -Eq "capsule install .*/$capsule\\.capsule" "$TEST_LOG"
+  grep -Fq -- "--add-capsule $capsule" "$TEST_LOG"
+done
+if grep -Eq 'capsule install .*/aos-openai-compat\.capsule' "$TEST_LOG"; then
+  echo "host provisioning installed the standalone OpenAI provider" >&2
+  exit 1
+fi
 grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.0" "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
@@ -263,13 +300,9 @@ AOS_HOME="$minimal_home" AOS_ORACLE_ASSETS="$minimal_assets" \
 test -f "$minimal_home/extensions/oracles/codex/Pack.lock"
 
 first_lock=$(shasum -a 256 "$lock" | awk '{print $1}')
-init_count=$(grep -Fc 'aos --principal default init --yes --offline' "$TEST_LOG")
-target_init_count=$(grep -Fc 'aos --principal default init --target-principal codex-code --yes --offline' "$TEST_LOG")
 start_count=$(grep -Fc 'aos --principal default start' "$TEST_LOG")
 "$repo_root/install.sh" --host codex --yes --no-install-aos
 test "$first_lock" = "$(shasum -a 256 "$lock" | awk '{print $1}')"
-test "$(grep -Fc 'aos --principal default init --yes --offline' "$TEST_LOG")" -eq "$init_count"
-test "$(grep -Fc 'aos --principal default init --target-principal codex-code --yes --offline' "$TEST_LOG")" -eq "$target_init_count"
 test "$(grep -Fc 'aos --principal default start' "$TEST_LOG")" -eq "$start_count"
 if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
   echo "repeat oracle install stopped the shared runtime" >&2
@@ -277,7 +310,7 @@ if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
 fi
 
 create=$(grep -n 'agent create codex-code' "$TEST_LOG" | head -n1 | cut -d: -f1)
-first_install=$(grep -n 'capsule install' "$TEST_LOG" | head -n1 | cut -d: -f1)
+first_install=$(grep -n 'aos --principal codex-code capsule install' "$TEST_LOG" | head -n1 | cut -d: -f1)
 test "$create" -lt "$first_install"
 
 # Grok is a separate pack. Installing it provisions only grok-code and aos-mcp,

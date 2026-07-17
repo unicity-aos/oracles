@@ -74,7 +74,11 @@ if [ -n "${AOS_VAR_OPENAI_API_KEY:-}" ]; then
 fi
 case " $* " in
   *" status "*)
-    test -f "$AOS_HOME/runtime-running"
+    if [ -f "$AOS_HOME/runtime-running" ]; then
+      printf '{"state":"running"}\n'
+    else
+      printf '{"state":"stopped"}\n'
+    fi
     ;;
   *" start "*)
     mkdir -p "$AOS_HOME"

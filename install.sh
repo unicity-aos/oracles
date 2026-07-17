@@ -370,7 +370,9 @@ select_hosts() {
 }
 
 daemon_is_live() {
-  aos status --json >/dev/null 2>&1
+  status=$(aos status --json 2>/dev/null || true)
+  printf '%s' "$status" \
+    | grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"'
 }
 
 ensure_base() {

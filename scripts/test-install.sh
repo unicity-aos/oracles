@@ -150,6 +150,25 @@ export TEST_STATE="$work/state"
 mkdir -p "$TEST_STATE"
 : > "$TEST_LOG"
 
+# The public one-command path installs only marketplace plugins. Host startup
+# owns principal and capsule provisioning, so this path must not initialize or
+# start AOS and must not create a pack receipt.
+plugin_only_home="$home/plugins-only/.aos"
+plugin_only_start=$(wc -l < "$TEST_LOG")
+AOS_HOME="$plugin_only_home" \
+  "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
+tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
+grep -Fq "codex plugin marketplace add $plugin_only_home/extensions/oracles/plugins/0.2.0" \
+  "$work/plugin-only.log"
+grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
+if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
+  echo "plugin-only installation provisioned AOS or another host" >&2
+  exit 1
+fi
+test ! -e "$plugin_only_home/runtime"
+test ! -e "$plugin_only_home/extensions/oracles/codex/Pack.lock"
+test ! -e "$plugin_only_home/extensions/oracles/.install.lock"
+
 # An existing unrelated host pack is private state. Installing Codex must not
 # inspect, rewrite, remove, or provision Claude/Grok.
 mkdir -p "$AOS_HOME/extensions/oracles/claude"

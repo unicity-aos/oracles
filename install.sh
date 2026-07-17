@@ -5,7 +5,7 @@ umask 077
 
 ORACLES_REPO="${AOS_ORACLES_REPO:-unicity-aos/oracles}"
 ORACLES_VERSION="${AOS_ORACLES_VERSION:-0.2.0}"
-AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/install.sh}"
+AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/base-install.sh}"
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 AOS_CHANNEL=""
 AOS_VERSION=""
@@ -16,6 +16,7 @@ ASSUME_YES=0
 ALL_HOSTS=0
 NO_INSTALL_AOS=0
 SKIP_HOST_PLUGIN=0
+PLUGINS_ONLY=0
 REQUESTED_HOSTS=""
 LOCAL_ASSETS="${AOS_ORACLE_ASSETS:-}"
 WORK=""
@@ -76,6 +77,8 @@ Usage: install.sh [options]
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
+  --aos-installer S use an alternate AOS installer URL or local path for testing
+  --plugins-only    install selected host marketplace plugins; provision on host start
   --claude-auth M   api_key or subscription (non-interactive Claude setup)
   --claude-mode M   headless or repl (non-interactive Claude setup)
   --no-install-aos  fail instead of invoking the canonical AOS installer
@@ -112,6 +115,12 @@ while [ "$#" -gt 0 ]; do
       shift
       LOCAL_ASSETS="${1:-}"
       ;;
+    --aos-installer)
+      shift
+      AOS_INSTALL_URL="${1:-}"
+      [ -n "$AOS_INSTALL_URL" ] || die "--aos-installer requires a URL or local path"
+      ;;
+    --plugins-only) PLUGINS_ONLY=1 ;;
     --claude-auth)
       shift
       CLAUDE_AUTH_MODE="${1:-}"
@@ -286,8 +295,25 @@ ensure_aos() {
   have curl || die "curl is required to install Unicity AOS"
   WORK=${WORK:-$(mktemp -d 2>/dev/null || mktemp -d -t aos-oracles)}
   installer="$WORK/aos-install.sh"
-  curl -fsSL --max-time 60 "$AOS_INSTALL_URL" -o "$installer" \
-    || die "could not download the canonical AOS installer"
+  if [ -f "$AOS_INSTALL_URL" ] && [ ! -L "$AOS_INSTALL_URL" ]; then
+    cp "$AOS_INSTALL_URL" "$installer"
+  else
+    case "$AOS_INSTALL_URL" in
+      /*)
+        die "local AOS installer is not a regular file: $AOS_INSTALL_URL"
+        ;;
+      file://*)
+        local_installer=${AOS_INSTALL_URL#file://}
+        [ -f "$local_installer" ] && [ ! -L "$local_installer" ] \
+          || die "local AOS installer is not a regular file: $local_installer"
+        cp "$local_installer" "$installer"
+        ;;
+      *)
+        curl -fsSL --max-time 60 "$AOS_INSTALL_URL" -o "$installer" \
+          || die "could not download the canonical AOS installer"
+        ;;
+    esac
+  fi
   chmod 700 "$installer"
   set -- "$installer"
   [ "$ASSUME_YES" -eq 0 ] || set -- "$@" --yes
@@ -317,6 +343,30 @@ detect_hosts() {
   have codex && found="$found codex"
   have grok && found="$found grok"
   printf '%s\n' "$found"
+}
+
+select_hosts() {
+  found=$(detect_hosts)
+  [ -n "$(printf '%s' "$found" | tr -d ' ')" ] \
+    || die "no supported host detected; pass --host claude, --host codex, or --host grok"
+  if [ "$ALL_HOSTS" -eq 1 ] || [ -n "$REQUESTED_HOSTS" ] || [ "$ASSUME_YES" -eq 1 ]; then
+    printf '%s\n' "$found"
+    return 0
+  fi
+  [ -r /dev/tty ] \
+    || die "host selection requires an interactive terminal; pass --yes, --all, or --host HOST"
+  selected=""
+  for host in $found; do
+    printf 'Install the Unicity AOS plugin for %s? [Y/n] ' "$host" >/dev/tty
+    answer=""
+    IFS= read -r answer </dev/tty || true
+    case "$answer" in
+      ""|y|Y|yes|YES|Yes) selected="$selected $host" ;;
+    esac
+  done
+  [ -n "$(printf '%s' "$selected" | tr -d ' ')" ] \
+    || die "no host plugins selected"
+  printf '%s\n' "$selected"
 }
 
 daemon_is_live() {
@@ -729,12 +779,18 @@ write_receipt() {
 }
 
 ensure_b3sum
-hosts=$(detect_hosts)
-[ -n "$(printf '%s' "$hosts" | tr -d ' ')" ] \
-  || die "no supported host detected; pass --host claude, --host codex, or --host grok"
+hosts=$(select_hosts)
 acquire_install_lock
 ensure_aos
 stage_release_metadata
+if [ "$PLUGINS_ONLY" -eq 1 ]; then
+  prepare_plugin_snapshot
+  for host in $hosts; do
+    install_plugin "$host"
+  done
+  say "Unicity AOS plugin installation complete. Start a new host session to provision its oracle pack."
+  exit 0
+fi
 ensure_base
 for host in $hosts; do
   install_pack "$host"

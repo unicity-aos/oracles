@@ -167,6 +167,18 @@ if [ -n "$LOCAL_ASSETS" ]; then
   LOCAL_ASSETS=$(cd -- "$LOCAL_ASSETS" && pwd -P)
 fi
 
+require_commands() {
+  missing=""
+  for command in \
+    awk basename cat chmod cp diff find grep ln mkdir mktemp mv pwd rm sed sort tar tr uniq uname
+  do
+    have "$command" || missing="$missing $command"
+  done
+  [ -z "$missing" ] || die "missing required commands:$missing"
+}
+
+require_commands
+
 platform() {
   os=$(uname -s)
   arch=$(uname -m)

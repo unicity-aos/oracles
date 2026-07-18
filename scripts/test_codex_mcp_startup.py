@@ -47,18 +47,20 @@ def main() -> None:
         installer = root / "oracle-installer"
         install_log = root / "installer-args"
         aos_log = root / "aos-args"
+        aos_cwd = root / "aos-cwd"
 
         write_executable(
             installer,
             "#!/bin/sh\n"
             "set -eu\n"
             'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
-            '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 0.2.1" ] '
+            '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 0.2.2" ] '
             '|| { printf "%s\\n" "unexpected installer arguments: $*" >&2; exit 91; }\n'
             'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"\n'
-            'printf "%s\\n" \'version = "0.2.1"\' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"\n'
+            'printf "%s\\n" \'version = "0.2.2"\' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"\n'
             'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
             "#!/bin/sh\n"
+            'pwd -P > "$TEST_AOS_CWD"\n'
             'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
             'case " $* " in\n'
             '  *" capsule show aos-mcp --agent codex-code "*) exit 0 ;;\n'
@@ -76,6 +78,7 @@ def main() -> None:
             "PATH": "/usr/bin:/bin",
             "TEST_INSTALL_LOG": str(install_log),
             "TEST_AOS_LOG": str(aos_log),
+            "TEST_AOS_CWD": str(aos_cwd),
             "TMPDIR": str(root),
         }
 
@@ -85,19 +88,20 @@ def main() -> None:
         assert first.stderr == "", first.stderr
         assert (home / "extensions/oracles/codex/Pack.lock").is_file()
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 0.2.1"
+            "--host codex --skip-host-plugin --yes --oracle-version 0.2.2"
         ]
         assert aos_log.read_text().splitlines() == [
             "capsule show aos-mcp --agent codex-code",
             "--principal codex-code mcp serve",
         ]
+        assert Path(aos_cwd.read_text().strip()) == (home / "runtime").resolve()
 
         second = launch(environment)
         assert second.returncode == 0, (second.returncode, second.stdout, second.stderr)
         assert second.stdout == "mcp-ready\n", second.stdout
         assert second.stderr == "", second.stderr
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 0.2.1"
+            "--host codex --skip-host-plugin --yes --oracle-version 0.2.2"
         ], "ready startup unexpectedly re-entered provisioning"
 
         plugin_copy = root / "plugin-copy"

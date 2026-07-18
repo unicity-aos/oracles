@@ -115,6 +115,10 @@ if [ ! -f "$RESOLVE" ]; then
 fi
 # shellcheck source=lib-aos-resolve.sh
 . "$RESOLVE"
+aos_enter_product_workspace || {
+  emit "Unicity AOS could not enter its product runtime workspace."
+  exit 0
+}
 
 BOOTSTRAP_ERROR=""
 pack_is_current() {

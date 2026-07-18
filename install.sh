@@ -4,7 +4,7 @@ set -eu
 umask 077
 
 ORACLES_REPO="${AOS_ORACLES_REPO:-unicity-aos/oracles}"
-ORACLES_VERSION="${AOS_ORACLES_VERSION:-0.2.1}"
+ORACLES_VERSION="${AOS_ORACLES_VERSION:-0.2.2}"
 AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/base-install.sh}"
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 AOS_CHANNEL=""
@@ -78,7 +78,7 @@ Usage: install.sh [options]
   --host HOST       install claude, codex, or grok (repeatable)
   --all             install every supported host
   --yes, -y         non-interactive host-pack provisioning
-  --oracle-version V exact signed oracle pack version (default: 0.2.1)
+  --oracle-version V exact signed oracle pack version (default: 0.2.2)
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
@@ -372,6 +372,32 @@ daemon_is_live() {
   status=$(aos status --json 2>/dev/null || true)
   printf '%s' "$status" \
     | grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"'
+}
+
+enter_product_workspace() {
+  workspace="$AOS_HOME_DIR/runtime"
+  [ ! -L "$workspace" ] || die "refusing symlinked product runtime: $workspace"
+  mkdir -p "$workspace" || die "could not create the AOS product runtime workspace"
+  chmod 700 "$workspace" || die "could not secure the AOS product runtime workspace"
+  CDPATH= cd -P -- "$workspace" \
+    || die "could not enter the AOS product runtime workspace"
+}
+
+repair_runtime_workspace_selection() {
+  daemon_is_live || return 0
+  probe_error="$WORK/runtime-workspace-probe.err"
+  if aos --principal default ps --format json >/dev/null 2>"$probe_error"; then
+    rm -f "$probe_error"
+    return 0
+  fi
+  if ! grep -Fq 'running daemon belongs to another project or workspace layout' "$probe_error"; then
+    detail=$(tail -n 1 "$probe_error" 2>/dev/null || true)
+    die "could not verify the active product runtime workspace${detail:+: $detail}"
+  fi
+  rm -f "$probe_error"
+  say "Restarting Unicity CE in its product runtime workspace..."
+  aos --principal default stop >/dev/null \
+    || die "could not stop the runtime using a stale workspace selection"
 }
 
 ensure_base() {
@@ -1009,6 +1035,8 @@ if [ "$PLUGINS_ONLY" -eq 1 ]; then
   say "Unicity AOS plugin installation complete. Start a new host session to provision its oracle pack."
   exit 0
 fi
+enter_product_workspace
+repair_runtime_workspace_selection
 ensure_base
 for host in $hosts; do
   install_pack "$host"

@@ -6,6 +6,7 @@
 # turns Codex hooks into engine events, and launches Codex profiles.
 set -eu
 
+HOST_WORKSPACE=$(pwd -P 2>/dev/null || pwd)
 HERE=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P) || HERE=$(dirname "$0")
 export ASTRID_HOST=codex
 export AOS_PLUGIN_ROOT="${AOS_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${PLUGIN_ROOT:-$HERE/..}}}"
@@ -17,6 +18,10 @@ RESOLVE="$HERE/lib-aos-resolve.sh"
 . "$RESOLVE"
 
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
+aos_enter_product_workspace || {
+  echo "aos-up: could not enter the AOS product runtime workspace" >&2
+  exit 1
+}
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/codex/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$HERE/aos-install"
@@ -208,7 +213,7 @@ derive_workspace_id() {
     return
   fi
   if command -v cksum >/dev/null 2>&1; then
-    hash="$(pwd | cksum | sed 's/ .*//')"
+    hash="$(printf '%s\n' "$HOST_WORKSPACE" | cksum | sed 's/ .*//')"
     topic_segment "cwd-$hash"
     return
   fi
@@ -222,6 +227,14 @@ emit_hook() {
     exit 2
   fi
 
+  if ! aos_resolve_apply 2>/dev/null; then
+    if [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}" = "1" ]; then
+      echo "aos-up: could not resolve the AOS command for the Codex hook" >&2
+      return 127
+    fi
+    return 0
+  fi
+
   tmp="${TMPDIR:-/tmp}/aos-codex-hook.$$.$event.json"
   trap 'rm -f "$tmp"' EXIT HUP INT TERM
   cat >"$tmp" || true
@@ -231,7 +244,7 @@ emit_hook() {
   workspace_id="$(derive_workspace_id)"
   token="${ASTRID_HOOK_TOKEN:-$(mint_hook_token)}"
   payload_b64="$(base64_file "$tmp")"
-  cwd_b64="$(pwd | base64_stream)"
+  cwd_b64="$(printf '%s\n' "$HOST_WORKSPACE" | base64_stream)"
   workspace_json=null
   if [ -n "$workspace_id" ]; then
     workspace_json="\"$workspace_id\""
@@ -264,6 +277,7 @@ launch_codex() {
   ASTRID_WORKSPACE_ID="$(derive_workspace_id)"
   ASTRID_HOOK_TOKEN="$(mint_hook_token)"
   export ASTRID_PRINCIPAL_ID ASTRID_SESSION_ID ASTRID_WORKSPACE_ID ASTRID_HOOK_TOKEN
+  CDPATH= cd -P -- "$HOST_WORKSPACE"
   exec codex --profile "${CODEX_PROFILE:-aos}" "$@"
 }
 
@@ -275,6 +289,7 @@ launch_codex_exec() {
   ASTRID_WORKSPACE_ID="$(derive_workspace_id)"
   ASTRID_HOOK_TOKEN="$(mint_hook_token)"
   export ASTRID_PRINCIPAL_ID ASTRID_SESSION_ID ASTRID_WORKSPACE_ID ASTRID_HOOK_TOKEN
+  CDPATH= cd -P -- "$HOST_WORKSPACE"
   exec codex exec --profile "${CODEX_PROFILE:-aos}" --json "$@"
 }
 

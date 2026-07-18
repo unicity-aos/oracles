@@ -36,6 +36,10 @@ fi
 . "$RESOLVE"
 
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
+aos_enter_product_workspace || {
+  log "could not enter the AOS product runtime workspace"
+  exit 1
+}
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/$AOS_HOST/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$AOS_PLUGIN_ROOT/bin/aos-install"

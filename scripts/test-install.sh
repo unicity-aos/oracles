@@ -78,6 +78,17 @@ case " $* " in
       printf '{"state":"stopped"}\n'
     fi
     ;;
+  *" ps --format json "*)
+    if [ "${TEST_PS_FAILURE:-0}" -ne 0 ]; then
+      printf '%s\n' 'error: workspace probe failed for another reason' >&2
+      exit 1
+    fi
+    if [ "${TEST_STALE_WORKSPACE:-0}" -ne 0 ]; then
+      printf '%s\n' 'error: running daemon belongs to another project or workspace layout' >&2
+      exit 1
+    fi
+    printf '{}\n'
+    ;;
   *" start "*)
     mkdir -p "$AOS_HOME"
     : > "$AOS_HOME/runtime-running"
@@ -239,7 +250,7 @@ plugin_only_start=$(wc -l < "$TEST_LOG")
 AOS_HOME="$plugin_only_home" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
 tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
-grep -Fq "codex plugin marketplace add $plugin_only_home/extensions/oracles/plugins/0.2.1" \
+grep -Fq "codex plugin marketplace add $plugin_only_home/extensions/oracles/plugins/0.2.2" \
   "$work/plugin-only.log"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
 if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
@@ -259,7 +270,7 @@ sed 's#  #  ./#' "$assets/BLAKE3SUMS.txt" > "$prefixed_assets/BLAKE3SUMS.txt"
 prefixed_home="$home/prefixed-checksums/.aos"
 AOS_HOME="$prefixed_home" AOS_ORACLE_ASSETS="$prefixed_assets" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
-test -d "$prefixed_home/extensions/oracles/plugins/0.2.1"
+test -d "$prefixed_home/extensions/oracles/plugins/0.2.2"
 
 # An existing unrelated host pack is private state. Installing Codex must not
 # inspect, rewrite, remove, or provision Claude/Grok.
@@ -313,7 +324,7 @@ if grep -Eq '^aos --principal codex-code capsule install .*/aos-(cli|fs|openai-c
   echo "oracle host provisioning installed a CE distribution capsule" >&2
   exit 1
 fi
-grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.1" "$TEST_LOG"
+grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.2" "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
@@ -363,6 +374,35 @@ if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
   exit 1
 fi
 
+# A daemon selected by an older host plugin from another project is stopped
+# through the recovery command and restarted in the product-owned workspace.
+stale_home="$home/stale-workspace/.aos"
+mkdir -p "$stale_home"
+: > "$stale_home/runtime-running"
+stale_start=$(wc -l < "$TEST_LOG")
+AOS_HOME="$stale_home" TEST_STALE_WORKSPACE=1 \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+tail -n "+$((stale_start + 1))" "$TEST_LOG" > "$work/stale-workspace.log"
+grep -Fq 'aos --principal default ps --format json' "$work/stale-workspace.log"
+grep -Fq 'aos --principal default stop' "$work/stale-workspace.log"
+grep -Fq 'aos --principal default start' "$work/stale-workspace.log"
+
+failed_probe_home="$home/failed-workspace-probe/.aos"
+mkdir -p "$failed_probe_home"
+: > "$failed_probe_home/runtime-running"
+failed_probe_start=$(wc -l < "$TEST_LOG")
+if AOS_HOME="$failed_probe_home" TEST_PS_FAILURE=1 \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+then
+  echo "unrelated runtime probe failure was treated as a workspace mismatch" >&2
+  exit 1
+fi
+tail -n "+$((failed_probe_start + 1))" "$TEST_LOG" > "$work/failed-workspace-probe.log"
+if grep -Fq 'aos --principal default stop' "$work/failed-workspace-probe.log"; then
+  echo "unrelated runtime probe failure stopped the runtime" >&2
+  exit 1
+fi
+
 create=$(grep -n 'agent create codex-code' "$TEST_LOG" | head -n1 | cut -d: -f1)
 first_install=$(grep -n 'aos --principal codex-code capsule install' "$TEST_LOG" | head -n1 | cut -d: -f1)
 test "$create" -lt "$first_install"
@@ -400,7 +440,7 @@ tail -n "+$((claude_start + 1))" "$TEST_LOG" > "$work/claude-only.log"
 grep -Eq 'capsule install .*/aos-mcp\.capsule$' "$work/claude-only.log"
 grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-grep -Fq "claude plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.1" "$TEST_LOG"
+grep -Fq "claude plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.2" "$TEST_LOG"
 if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
   echo "external Claude plugin installed an AOS-managed workload adapter" >&2
   exit 1
@@ -530,7 +570,7 @@ fi
 immutable_home="$home/immutable/.aos"
 AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-snapshot_manifest="$immutable_home/extensions/oracles/plugins/0.2.1/.agents/plugins/marketplace.json"
+snapshot_manifest="$immutable_home/extensions/oracles/plugins/0.2.2/.agents/plugins/marketplace.json"
 printf '\nmodified\n' >> "$snapshot_manifest"
 if AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
@@ -543,7 +583,7 @@ grep -Fq modified "$snapshot_manifest"
 receipt_home="$home/immutable-receipt/.aos"
 AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-receipt="$receipt_home/extensions/oracles/codex/releases/0.2.1/Receipt.toml"
+receipt="$receipt_home/extensions/oracles/codex/releases/0.2.2/Receipt.toml"
 printf '\nmodified = true\n' >> "$receipt"
 if AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
@@ -554,7 +594,7 @@ fi
 grep -Fq 'modified = true' "$receipt"
 
 # v0.2.0 provisioned a CE distro into each selected host principal before it
-# installed the Oracle capsules. The v0.2.1 repair detaches only bindings whose
+# installed the Oracle capsules. The v0.2.2 repair detaches only bindings whose
 # exact identity is attributable to that transaction. Installed capsule files
 # remain in place, unrelated grants survive, and same-ID local replacements are
 # preserved before the new pack is staged.
@@ -657,20 +697,20 @@ if TEST_FAIL_PLUGIN=1 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
   TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 0.2.1
+    --oracle-version 0.2.2
 then
   echo "legacy repair unexpectedly committed after host plugin failure" >&2
   exit 1
 fi
 test -f "$legacy_state/granted-codex-code-codex-install"
 test -f "$legacy_state/granted-codex-code-aos-cli"
-test ! -e "$legacy_home/extensions/oracles/codex/releases/0.2.1"
+test ! -e "$legacy_home/extensions/oracles/codex/releases/0.2.2"
 
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
   TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 0.2.1
+    --oracle-version 0.2.2
 test ! -e "$legacy_state/granted-codex-code-codex-install"
 test ! -e "$legacy_state/granted-codex-code-aos-cli"
 test -f "$legacy_state/granted-codex-code-codex-runner"
@@ -680,11 +720,11 @@ test -f "$legacy_state/granted-codex-code-aos-mcp"
 test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
   = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 test -f "$legacy_state/installed-codex-code-codex-install"
-test -f "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml"
+test -f "$legacy_home/extensions/oracles/codex/releases/0.2.2/ManagedCapsules.toml"
 grep -Fq 'name = "aos-mcp"' \
-  "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml"
+  "$legacy_home/extensions/oracles/codex/releases/0.2.2/ManagedCapsules.toml"
 if grep -Eq 'codex-(install|runner)|aos-(cli|fs)' \
-  "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml"
+  "$legacy_home/extensions/oracles/codex/releases/0.2.2/ManagedCapsules.toml"
 then
   echo "new Oracle receipt claimed an obsolete or CE capsule" >&2
   exit 1
@@ -693,15 +733,15 @@ fi
 # The immutable current pack receipt remains stable when the user keeps a
 # same-ID superseding implementation.
 receipt_before=$(shasum -a 256 \
-  "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml" \
+  "$legacy_home/extensions/oracles/codex/releases/0.2.2/ManagedCapsules.toml" \
   | awk '{print $1}')
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
   TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 0.2.1
+    --oracle-version 0.2.2
 test "$receipt_before" = "$(shasum -a 256 \
-  "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml" \
+  "$legacy_home/extensions/oracles/codex/releases/0.2.2/ManagedCapsules.toml" \
   | awk '{print $1}')"
 test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
   = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff

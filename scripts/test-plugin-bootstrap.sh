@@ -22,7 +22,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$host" = codex ] || exit 91
 mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"
-printf '%s\n' 'version = "0.2.1"' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"
+printf '%s\n' 'version = "0.2.2"' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"
 cat > "$AOS_HOME/bin/aos" <<'AOS'
 #!/usr/bin/env sh
 set -eu
@@ -37,6 +37,10 @@ case " ${*:-} " in
     [ "${TEST_UPDATE_AVAILABLE:-0}" -eq 1 ] \
       && printf '%s\n' 'Update available: Unicity AOS 2026.1.0 -> 2026.1.1. Run `aos update` to install.'
     exit 0
+    ;;
+  *" emit --topic "*)
+    pwd -P > "$TEST_HOOK_AOS_CWD"
+    cat > "$TEST_HOOK_PAYLOAD"
     ;;
   *) exit 0 ;;
 esac
@@ -88,7 +92,7 @@ PY
 grep -Fq -- '--host codex' "$log"
 grep -Fq -- '--skip-host-plugin' "$log"
 grep -Fq -- '--yes' "$log"
-grep -Fq -- '--oracle-version 0.2.1' "$log"
+grep -Fq -- '--oracle-version 0.2.2' "$log"
 if grep -Eq -- '--host (claude|grok)' "$log"; then
   echo "Codex bootstrap attempted to install another host" >&2
   exit 1
@@ -115,6 +119,32 @@ assert "Unicity AOS is ready for this Codex session" in context
 assert "starts on MCP connect" in context
 PY
 test "$(wc -l < "$log" | tr -d ' ')" = 1
+
+# Runtime IPC always uses the product workspace, but hook context retains the
+# actual Codex project so capsules receive the host's real working directory.
+project="$work/user-project"
+hook_payload="$work/hook-payload.json"
+hook_aos_cwd="$work/hook-aos-cwd"
+mkdir -p "$project"
+(cd "$project" && printf '%s\n' '{"session_id":"release-smoke"}' | env -i \
+  PATH=/usr/bin:/bin \
+  HOME="$home" \
+  AOS_HOME="$home/.aos" \
+  AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
+  TEST_INSTALL_LOG="$log" \
+  TEST_HOOK_PAYLOAD="$hook_payload" \
+  TEST_HOOK_AOS_CWD="$hook_aos_cwd" \
+  "$repo_root/plugins/unicity-aos/bin/aos-up" codex hook user_prompt_submit)
+python3 - "$hook_payload" "$project" "$hook_aos_cwd" "$home/.aos/runtime" <<'PY'
+import base64
+import json
+from pathlib import Path
+import sys
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+assert base64.b64decode(payload["cwd_b64"]).decode().strip() == str(Path(sys.argv[2]).resolve())
+assert Path(sys.argv[3]).read_text().strip() == str(Path(sys.argv[4]).resolve())
+PY
 
 # The startup update nudge checks only the AOS channel, is cached, and never
 # invokes a host plugin command.

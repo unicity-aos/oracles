@@ -7,6 +7,21 @@
 
 # shellcheck shell=sh
 
+# Enter the one product-owned workspace used by every AOS host integration.
+# Astrid deliberately binds a daemon to one workspace selection. Host plugins
+# can start from unrelated project directories, while Unicity AOS owns one
+# system runtime. Actual host project paths remain hook/event context.
+aos_enter_product_workspace() {
+  _workspace="${AOS_HOME:-$HOME/.aos}/runtime"
+  [ ! -L "$_workspace" ] || {
+    echo "aos-workspace: refusing symlinked product runtime: $_workspace" >&2
+    return 1
+  }
+  mkdir -p "$_workspace" || return 1
+  chmod 700 "$_workspace" || return 1
+  CDPATH= cd -P -- "$_workspace" || return 1
+}
+
 _aos_resolve_plugin_root() {
   if [ -n "${AOS_PLUGIN_ROOT:-}" ]; then
     printf '%s\n' "$AOS_PLUGIN_ROOT"

@@ -1,6 +1,6 @@
 {
   "name": "unicity-aos",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Connect Codex to Unicity AOS with governed capsule tools, health checks, policy hooks, and a principal-scoped identity.",
   "author": {
     "name": "Unicity Labs",

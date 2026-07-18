@@ -6,6 +6,20 @@
 
 # shellcheck shell=sh
 
+# Run every product integration against one AOS-owned workspace. Astrid binds
+# its daemon to a workspace selection, while Codex hooks and MCP processes may
+# start from different directories. The host project remains event context.
+aos_enter_product_workspace() {
+  workspace="${AOS_HOME:-$HOME/.aos}/runtime"
+  [ ! -L "$workspace" ] || {
+    echo "aos-workspace: refusing symlinked product runtime: $workspace" >&2
+    return 1
+  }
+  mkdir -p "$workspace" || return 1
+  chmod 700 "$workspace" || return 1
+  CDPATH= cd -P -- "$workspace" || return 1
+}
+
 _aos_resolve_plugin_root() {
   if [ -n "${AOS_PLUGIN_ROOT:-}" ]; then
     printf '%s\n' "$AOS_PLUGIN_ROOT"

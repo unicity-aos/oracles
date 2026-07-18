@@ -53,10 +53,10 @@ def main() -> None:
             "#!/bin/sh\n"
             "set -eu\n"
             'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
-            '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 0.2.0" ] '
+            '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 0.2.1" ] '
             '|| { printf "%s\\n" "unexpected installer arguments: $*" >&2; exit 91; }\n'
             'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"\n'
-            'printf "%s\\n" \'version = "0.2.0"\' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"\n'
+            'printf "%s\\n" \'version = "0.2.1"\' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"\n'
             'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
             "#!/bin/sh\n"
             'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
@@ -85,7 +85,7 @@ def main() -> None:
         assert first.stderr == "", first.stderr
         assert (home / "extensions/oracles/codex/Pack.lock").is_file()
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 0.2.0"
+            "--host codex --skip-host-plugin --yes --oracle-version 0.2.1"
         ]
         assert aos_log.read_text().splitlines() == [
             "capsule show aos-mcp --agent codex-code",
@@ -97,7 +97,7 @@ def main() -> None:
         assert second.stdout == "mcp-ready\n", second.stdout
         assert second.stderr == "", second.stderr
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 0.2.0"
+            "--host codex --skip-host-plugin --yes --oracle-version 0.2.1"
         ], "ready startup unexpectedly re-entered provisioning"
 
         plugin_copy = root / "plugin-copy"

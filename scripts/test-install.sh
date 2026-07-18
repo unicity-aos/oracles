@@ -239,7 +239,7 @@ plugin_only_start=$(wc -l < "$TEST_LOG")
 AOS_HOME="$plugin_only_home" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
 tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
-grep -Fq "codex plugin marketplace add $plugin_only_home/extensions/oracles/plugins/0.2.0" \
+grep -Fq "codex plugin marketplace add $plugin_only_home/extensions/oracles/plugins/0.2.1" \
   "$work/plugin-only.log"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
 if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
@@ -259,7 +259,7 @@ sed 's#  #  ./#' "$assets/BLAKE3SUMS.txt" > "$prefixed_assets/BLAKE3SUMS.txt"
 prefixed_home="$home/prefixed-checksums/.aos"
 AOS_HOME="$prefixed_home" AOS_ORACLE_ASSETS="$prefixed_assets" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
-test -d "$prefixed_home/extensions/oracles/plugins/0.2.0"
+test -d "$prefixed_home/extensions/oracles/plugins/0.2.1"
 
 # An existing unrelated host pack is private state. Installing Codex must not
 # inspect, rewrite, remove, or provision Claude/Grok.
@@ -313,7 +313,7 @@ if grep -Eq '^aos --principal codex-code capsule install .*/aos-(cli|fs|openai-c
   echo "oracle host provisioning installed a CE distribution capsule" >&2
   exit 1
 fi
-grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.0" "$TEST_LOG"
+grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.1" "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
@@ -400,7 +400,7 @@ tail -n "+$((claude_start + 1))" "$TEST_LOG" > "$work/claude-only.log"
 grep -Eq 'capsule install .*/aos-mcp\.capsule$' "$work/claude-only.log"
 grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-grep -Fq "claude plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.0" "$TEST_LOG"
+grep -Fq "claude plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.1" "$TEST_LOG"
 if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
   echo "external Claude plugin installed an AOS-managed workload adapter" >&2
   exit 1
@@ -530,7 +530,7 @@ fi
 immutable_home="$home/immutable/.aos"
 AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-snapshot_manifest="$immutable_home/extensions/oracles/plugins/0.2.0/.agents/plugins/marketplace.json"
+snapshot_manifest="$immutable_home/extensions/oracles/plugins/0.2.1/.agents/plugins/marketplace.json"
 printf '\nmodified\n' >> "$snapshot_manifest"
 if AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
@@ -543,7 +543,7 @@ grep -Fq modified "$snapshot_manifest"
 receipt_home="$home/immutable-receipt/.aos"
 AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-receipt="$receipt_home/extensions/oracles/codex/releases/0.2.0/Receipt.toml"
+receipt="$receipt_home/extensions/oracles/codex/releases/0.2.1/Receipt.toml"
 printf '\nmodified = true\n' >> "$receipt"
 if AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
@@ -560,10 +560,6 @@ grep -Fq 'modified = true' "$receipt"
 # preserved before the new pack is staged.
 upgrade_assets="$work/upgrade-assets"
 cp -R "$assets" "$upgrade_assets"
-for host in claude codex grok; do
-  sed 's/version = "0.2.0"/version = "0.2.1"/' \
-    "$assets/$host.toml" > "$upgrade_assets/$host.toml"
-done
 write_fixture_checksums "$upgrade_assets"
 
 legacy_home="$home/legacy-v020/.aos"

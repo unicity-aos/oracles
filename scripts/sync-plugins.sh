@@ -43,6 +43,12 @@ for host in $MIRROR_HOSTS; do
   done
 done
 
+for host in claude grok unicity-aos; do
+  [ -d "$ROOT/plugins/$host" ] || continue
+  cp "$ROOT/release/oracle-version" "$ROOT/plugins/$host/.aos-oracle-version"
+  chmod 644 "$ROOT/plugins/$host/.aos-oracle-version"
+done
+
 if [ -d "$ROOT/plugins/unicity-aos/bin" ]; then
   for f in aos-install aos-update-check; do
     cp "$COMMON/$f" "$ROOT/plugins/unicity-aos/bin/$f"

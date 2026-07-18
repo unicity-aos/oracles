@@ -9,8 +9,6 @@ AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/base-install.sh}"
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 AOS_CHANNEL=""
 AOS_VERSION=""
-CLAUDE_AUTH_MODE="${AOS_CLAUDE_AUTH_MODE:-api_key}"
-CLAUDE_INTERACTION_MODE="${AOS_CLAUDE_INTERACTION_MODE:-headless}"
 COSIGN_VERSION=v3.1.1
 ASSUME_YES=0
 ALL_HOSTS=0
@@ -30,6 +28,8 @@ INSTALL_LOCK=""
 LOCK_HELD=0
 PLUGIN_STAGE=""
 RECEIPT_STAGE=""
+PREVIOUS_BINDINGS=""
+CURRENT_PACK_BINDINGS=""
 
 say() { printf '%s\n' "$*"; }
 die() { say "aos-oracles: $*" >&2; exit 1; }
@@ -79,8 +79,6 @@ Usage: install.sh [options]
   --local-assets D  use locally built capsules and pack manifests for testing
   --aos-installer S use an alternate AOS installer URL or local path for testing
   --plugins-only    install selected host marketplace plugins; provision on host start
-  --claude-auth M   api_key or subscription (non-interactive Claude setup)
-  --claude-mode M   headless or repl (non-interactive Claude setup)
   --no-install-aos  fail instead of invoking the canonical AOS installer
   --skip-host-plugin
                      provision capsules/receipt without reinstalling the active host plugin
@@ -121,14 +119,6 @@ while [ "$#" -gt 0 ]; do
       [ -n "$AOS_INSTALL_URL" ] || die "--aos-installer requires a URL or local path"
       ;;
     --plugins-only) PLUGINS_ONLY=1 ;;
-    --claude-auth)
-      shift
-      CLAUDE_AUTH_MODE="${1:-}"
-      ;;
-    --claude-mode)
-      shift
-      CLAUDE_INTERACTION_MODE="${1:-}"
-      ;;
     --no-install-aos) NO_INSTALL_AOS=1 ;;
     --skip-host-plugin) SKIP_HOST_PLUGIN=1 ;;
     -h|--help) usage; exit 0 ;;
@@ -150,18 +140,6 @@ if [ -n "$AOS_VERSION" ]; then
     | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
     || die "invalid AOS version '$AOS_VERSION'"
 fi
-case "$CLAUDE_AUTH_MODE" in
-  api_key|subscription) ;;
-  *) die "invalid Claude auth mode '$CLAUDE_AUTH_MODE'" ;;
-esac
-case "$CLAUDE_INTERACTION_MODE" in
-  headless|repl) ;;
-  *) die "invalid Claude interaction mode '$CLAUDE_INTERACTION_MODE'" ;;
-esac
-if [ "$CLAUDE_INTERACTION_MODE" = headless ] && [ "$CLAUDE_AUTH_MODE" = subscription ]; then
-  die "Claude subscription authentication requires --claude-mode repl; headless mode requires --claude-auth api_key"
-fi
-
 if [ -n "$LOCAL_ASSETS" ]; then
   [ -d "$LOCAL_ASSETS" ] || die "local asset directory not found: $LOCAL_ASSETS"
   LOCAL_ASSETS=$(cd -- "$LOCAL_ASSETS" && pwd -P)
@@ -170,7 +148,7 @@ fi
 require_commands() {
   missing=""
   for command in \
-    awk basename cat chmod cp diff find grep ln mkdir mktemp mv pwd rm sed sort tar tr uniq uname
+    awk basename cat chmod cp diff find grep ln mkdir mktemp mv pwd rm sed sleep sort tar tr uniq uname
   do
     have "$command" || missing="$missing $command"
   done
@@ -228,24 +206,39 @@ acquire_install_lock() {
   [ ! -L "$INSTALL_LOCK" ] || die "refusing symlinked oracle install lock"
   if ! mkdir "$INSTALL_LOCK" 2>/dev/null; then
     owner=""
-    if [ -f "$INSTALL_LOCK/pid" ] && [ ! -L "$INSTALL_LOCK/pid" ] \
-      && IFS= read -r owner < "$INSTALL_LOCK/pid" \
-      && printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$' \
-      && ! kill -0 "$owner" 2>/dev/null
-    then
-      stale_lock="${INSTALL_LOCK}.stale.$$"
-      [ ! -e "$stale_lock" ] && [ ! -L "$stale_lock" ] \
-        || die "could not reclaim stale oracle install lock"
-      mv "$INSTALL_LOCK" "$stale_lock" 2>/dev/null \
-        || die "another oracle installation is active for $AOS_HOME_DIR"
-      rm -rf "$stale_lock"
-      mkdir "$INSTALL_LOCK" 2>/dev/null \
-        || die "another oracle installation is active for $AOS_HOME_DIR"
-    elif [ -n "$owner" ]; then
-      die "another oracle installation is active for $AOS_HOME_DIR (pid $owner)"
-    else
-      die "another oracle installation is active for $AOS_HOME_DIR"
+    if [ -f "$INSTALL_LOCK/pid" ] && [ ! -L "$INSTALL_LOCK/pid" ]; then
+      IFS= read -r owner < "$INSTALL_LOCK/pid" || owner=""
     fi
+    if printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$' \
+      && kill -0 "$owner" 2>/dev/null
+    then
+      die "another oracle installation is active for $AOS_HOME_DIR (pid $owner)"
+    fi
+
+    # A process can be killed after mkdir and before writing pid. Give a live
+    # contender time to finish that tiny critical section, then reclaim only
+    # if no valid live owner appears.
+    if ! printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$'; then
+      sleep 1
+      owner=""
+      if [ -f "$INSTALL_LOCK/pid" ] && [ ! -L "$INSTALL_LOCK/pid" ]; then
+        IFS= read -r owner < "$INSTALL_LOCK/pid" || owner=""
+      fi
+      if printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$' \
+        && kill -0 "$owner" 2>/dev/null
+      then
+        die "another oracle installation is active for $AOS_HOME_DIR (pid $owner)"
+      fi
+    fi
+
+    stale_lock="${INSTALL_LOCK}.stale.$$"
+    [ ! -e "$stale_lock" ] && [ ! -L "$stale_lock" ] \
+      || die "could not reclaim stale oracle install lock"
+    mv "$INSTALL_LOCK" "$stale_lock" 2>/dev/null \
+      || die "another oracle installation is active for $AOS_HOME_DIR"
+    rm -rf "$stale_lock"
+    mkdir "$INSTALL_LOCK" 2>/dev/null \
+      || die "another oracle installation is active for $AOS_HOME_DIR"
   fi
   LOCK_HELD=1
   if ! printf '%s\n' "$$" > "$INSTALL_LOCK/pid"; then
@@ -415,6 +408,200 @@ capsules_for() {
   case "$1" in
     claude|codex|grok) printf '%s\n' aos-mcp ;;
   esac
+}
+
+pack_capsules_tsv() {
+  pc_pack=$1
+  awk '
+    function emit() {
+      if (!inside) return
+      if (name == "" || asset != name ".capsule" || hash == "" || seen[name]++) exit 2
+      print name " " hash
+      name = ""
+      asset = ""
+      hash = ""
+    }
+    /^\[\[capsule\]\]$/ { emit(); inside = 1; next }
+    inside && /^name = "[A-Za-z0-9][A-Za-z0-9._-]*"$/ {
+      name = $0
+      sub(/^name = "/, "", name)
+      sub(/"$/, "", name)
+      next
+    }
+    inside && /^asset = "[A-Za-z0-9][A-Za-z0-9._-]*\.capsule"$/ {
+      asset = $0
+      sub(/^asset = "/, "", asset)
+      sub(/"$/, "", asset)
+      next
+    }
+    inside && /^wasm-blake3 = "[0-9a-f]+"$/ {
+      hash = $0
+      sub(/^wasm-blake3 = "/, "", hash)
+      sub(/"$/, "", hash)
+      if (length(hash) != 64) exit 2
+      next
+    }
+    END { emit() }
+  ' "$pc_pack" || die "pack has invalid capsule ownership metadata"
+}
+
+write_managed_capsules() {
+  wm_bindings=$1
+  wm_output=$2
+  {
+    printf 'schema-version = 1\n'
+    while read -r wm_name wm_hash wm_extra; do
+      [ -n "$wm_name" ] || continue
+      [ -z "${wm_extra:-}" ] || die "invalid managed capsule record"
+      printf '\n[[capsule]]\n'
+      printf 'name = "%s"\n' "$wm_name"
+      printf 'wasm-hash = "%s"\n' "$wm_hash"
+    done < "$wm_bindings"
+  } > "$wm_output"
+}
+
+load_capsule_record() {
+  cr_principal=$1
+  cr_capsule=$2
+  cr_record=$(aos capsule show "$cr_capsule" --agent "$cr_principal" \
+    --format toml 2>/dev/null) || return 1
+  CAPSULE_HASH=$(printf '%s\n' "$cr_record" \
+    | sed -n 's/^wasm_hash = "\([0-9a-f]*\)"$/\1/p')
+  printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  CAPSULE_SOURCE=$(printf '%s\n' "$cr_record" \
+    | sed -n 's/^source = "\([^"]*\)"$/\1/p')
+  CAPSULE_INSTALLED_AT=$(printf '%s\n' "$cr_record" \
+    | sed -n 's/^installed_at = "\([^"]*\)"$/\1/p')
+  CAPSULE_UPDATED_AT=$(printf '%s\n' "$cr_record" \
+    | sed -n 's/^updated_at = "\([^"]*\)"$/\1/p')
+}
+
+binding_hash() {
+  bh_file=$1
+  bh_name=$2
+  awk -v name="$bh_name" '$1 == name { print $2; found = 1 } END { exit !found }' \
+    "$bh_file"
+}
+
+append_binding() {
+  ab_file=$1
+  ab_name=$2
+  ab_hash=$3
+  printf '%s\n' "$ab_name" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' \
+    || die "invalid capsule name in ownership state: $ab_name"
+  printf '%s\n' "$ab_hash" | grep -Eq '^[0-9a-f]{64}$' \
+    || die "invalid capsule hash in ownership state: $ab_name"
+  ab_existing=$(binding_hash "$ab_file" "$ab_name" 2>/dev/null || true)
+  if [ -n "$ab_existing" ]; then
+    [ "$ab_existing" = "$ab_hash" ] \
+      || die "conflicting ownership records for capsule $ab_name"
+    return 0
+  fi
+  printf '%s %s\n' "$ab_name" "$ab_hash" >> "$ab_file"
+}
+
+legacy_v020_hash() {
+  case "$1" in
+    aos-mcp) printf 'a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e\n' ;;
+    claude-install) printf 'b5dd4e2beb234163419088187a87603a42284805de6e288b5450b712e24dfd2f\n' ;;
+    claude-runner) printf '19adab7d37a9be54a0a1866349594461f8116c65612134c124aae94fa79c3c63\n' ;;
+    codex-install) printf '6c510fd2185311dd6de4fd44adb19f9ff19f2251adcad16ff18d859a434e8593\n' ;;
+    codex-runner) printf '0b9473ccba844bce95fff41126c620107f71d630ee0e1d0dd23e5a542613642c\n' ;;
+    *) return 1 ;;
+  esac
+}
+
+same_install_window() {
+  sw_candidate=$1
+  sw_anchor=$2
+  awk -v candidate="$sw_candidate" -v anchor="$sw_anchor" 'BEGIN {
+    iso = "^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:"
+    if (candidate !~ iso || anchor !~ iso) exit 1
+    if (substr(candidate, 1, 10) != substr(anchor, 1, 10)) exit 1
+    ch = substr(candidate, 12, 2) + 0
+    cm = substr(candidate, 15, 2) + 0
+    ah = substr(anchor, 12, 2) + 0
+    am = substr(anchor, 15, 2) + 0
+    delta = (ah * 60 + am) - (ch * 60 + cm)
+    exit !(delta >= 0 && delta <= 5)
+  }'
+}
+
+append_legacy_ce_bindings() {
+  lc_principal=$1
+  lc_output=$2
+  load_capsule_record "$lc_principal" aos-mcp || return 0
+  lc_anchor=$CAPSULE_INSTALLED_AT
+  [ -n "$lc_anchor" ] || return 0
+
+  for lc_manifest in "$AOS_HOME_DIR"/releases/*/Distro.toml; do
+    [ -f "$lc_manifest" ] && [ ! -L "$lc_manifest" ] || continue
+    grep -Fqx 'id = "unicity-ce"' "$lc_manifest" || continue
+    lc_release=${lc_manifest%/Distro.toml}
+    lc_version=${lc_release##*/}
+    printf '%s\n' "$lc_version" \
+      | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || continue
+    grep -Fqx "version = \"$lc_version\"" "$lc_manifest" || continue
+    lc_names=$(sed -n '/^\[\[capsule\]\]$/,/^$/s/^name = "\([A-Za-z0-9][A-Za-z0-9._-]*\)"$/\1/p' \
+      "$lc_manifest")
+    for lc_name in $lc_names; do
+      [ "$lc_name" != aos-mcp ] || continue
+      load_capsule_record "$lc_principal" "$lc_name" || continue
+      [ "$CAPSULE_SOURCE" = "$lc_release/capsules/$lc_name.capsule" ] || continue
+      if [ -z "$CAPSULE_INSTALLED_AT" ] \
+        || [ "$CAPSULE_INSTALLED_AT" != "$CAPSULE_UPDATED_AT" ] \
+        || ! same_install_window "$CAPSULE_INSTALLED_AT" "$lc_anchor"
+      then
+        continue
+      fi
+      append_binding "$lc_output" "$lc_name" "$CAPSULE_HASH"
+    done
+  done
+}
+
+load_previous_bindings() {
+  lp_host=$1
+  lp_principal=$2
+  lp_root="$AOS_HOME_DIR/extensions/oracles/$lp_host"
+  lp_pack="$lp_root/Pack.lock"
+  lp_receipt="$lp_root/current/Receipt.toml"
+  PREVIOUS_BINDINGS="$WORK/previous-$lp_host.bindings"
+  : > "$PREVIOUS_BINDINGS"
+  [ -r "$lp_pack" ] || return 0
+  [ -r "$lp_receipt" ] || die "installed $lp_host Oracle pack has no receipt"
+  grep -Fqx "host = \"$lp_host\"" "$lp_pack" \
+    || die "installed $lp_host Oracle pack has the wrong host"
+  grep -Fqx "principal = \"$lp_principal\"" "$lp_pack" \
+    || die "installed $lp_host Oracle pack has the wrong principal"
+  grep -Fqx "host = \"$lp_host\"" "$lp_receipt" \
+    || die "installed $lp_host Oracle receipt has the wrong host"
+  grep -Fqx "principal = \"$lp_principal\"" "$lp_receipt" \
+    || die "installed $lp_host Oracle receipt has the wrong principal"
+
+  lp_managed="$lp_root/current/ManagedCapsules.toml"
+  if [ -r "$lp_managed" ]; then
+    pack_capsules_tsv "$lp_pack" > "$PREVIOUS_BINDINGS"
+    lp_expected="$WORK/expected-$lp_host-managed.toml"
+    write_managed_capsules "$PREVIOUS_BINDINGS" "$lp_expected"
+    diff -q "$lp_expected" "$lp_managed" >/dev/null \
+      || die "installed $lp_host managed-capsule receipt is invalid"
+    return 0
+  fi
+
+  if ! grep -Fqx 'oracle-version = "0.2.0"' "$lp_receipt" \
+    || ! grep -Fqx 'version = "0.2.0"' "$lp_pack"
+  then
+    say "Preserving untracked capsules from the installed $lp_host Oracle pack."
+    return 0
+  fi
+  lp_names=$(sed -n '/^\[\[capsule\]\]$/,/^$/s/^name = "\([A-Za-z0-9][A-Za-z0-9._-]*\)"$/\1/p' \
+    "$lp_pack")
+  for lp_name in $lp_names; do
+    lp_hash=$(legacy_v020_hash "$lp_name") \
+      || die "installed v0.2.0 $lp_host pack names an unknown capsule: $lp_name"
+    append_binding "$PREVIOUS_BINDINGS" "$lp_name" "$lp_hash"
+  done
+  append_legacy_ce_bindings "$lp_principal" "$PREVIOUS_BINDINGS"
 }
 
 ensure_principal() {
@@ -609,7 +796,9 @@ validate_pack() {
     || die "could not determine the installed Unicity AOS version"
   calendar_version_at_least "$installed_aos" "$aos_floor" \
     || die "Unicity AOS $installed_aos does not satisfy pack requirement >=$aos_floor"
-  actual=$(sed -n '/^\[\[capsule\]\]$/,/^$/s/^name = "\([^"]*\)"/\1/p' "$pack")
+  CURRENT_PACK_BINDINGS="$WORK/current-$host.bindings"
+  pack_capsules_tsv "$pack" > "$CURRENT_PACK_BINDINGS"
+  actual=$(awk '{print $1}' "$CURRENT_PACK_BINDINGS")
   expected=$(capsules_for "$host")
   [ "$actual" = "$expected" ] || die "signed $host pack capsule set is not the expected release set"
 }
@@ -646,15 +835,40 @@ install_pack() {
   stage_pack "$host"
   stage=$STAGED_PACK
   validate_pack "$host" "$principal" "$stage/Pack.toml"
+  load_previous_bindings "$host" "$principal"
+  OBSOLETE_BINDINGS="$WORK/obsolete-$host.bindings"
+  : > "$OBSOLETE_BINDINGS"
   ensure_principal "$host" "$principal"
 
   for capsule in $(capsules_for "$host"); do
-    if [ "$ASSUME_YES" -eq 1 ]; then
-      aos --principal "$principal" capsule install "$stage/$capsule.capsule" </dev/null
-    elif [ -r /dev/tty ]; then
-      aos --principal "$principal" capsule install "$stage/$capsule.capsule" </dev/tty
-    else
-      aos --principal "$principal" capsule install "$stage/$capsule.capsule"
+    expected_hash=$(binding_hash "$CURRENT_PACK_BINDINGS" "$capsule") \
+      || die "signed pack has no managed hash for $capsule"
+    previous_hash=$(binding_hash "$PREVIOUS_BINDINGS" "$capsule" 2>/dev/null || true)
+    install_current=1
+    if load_capsule_record "$principal" "$capsule"; then
+      if [ -n "$previous_hash" ] && [ "$CAPSULE_HASH" != "$previous_hash" ]; then
+        install_current=0
+        say "Preserving locally superseded capsule '$capsule' for $principal."
+      elif [ -z "$previous_hash" ] && [ "$CAPSULE_HASH" != "$expected_hash" ]; then
+        install_current=0
+        say "Preserving pre-existing capsule '$capsule' for $principal."
+      elif [ -z "$previous_hash" ] && [ "$CAPSULE_HASH" = "$expected_hash" ]; then
+        install_current=0
+      fi
+    fi
+
+    if [ "$install_current" -eq 1 ]; then
+      if [ "$ASSUME_YES" -eq 1 ]; then
+        aos --principal "$principal" capsule install "$stage/$capsule.capsule" </dev/null
+      elif [ -r /dev/tty ]; then
+        aos --principal "$principal" capsule install "$stage/$capsule.capsule" </dev/tty
+      else
+        aos --principal "$principal" capsule install "$stage/$capsule.capsule"
+      fi
+      load_capsule_record "$principal" "$capsule" \
+        || die "installed capsule '$capsule' has no readable identity"
+      [ "$CAPSULE_HASH" = "$expected_hash" ] \
+        || die "installed capsule '$capsule' does not match its signed pack identity"
     fi
   done
 
@@ -663,7 +877,40 @@ install_pack() {
     set -- "$@" --add-capsule "$capsule"
   done
   "$@" >/dev/null
+
+  while read -r previous_name previous_hash previous_extra; do
+    [ -n "$previous_name" ] || continue
+    [ -z "${previous_extra:-}" ] || die "invalid previous ownership state"
+    if ! binding_hash "$CURRENT_PACK_BINDINGS" "$previous_name" >/dev/null 2>&1; then
+      append_binding "$OBSOLETE_BINDINGS" "$previous_name" "$previous_hash"
+    fi
+  done < "$PREVIOUS_BINDINGS"
   say "✓ $host oracle capsules ready as $principal"
+}
+
+reconcile_obsolete_bindings() {
+  ro_principal=$1
+  ro_removals="$WORK/removals-${ro_principal}.txt"
+  : > "$ro_removals"
+  while read -r ro_name ro_hash ro_extra; do
+    [ -n "$ro_name" ] || continue
+    [ -z "${ro_extra:-}" ] || die "invalid obsolete ownership state"
+    if ! load_capsule_record "$ro_principal" "$ro_name"; then
+      printf '%s\n' "$ro_name" >> "$ro_removals"
+    elif [ "$CAPSULE_HASH" = "$ro_hash" ]; then
+      printf '%s\n' "$ro_name" >> "$ro_removals"
+    else
+      say "Preserving locally superseded capsule '$ro_name' for $ro_principal."
+    fi
+  done < "$OBSOLETE_BINDINGS"
+
+  [ -s "$ro_removals" ] || return 0
+  set -- aos --principal default agent modify "$ro_principal"
+  while IFS= read -r ro_name; do
+    set -- "$@" --remove-capsule "$ro_name"
+  done < "$ro_removals"
+  "$@" >/dev/null
+  say "✓ obsolete Oracle capsule bindings reconciled for $ro_principal"
 }
 
 install_plugin() {
@@ -708,6 +955,7 @@ write_receipt() {
   rm -rf "$stage"
   mkdir -p "$stage"
   cp "$pack_stage/Pack.toml" "$stage/Pack.lock"
+  write_managed_capsules "$CURRENT_PACK_BINDINGS" "$stage/ManagedCapsules.toml"
   cp "$RELEASE_STAGE/BLAKE3SUMS.txt" "$stage/BLAKE3SUMS.txt"
   cp "$RELEASE_STAGE/runtime-compatibility.toml" "$stage/runtime-compatibility.toml"
   for bundle in \
@@ -774,6 +1022,7 @@ for host in $hosts; do
   if [ "$SKIP_HOST_PLUGIN" -eq 0 ]; then
     install_plugin "$host"
   fi
+  reconcile_obsolete_bindings "$(principal_for "$host")"
   write_receipt "$host" "$(principal_for "$host")" "$STAGED_PACK"
 done
 

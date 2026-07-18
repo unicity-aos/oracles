@@ -34,6 +34,17 @@ export AOS_PLUGIN_ROOT
 BOOTSTRAP_ERROR=""
 NUDGE_MSG=""
 
+VERSION_FILE="$AOS_PLUGIN_ROOT/.aos-oracle-version"
+[ -f "$VERSION_FILE" ] && [ ! -L "$VERSION_FILE" ] || {
+  printf '%s\n' "Unicity AOS plugin snapshot has no Oracle release identity. Reinstall the Codex plugin."
+  exit 0
+}
+ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
+printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+  printf '%s\n' "Unicity AOS plugin snapshot has an invalid Oracle release identity. Reinstall the Codex plugin."
+  exit 0
+}
+
 RESOLVE="$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"
 if [ ! -f "$RESOLVE" ]; then
   RESOLVE="$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P)/lib-aos-resolve.sh"
@@ -77,6 +88,11 @@ case "$PRINCIPAL" in
   ""|*[!A-Za-z0-9_-]*) PRINCIPAL=codex-code ;;
 esac
 
+pack_is_current() {
+  pack="${AOS_HOME:-$HOME/.aos}/extensions/oracles/codex/Pack.lock"
+  [ -r "$pack" ] && grep -Fqx "version = \"$ORACLE_VERSION\"" "$pack"
+}
+
 resolve_initial() {
   if [ "$MODE" = hook ]; then
     aos_resolve_apply 2>/dev/null
@@ -114,7 +130,9 @@ fi
 
 VERSION="$("$AOS" --version 2>/dev/null | head -n1 || true)"
 
-if ! "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1; then
+if ! pack_is_current \
+  || ! "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1
+then
   if bootstrap_codex \
     && "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1
   then

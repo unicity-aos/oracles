@@ -20,6 +20,7 @@ AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/codex/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$HERE/aos-install"
+VERSION_FILE="$AOS_PLUGIN_ROOT/.aos-oracle-version"
 BOOTSTRAP_LOG=""
 
 cleanup_bootstrap_log() {
@@ -29,18 +30,32 @@ cleanup_bootstrap_log() {
 
 trap cleanup_bootstrap_log EXIT HUP INT TERM
 
+[ -f "$VERSION_FILE" ] && [ ! -L "$VERSION_FILE" ] || {
+  echo "aos-up: plugin snapshot has no Oracle release identity" >&2
+  exit 1
+}
+ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
+printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+  echo "aos-up: plugin snapshot has an invalid Oracle release identity" >&2
+  exit 1
+}
+
 codex_ready() {
   [ -r "$PACK_RECEIPT" ] \
+    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
     && aos_resolve_apply 2>/dev/null \
     && "$AOS" capsule show aos-mcp --agent codex-code >/dev/null 2>&1
 }
 
 install_lock_reclaimable() {
   owner=""
-  [ -f "$INSTALL_LOCK/pid" ] && [ ! -L "$INSTALL_LOCK/pid" ] \
-    && IFS= read -r owner < "$INSTALL_LOCK/pid" \
-    && printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$' \
-    && ! kill -0 "$owner" 2>/dev/null
+  if [ -f "$INSTALL_LOCK/pid" ] && [ ! -L "$INSTALL_LOCK/pid" ]; then
+    IFS= read -r owner < "$INSTALL_LOCK/pid" || owner=""
+  fi
+  if ! printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$'; then
+    return 0
+  fi
+  ! kill -0 "$owner" 2>/dev/null
 }
 
 ensure_codex() {
@@ -59,6 +74,7 @@ ensure_codex() {
   while :; do
     : > "$BOOTSTRAP_LOG"
     if AOS_HOST=codex "$INSTALLER" --host codex --yes \
+      --oracle-version "$ORACLE_VERSION" \
       </dev/null >"$BOOTSTRAP_LOG" 2>&1
     then
       if codex_ready; then

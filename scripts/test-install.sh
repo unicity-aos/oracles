@@ -10,6 +10,9 @@ home="$work/home"
 mkdir -p "$fake_bin" "$assets" "$home"
 for host in claude codex grok; do
   cp "$repo_root/packs/$host.toml" "$assets/$host.toml"
+  printf '%s\n' \
+    'wasm-blake3 = "a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e"' \
+    >> "$assets/$host.toml"
 done
 cp "$repo_root/release/runtime-compatibility.toml" "$assets/runtime-compatibility.toml"
 (cd "$repo_root" && tar -czf "$assets/aos-oracle-plugins.tar.gz" \
@@ -99,9 +102,28 @@ case " $* " in
     : > "$TEST_STATE/agent-$principal"
     ;;
   *" capsule show "*)
-    capsule=${3}
-    principal=${*: -1}
-    test -f "$TEST_STATE/capsule-$principal-$capsule"
+    capsule=""
+    principal=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = show ]; then capsule=$argument; fi
+      if [ "$previous" = --agent ]; then principal=$argument; fi
+      previous=$argument
+    done
+    record="$TEST_STATE/installed-$principal-$capsule"
+    test -f "$record"
+    if printf ' %s ' "$*" | grep -Fq ' --format toml '; then
+      hash=$(sed -n '1p' "$record")
+      source=$(sed -n '2p' "$record")
+      installed=$(sed -n '3p' "$record")
+      updated=$(sed -n '4p' "$record")
+      printf 'name = "%s"\n' "$capsule"
+      printf 'version = "0.1.0"\n'
+      printf 'source = "%s"\n' "$source"
+      printf 'wasm_hash = "%s"\n' "$hash"
+      printf 'installed_at = "%s"\n' "$installed"
+      printf 'updated_at = "%s"\n' "$updated"
+    fi
     ;;
   *" capsule install "*)
     principal=default
@@ -113,7 +135,28 @@ case " $* " in
     source=${*: -1}
     if [ "$source" = --yes ]; then source=${*: -2:1}; fi
     capsule=$(basename "$source" .capsule)
-    : > "$TEST_STATE/capsule-$principal-$capsule"
+    case "$capsule" in
+      aos-mcp) hash=a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e ;;
+      claude-install) hash=b5dd4e2beb234163419088187a87603a42284805de6e288b5450b712e24dfd2f ;;
+      claude-runner) hash=19adab7d37a9be54a0a1866349594461f8116c65612134c124aae94fa79c3c63 ;;
+      codex-install) hash=6c510fd2185311dd6de4fd44adb19f9ff19f2251adcad16ff18d859a434e8593 ;;
+      codex-runner) hash=0b9473ccba844bce95fff41126c620107f71d630ee0e1d0dd23e5a542613642c ;;
+      *) hash=$(shasum -a 256 "$source" | awk '{print $1}') ;;
+    esac
+    printf '%s\n%s\n%s\n%s\n' "$hash" "$source" \
+      '2026-07-17T23:13:33+00:00' '2026-07-17T23:13:33+00:00' \
+      > "$TEST_STATE/installed-$principal-$capsule"
+    ;;
+  *" agent modify "*)
+    principal=${5}
+    previous=""
+    for argument in "$@"; do
+      case "$previous" in
+        --add-capsule) : > "$TEST_STATE/granted-$principal-$argument" ;;
+        --remove-capsule) rm -f "$TEST_STATE/granted-$principal-$argument" ;;
+      esac
+      previous=$argument
+    done
     ;;
   *" init "*)
     target=""
@@ -175,6 +218,18 @@ export TEST_STATE="$work/state"
 export TEST_PRODUCT_ASSETS="$product_assets"
 mkdir -p "$TEST_STATE"
 : > "$TEST_LOG"
+
+write_test_capsule() {
+  state=$1
+  principal=$2
+  name=$3
+  hash=$4
+  source=$5
+  installed_at=$6
+  updated_at=$7
+  printf '%s\n%s\n%s\n%s\n' "$hash" "$source" "$installed_at" "$updated_at" \
+    > "$state/installed-$principal-$name"
+}
 
 # The public one-command path installs only marketplace plugins. Host startup
 # owns principal and capsule provisioning, so this path must not initialize or
@@ -262,7 +317,14 @@ grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
+test -f "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
 grep -Fq 'source = "local"' "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
+grep -Fq 'name = "aos-mcp"' \
+  "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
+grep -Fq 'wasm-hash = "a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e"' \
+  "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
+test -f "$TEST_STATE/installed-codex-code-aos-mcp"
+test -f "$TEST_STATE/granted-codex-code-aos-mcp"
 test ! -e "$AOS_HOME/extensions/oracles/.install.lock"
 
 # Local development may stage only the selected host, provided every staged
@@ -330,7 +392,6 @@ grep -Fq 'principal = "grok-code"' "$grok_receipt"
 
 # A host plugin uses the host application's existing authentication. Installing
 # the external Claude plugin must not require or consume an Anthropic API key.
-cp "$repo_root/packs/claude.toml" "$assets/claude.toml"
 claude_start=$(wc -l < "$TEST_LOG")
 env -u ANTHROPIC_API_KEY \
   "$repo_root/install.sh" --host claude --yes --no-install-aos
@@ -492,6 +553,163 @@ then
 fi
 grep -Fq 'modified = true' "$receipt"
 
+# v0.2.0 provisioned a CE distro into each selected host principal before it
+# installed the Oracle capsules. The v0.2.1 repair detaches only bindings whose
+# exact identity is attributable to that transaction. Installed capsule files
+# remain in place, unrelated grants survive, and same-ID local replacements are
+# preserved before the new pack is staged.
+upgrade_assets="$work/upgrade-assets"
+cp -R "$assets" "$upgrade_assets"
+for host in claude codex grok; do
+  sed 's/version = "0.2.0"/version = "0.2.1"/' \
+    "$assets/$host.toml" > "$upgrade_assets/$host.toml"
+done
+write_fixture_checksums "$upgrade_assets"
+
+legacy_home="$home/legacy-v020/.aos"
+legacy_state="$work/legacy-state"
+legacy_log="$work/legacy.log"
+legacy_receipt="$legacy_home/extensions/oracles/codex/releases/0.2.0"
+mkdir -p "$legacy_state" "$legacy_receipt" \
+  "$legacy_home/releases/2026.1.1/capsules"
+: > "$legacy_log"
+: > "$legacy_home/runtime-running"
+: > "$legacy_state/group-codex"
+: > "$legacy_state/agent-codex-code"
+cat > "$legacy_receipt/Receipt.toml" <<'EOF'
+schema-version = 1
+oracle-version = "0.2.0"
+host = "codex"
+principal = "codex-code"
+source = "release"
+EOF
+cat > "$legacy_receipt/Pack.lock" <<'EOF'
+schema-version = 1
+
+[pack]
+id = "codex-oracle"
+name = "Unicity AOS for Codex"
+version = "0.2.0"
+host = "codex"
+principal = "codex-code"
+description = "Codex integration for Unicity AOS."
+repository = "https://github.com/unicity-aos/oracles"
+license = "MIT OR Apache-2.0"
+aos-version = ">=2026.1.0"
+
+[[capsule]]
+name = "aos-mcp"
+asset = "aos-mcp.capsule"
+
+[[capsule]]
+name = "codex-install"
+asset = "codex-install.capsule"
+
+[[capsule]]
+name = "codex-runner"
+asset = "codex-runner.capsule"
+EOF
+ln -s releases/0.2.0 "$legacy_home/extensions/oracles/codex/current"
+ln -s current/Pack.lock "$legacy_home/extensions/oracles/codex/Pack.lock"
+cat > "$legacy_home/releases/2026.1.1/Distro.toml" <<'EOF'
+schema-version = 1
+
+[distro]
+id = "unicity-ce"
+version = "2026.1.1"
+
+[[capsule]]
+name = "aos-cli"
+source = "capsules/aos-cli.capsule"
+
+[[capsule]]
+name = "aos-fs"
+source = "capsules/aos-fs.capsule"
+EOF
+: > "$legacy_home/releases/2026.1.1/capsules/aos-cli.capsule"
+: > "$legacy_home/releases/2026.1.1/capsules/aos-fs.capsule"
+
+write_test_capsule "$legacy_state" codex-code aos-mcp \
+  ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff \
+  /tmp/user/aos-mcp.capsule \
+  2026-07-17T23:13:33+00:00 2026-07-17T23:14:00+00:00
+write_test_capsule "$legacy_state" codex-code codex-install \
+  6c510fd2185311dd6de4fd44adb19f9ff19f2251adcad16ff18d859a434e8593 \
+  /tmp/v0.2.0/codex-install.capsule \
+  2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+write_test_capsule "$legacy_state" codex-code codex-runner \
+  eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee \
+  /tmp/user/codex-runner.capsule \
+  2026-07-17T23:13:33+00:00 2026-07-17T23:14:00+00:00
+write_test_capsule "$legacy_state" codex-code aos-cli \
+  dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd \
+  "$legacy_home/releases/2026.1.1/capsules/aos-cli.capsule" \
+  2026-07-17T23:12:00+00:00 2026-07-17T23:12:00+00:00
+write_test_capsule "$legacy_state" codex-code aos-fs \
+  cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+  "$legacy_home/releases/2026.1.1/capsules/aos-fs.capsule" \
+  2026-07-17T23:12:00+00:00 2026-07-18T00:00:00+00:00
+write_test_capsule "$legacy_state" codex-code user-capsule \
+  bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+  /tmp/user/user-capsule.capsule \
+  2026-07-17T20:00:00+00:00 2026-07-17T20:00:00+00:00
+for capsule in aos-mcp codex-install codex-runner aos-cli aos-fs user-capsule; do
+  : > "$legacy_state/granted-codex-code-$capsule"
+done
+
+if TEST_FAIL_PLUGIN=1 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
+  TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
+  AOS_ORACLE_ASSETS="$upgrade_assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    --oracle-version 0.2.1
+then
+  echo "legacy repair unexpectedly committed after host plugin failure" >&2
+  exit 1
+fi
+test -f "$legacy_state/granted-codex-code-codex-install"
+test -f "$legacy_state/granted-codex-code-aos-cli"
+test ! -e "$legacy_home/extensions/oracles/codex/releases/0.2.1"
+
+TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
+  TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
+  AOS_ORACLE_ASSETS="$upgrade_assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    --oracle-version 0.2.1
+test ! -e "$legacy_state/granted-codex-code-codex-install"
+test ! -e "$legacy_state/granted-codex-code-aos-cli"
+test -f "$legacy_state/granted-codex-code-codex-runner"
+test -f "$legacy_state/granted-codex-code-aos-fs"
+test -f "$legacy_state/granted-codex-code-user-capsule"
+test -f "$legacy_state/granted-codex-code-aos-mcp"
+test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
+  = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+test -f "$legacy_state/installed-codex-code-codex-install"
+test -f "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml"
+grep -Fq 'name = "aos-mcp"' \
+  "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml"
+if grep -Eq 'codex-(install|runner)|aos-(cli|fs)' \
+  "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml"
+then
+  echo "new Oracle receipt claimed an obsolete or CE capsule" >&2
+  exit 1
+fi
+
+# The immutable current pack receipt remains stable when the user keeps a
+# same-ID superseding implementation.
+receipt_before=$(shasum -a 256 \
+  "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml" \
+  | awk '{print $1}')
+TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
+  TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
+  AOS_ORACLE_ASSETS="$upgrade_assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    --oracle-version 0.2.1
+test "$receipt_before" = "$(shasum -a 256 \
+  "$legacy_home/extensions/oracles/codex/releases/0.2.1/ManagedCapsules.toml" \
+  | awk '{print $1}')"
+test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
+  = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+
 # A live per-home lock fails closed and an unsuccessful contender never removes
 # the active installer's lock.
 locked_home="$home/locked/.aos"
@@ -515,5 +733,20 @@ printf '%s\n' 999999999 > "$locked_home/extensions/oracles/.install.lock/pid"
 AOS_HOME="$locked_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 test ! -e "$locked_home/extensions/oracles/.install.lock"
+
+# A kill between lock mkdir and pid publication must not wedge every future
+# host startup. Missing and malformed owners are reclaimed after the installer
+# gives a live contender one second to publish a valid pid.
+for abandoned in missing malformed; do
+  abandoned_home="$home/abandoned-$abandoned/.aos"
+  mkdir -p "$abandoned_home/extensions/oracles/.install.lock"
+  if [ "$abandoned" = malformed ]; then
+    printf '%s\n' not-a-pid > "$abandoned_home/extensions/oracles/.install.lock/pid"
+  fi
+  AOS_HOME="$abandoned_home" \
+    "$repo_root/install.sh" --host codex --yes --no-install-aos
+  test ! -e "$abandoned_home/extensions/oracles/.install.lock"
+  test -f "$abandoned_home/extensions/oracles/codex/Pack.lock"
+done
 
 python3 "$repo_root/scripts/test_release_contract.py"

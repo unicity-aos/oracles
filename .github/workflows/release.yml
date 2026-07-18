@@ -56,6 +56,8 @@ jobs:
           import tomllib
 
           version = "${{ github.ref_name }}".removeprefix("v")
+          if pathlib.Path("release/oracle-version").read_text().strip() != version:
+              raise SystemExit("release/oracle-version does not match tag")
           runtime = tomllib.loads(pathlib.Path("release/runtime-compatibility.toml").read_text())["runtime"]
           if runtime["release-ready"] is not True:
               raise SystemExit("runtime compatibility pin is not release-ready")
@@ -141,8 +143,15 @@ jobs:
           do
             "$ASTRID_BUILD" "crates/$crate" --output artifacts
           done
+          wasm_member=$(tar -tf artifacts/aos-mcp.capsule | grep -E '^[^/]+\.wasm$')
+          test "$(printf '%s\n' "$wasm_member" | wc -l)" -eq 1
+          tar -xOf artifacts/aos-mcp.capsule "$wasm_member" > artifacts/aos-mcp.wasm
+          built_hash=$(b3sum artifacts/aos-mcp.wasm | awk '{print $1}')
+          rm artifacts/aos-mcp.wasm
           for host in claude codex grok; do
             install -m 0644 "packs/$host.toml" "artifacts/$host-pack.toml"
+            printf 'wasm-blake3 = "%s"\n' "$built_hash" \
+              >> "artifacts/$host-pack.toml"
           done
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \

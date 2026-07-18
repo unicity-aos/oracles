@@ -31,6 +31,15 @@ class PackContractTests(unittest.TestCase):
                 [item["asset"] for item in capsules],
                 [f"{name}.capsule" for name in expected],
             )
+            for item in capsules:
+                self.assertNotIn("wasm-blake3", item)
+
+    def test_plugin_snapshot_is_bound_to_the_pack_release(self) -> None:
+        release = (ROOT / "release" / "oracle-version").read_text().strip()
+        self.assertRegex(release, r"^[0-9]+\.[0-9]+\.[0-9]+$")
+        for host in ("claude", "grok", "unicity-aos"):
+            marker = (ROOT / "plugins" / host / ".aos-oracle-version")
+            self.assertEqual(marker.read_text().strip(), release)
 
     def test_packs_do_not_redeclare_the_ce_distribution(self) -> None:
         for path in sorted((ROOT / "packs").glob("*.toml")):

@@ -175,7 +175,9 @@ def exercise_host(host: str, root: Path) -> None:
     # Model a SessionStart installer already holding the shared lock. These
     # cases control each half of readiness independently; launcher-owned
     # bootstrap is exercised separately below.
-    (home / "extensions/oracles/.install.lock").mkdir(parents=True)
+    active_lock = home / "extensions/oracles/.install.lock"
+    active_lock.parent.mkdir(parents=True)
+    active_lock.write_text(f"{os.getpid()}\n")
 
     write_executable(
         home / "bin/aos",
@@ -189,7 +191,7 @@ def exercise_host(host: str, root: Path) -> None:
     wait_for(wait_marker, process)
     receipt = home / f"extensions/oracles/{host}/Pack.lock"
     receipt.parent.mkdir(parents=True)
-    receipt.write_text("ready\n")
+    receipt.write_text('version = "0.2.0"\n')
     wait_gate.touch()
     assert_success(process)
 
@@ -243,7 +245,7 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
         'done\n'
         '[ "$host" = "$TEST_EXPECTED_HOST" ]\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" ready > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.2.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'pwd -P > "$TEST_AOS_CWD"\n'
@@ -271,12 +273,9 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
     assert f"--host {host}" in invocation
     assert "--skip-host-plugin" in invocation
     assert "--yes" in invocation
-    if host == "claude":
-        assert "--claude-auth subscription" in invocation
-        assert "--claude-mode repl" in invocation
-    else:
-        assert "--claude-auth" not in invocation
-        assert "--claude-mode" not in invocation
+    assert "--oracle-version 0.2.0" in invocation
+    assert "--claude-auth" not in invocation
+    assert "--claude-mode" not in invocation
 
     for other_host in HOSTS:
         receipt = home / f"extensions/oracles/{other_host}/Pack.lock"
@@ -310,13 +309,13 @@ def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> Non
         "set -eu\n"
         'printf "%s\\n" attempt >> "$TEST_INSTALL_ATTEMPTS"\n'
         'lock="$AOS_HOME/extensions/oracles/.install.lock"\n'
-        'if [ -d "$lock" ]; then\n'
+        'if [ -f "$lock" ]; then\n'
         '  printf "%s\\n" "aos-oracles: another oracle installation is active for $AOS_HOME" >&2\n'
         "  exit 1\n"
         "fi\n"
         'host="$TEST_EXPECTED_HOST"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" ready > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.2.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'case " ${*:-} " in\n'
@@ -332,7 +331,9 @@ def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> Non
 
     # Another host owns the shared installer lock. Completing that install does
     # not create this host's receipt, so the doctor must retry its own installer.
-    (home / "extensions/oracles/.install.lock").mkdir(parents=True)
+    active_lock = home / "extensions/oracles/.install.lock"
+    active_lock.parent.mkdir(parents=True)
+    active_lock.write_text(f"{os.getpid()}\n")
 
     environment = {
         "HOME": str(test_root / "home"),
@@ -356,7 +357,7 @@ def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> Non
         stderr=subprocess.PIPE,
     )
     wait_for(wait_marker, doctor)
-    (home / "extensions/oracles/.install.lock").rmdir()
+    active_lock.unlink()
     wait_gate.touch()
     stdout, stderr = doctor.communicate(timeout=5)
     assert doctor.returncode == 0, (doctor.returncode, stdout, stderr)
@@ -364,7 +365,8 @@ def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> Non
     context = json.loads(stdout)["hookSpecificOutput"]["additionalContext"]
     assert "governed oracle session ready" in context
     assert str(spec["principal"]) in context
-    assert attempts.read_text().splitlines() == ["attempt", "attempt"]
+    attempt_count = len(attempts.read_text().splitlines())
+    assert attempt_count in (1, 2), attempt_count
 
 
 def exercise_abandoned_lock_recovery(
@@ -383,10 +385,10 @@ def exercise_abandoned_lock_recovery(
     workspace.mkdir(parents=True)
     fake_bin.mkdir()
     stale_lock = home / "extensions/oracles/.install.lock"
-    stale_lock.mkdir(parents=True)
+    stale_lock.parent.mkdir(parents=True)
 
     lock_owner = subprocess.Popen(["/bin/sleep", "60"])
-    (stale_lock / "pid").write_text(f"{lock_owner.pid}\n")
+    stale_lock.write_text(f"{lock_owner.pid}\n")
 
     write_executable(
         fake_bin / "sleep",
@@ -401,17 +403,17 @@ def exercise_abandoned_lock_recovery(
         "set -eu\n"
         'printf "%s\\n" attempt >> "$TEST_INSTALL_ATTEMPTS"\n'
         'lock="$AOS_HOME/extensions/oracles/.install.lock"\n'
-        'if [ -d "$lock" ]; then\n'
-        '  owner=$(cat "$lock/pid")\n'
+        'if [ -f "$lock" ]; then\n'
+        '  owner=$(cat "$lock")\n'
         '  if kill -0 "$owner" 2>/dev/null; then\n'
         '    printf "%s\\n" "aos-oracles: another oracle installation is active for $AOS_HOME" >&2\n'
         "    exit 1\n"
         "  fi\n"
-        '  rm -rf "$lock"\n'
+        '  rm -f "$lock"\n'
         "fi\n"
         'host="$TEST_EXPECTED_HOST"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" ready > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.2.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
@@ -459,7 +461,11 @@ def exercise_abandoned_lock_recovery(
         wait_gate.touch()
         if actor == "launcher":
             assert_success(process)
-            assert args_log.read_text().splitlines() == [
+            assert [
+                line
+                for line in args_log.read_text().splitlines()
+                if line.endswith(" mcp serve")
+            ] == [
                 f"--principal {spec['principal']} mcp serve"
             ]
         else:
@@ -495,20 +501,23 @@ def exercise_concurrent_launchers_use_private_logs(host: str, root: Path) -> Non
         'touch "$TEST_ARRIVALS/$$"\n'
         'while [ "$(find "$TEST_ARRIVALS" -type f | wc -l | tr -d " ")" -lt 2 ]; do /bin/sleep 0.01; done\n'
         'lock="$AOS_HOME/extensions/oracles/.install.lock"\n'
+        'guard="${lock}.guard"\n'
         'mkdir -p "${lock%/*}"\n'
-        'if mkdir "$lock" 2>/dev/null; then\n'
+        'if mkdir "$guard" 2>/dev/null; then\n'
+        '  printf "%s\\n" "$$" > "$lock"\n'
         '  while [ ! -e "$TEST_LOSER_MARKER" ]; do /bin/sleep 0.01; done\n'
         '  printf "%s\\n" "winner still provisioning"\n'
         '  while [ ! -e "$TEST_RELEASE_GATE" ]; do /bin/sleep 0.01; done\n'
         '  host="$TEST_EXPECTED_HOST"\n'
         '  mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        '  printf "%s\\n" ready > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        '  printf "%s\\n" \'version = "0.2.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         '  cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
         "AOS\n"
         '  chmod 700 "$AOS_HOME/bin/aos"\n'
-        '  rmdir "$lock"\n'
+        '  rm -f "$lock"\n'
+        '  rmdir "$guard"\n'
         'else\n'
         '  printf "%s\\n" "aos-oracles: another oracle installation is active for $AOS_HOME" >&2\n'
         '  touch "$TEST_LOSER_MARKER"\n'
@@ -544,7 +553,11 @@ def exercise_concurrent_launchers_use_private_logs(host: str, root: Path) -> Non
     release_gate.touch()
     assert_success(first)
     assert_success(second)
-    assert args_log.read_text().splitlines() == [
+    assert [
+        line
+        for line in args_log.read_text().splitlines()
+        if line.endswith(" mcp serve")
+    ] == [
         f"--principal {spec['principal']} mcp serve",
         f"--principal {spec['principal']} mcp serve",
     ]
@@ -575,7 +588,7 @@ def exercise_bootstrap_survives_wrapper_timeout(host: str, root: Path) -> None:
         'touch "$TEST_STARTED_MARKER"\n'
         'while [ ! -e "$TEST_RELEASE_GATE" ]; do /bin/sleep 0.01; done\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" ready > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.2.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n'

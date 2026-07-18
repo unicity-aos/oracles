@@ -79,6 +79,17 @@ if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
 fi
 export AOS_PLUGIN_ROOT
 
+VERSION_FILE="$AOS_PLUGIN_ROOT/.aos-oracle-version"
+[ -f "$VERSION_FILE" ] && [ ! -L "$VERSION_FILE" ] || {
+  emit "Unicity AOS plugin snapshot has no Oracle release identity. Reinstall the host plugin."
+  exit 0
+}
+ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
+printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+  emit "Unicity AOS plugin snapshot has an invalid Oracle release identity. Reinstall the host plugin."
+  exit 0
+}
+
 if [ -z "${AOS_HOST:-}" ]; then
   if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
     AOS_HOST=grok
@@ -106,6 +117,11 @@ fi
 . "$RESOLVE"
 
 BOOTSTRAP_ERROR=""
+pack_is_current() {
+  pack="${AOS_HOME:-$HOME/.aos}/extensions/oracles/$AOS_HOST/Pack.lock"
+  [ -r "$pack" ] && grep -Fqx "version = \"$ORACLE_VERSION\"" "$pack"
+}
+
 resolve_initial() {
   if [ "$FORMAT" = hook ]; then
     aos_resolve_apply 2>/dev/null
@@ -130,10 +146,7 @@ bootstrap_host() {
   deadline=$(($(date +%s) + 300))
 
   while :; do
-    set -- --host "$AOS_HOST" --yes
-    if [ "$AOS_HOST" = claude ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-      set -- "$@" --claude-auth subscription --claude-mode repl
-    fi
+    set -- --host "$AOS_HOST" --yes --oracle-version "$ORACLE_VERSION"
     if AOS_HOST="$AOS_HOST" "$installer" "$@" >"$log" 2>&1; then
       cleanup_bootstrap_log
       aos_resolve_apply
@@ -142,17 +155,16 @@ bootstrap_host() {
     BOOTSTRAP_ERROR="$(tail -n 1 "$log" 2>/dev/null || true)"
     case "$BOOTSTRAP_ERROR" in
       *"another oracle installation is active"*)
-        while [ -d "$install_lock" ]; do
-          if [ -r "$receipt" ] && aos_resolve_apply 2>/dev/null; then
+        while [ -f "$install_lock" ] && [ ! -L "$install_lock" ]; do
+          if pack_is_current && aos_resolve_apply 2>/dev/null; then
             cleanup_bootstrap_log
             BOOTSTRAP_ERROR=""
             return 0
           fi
           owner=""
-          if [ -f "$install_lock/pid" ] && [ ! -L "$install_lock/pid" ] \
-            && IFS= read -r owner < "$install_lock/pid" \
-            && printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$' \
-            && ! kill -0 "$owner" 2>/dev/null
+          IFS= read -r owner < "$install_lock" || owner=""
+          if ! printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$' \
+            || ! kill -0 "$owner" 2>/dev/null
           then
             break
           fi
@@ -160,7 +172,7 @@ bootstrap_host() {
             || { cleanup_bootstrap_log; return 1; }
           sleep 0.1
         done
-        if [ -r "$receipt" ] && aos_resolve_apply 2>/dev/null; then
+        if pack_is_current && aos_resolve_apply 2>/dev/null; then
           cleanup_bootstrap_log
           BOOTSTRAP_ERROR=""
           return 0
@@ -192,7 +204,9 @@ VERSION="$("$AOS" --version 2>/dev/null | head -n1 || true)"
 
 # `capsule show` is an on-disk, read-only query. It verifies both that the host
 # principal was provisioned and that the internal broker capsule is present.
-if ! "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1; then
+if ! pack_is_current \
+  || ! "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1
+then
   if bootstrap_host \
     && "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1
   then

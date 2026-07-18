@@ -33,21 +33,12 @@ installs the exact signed oracle pack, grants that principal only the pack's
 capsules, and installs the host marketplace plugin. It writes product state
 under `~/.aos`; it never imports or changes a standalone `~/.astrid` tree.
 
-Claude's supervised headless mode runs `claude -p` and requires an Anthropic
-API key. Subscription authentication is supported only for Claude Code's own
-interactive REPL:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh \
-  | sh -s -- --host claude --claude-mode repl --claude-auth subscription
-```
-
 ## Host packs
 
 Oracle packs are additive components, not replacement operating-system
 distributions.
 
-| Host | Principal | Additions on top of Community Edition |
+| Host | Principal | Pack capsule |
 |---|---|---|
 | Claude Code | `claude-code` | `aos-mcp` |
 | Codex | `codex-code` | `aos-mcp` |
@@ -69,7 +60,7 @@ host marketplace plugin
 aos --principal <host>-code mcp serve
         |
         v
-aos-mcp + host capsules
+aos-mcp
         |
         v
 Unicity AOS Community Edition

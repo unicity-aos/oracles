@@ -54,6 +54,13 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         )
         self.assertLess(ready, publish)
 
+    def test_signed_pack_records_the_built_wasm_identity(self) -> None:
+        build = self.workflow.index("built_hash=$(b3sum artifacts/aos-mcp.wasm")
+        inject = self.workflow.index("wasm-blake3", build)
+        sign = self.workflow.index("cosign sign-blob", inject)
+        self.assertLess(build, inject)
+        self.assertLess(inject, sign)
+
 
 if __name__ == "__main__":
     unittest.main()

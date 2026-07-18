@@ -39,6 +39,7 @@ AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/$AOS_HOST/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$AOS_PLUGIN_ROOT/bin/aos-install"
+VERSION_FILE="$AOS_PLUGIN_ROOT/.aos-oracle-version"
 BOOTSTRAP_LOG=""
 BOOTSTRAP_PID=""
 BOOTSTRAP_ATTEMPTED=0
@@ -48,23 +49,34 @@ case "$STARTUP_TIMEOUT_SECS" in
   ''|*[!0-9]*) log "AOS_MCP_STARTUP_TIMEOUT_SECS must be a positive integer"; exit 2 ;;
   0) log "AOS_MCP_STARTUP_TIMEOUT_SECS must be greater than zero"; exit 2 ;;
 esac
+[ -f "$VERSION_FILE" ] && [ ! -L "$VERSION_FILE" ] \
+  || { log "plugin snapshot has no Oracle release identity"; exit 1; }
+ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
+printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || { log "plugin snapshot has an invalid Oracle release identity"; exit 1; }
 
 host_ready() {
-  [ -r "$PACK_RECEIPT" ] && aos_resolve_apply 2>/dev/null
+  [ -r "$PACK_RECEIPT" ] \
+    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
+    && aos_resolve_apply 2>/dev/null \
+    && "$AOS" capsule show aos-mcp --agent "${AOS_HOST}-code" >/dev/null 2>&1
 }
 
 install_lock_reclaimable() {
   owner=""
-  [ -f "$INSTALL_LOCK/pid" ] && [ ! -L "$INSTALL_LOCK/pid" ] \
-    && IFS= read -r owner < "$INSTALL_LOCK/pid" \
-    && printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$' \
-    && ! kill -0 "$owner" 2>/dev/null
+  if [ -f "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ]; then
+    IFS= read -r owner < "$INSTALL_LOCK" || owner=""
+  fi
+  if ! printf '%s\n' "$owner" | grep -Eq '^[1-9][0-9]*$'; then
+    return 0
+  fi
+  ! kill -0 "$owner" 2>/dev/null
 }
 
 start_bootstrap() {
   [ "$BOOTSTRAP_ATTEMPTED" -eq 0 ] || return 0
   if [ "$WAITING_FOR_INSTALL_LOCK" -eq 1 ]; then
-    if [ -d "$INSTALL_LOCK" ] && ! install_lock_reclaimable; then
+    if [ -f "$INSTALL_LOCK" ] && ! install_lock_reclaimable; then
       return 0
     fi
     WAITING_FOR_INSTALL_LOCK=0
@@ -82,10 +94,7 @@ start_bootstrap() {
   else
     : > "$BOOTSTRAP_LOG"
   fi
-  set -- --host "$AOS_HOST" --yes
-  if [ "$AOS_HOST" = claude ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    set -- "$@" --claude-auth subscription --claude-mode repl
-  fi
+  set -- --host "$AOS_HOST" --yes --oracle-version "$ORACLE_VERSION"
   AOS_HOST="$AOS_HOST" "$INSTALLER" "$@" </dev/null >>"$BOOTSTRAP_LOG" 2>&1 &
   BOOTSTRAP_PID=$!
   BOOTSTRAP_ATTEMPTED=1

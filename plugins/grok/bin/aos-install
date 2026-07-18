@@ -15,15 +15,22 @@ if [ -z "${AOS_HOST:-}" ]; then
   fi
 fi
 
-INSTALL_URL="${AOS_ORACLES_INSTALL_URL:-https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh}"
+HERE=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P) || HERE=$(dirname "$0")
+PLUGIN_ROOT="${AOS_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-$HERE/..}}}}"
+VERSION_FILE="$PLUGIN_ROOT/.aos-oracle-version"
+[ -f "$VERSION_FILE" ] && [ ! -L "$VERSION_FILE" ] \
+  || die "plugin snapshot has no Oracle release identity"
+BUNDLED_ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
+printf '%s\n' "$BUNDLED_ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || die "plugin snapshot has an invalid Oracle release identity"
+
+INSTALL_URL="${AOS_ORACLES_INSTALL_URL:-https://raw.githubusercontent.com/unicity-aos/oracles/v$BUNDLED_ORACLE_VERSION/install.sh}"
 LOCAL_INSTALLER="${AOS_ORACLES_INSTALLER:-}"
 HOST="$AOS_HOST"
 ASSUME_YES=0
 AOS_CHANNEL=""
 AOS_VERSION=""
-ORACLE_VERSION=""
-CLAUDE_AUTH=""
-CLAUDE_MODE=""
+ORACLE_VERSION="$BUNDLED_ORACLE_VERSION"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -34,12 +41,10 @@ Usage: aos-install [--host claude|codex|grok] [installer options]
   --aos-channel C      follow the AOS stable, dev, or nightly channel
   --aos-version V      install an exact AOS calendar-semver release
   --oracle-version V   install an exact signed oracle-pack release
-  --claude-auth M      api_key or subscription
-  --claude-mode M      headless or repl
   --yes, -y            non-interactive provisioning
 
-It installs the signed AOS base when needed and provisions only the selected
-host pack. Existing host packs and principals are left unchanged.
+It installs the signed AOS base when needed and reconciles only the selected
+host pack to this plugin snapshot's exact Oracle release.
 USAGE
 }
 
@@ -65,16 +70,6 @@ while [ "$#" -gt 0 ]; do
       shift
       ORACLE_VERSION="${1:-}"
       [ -n "$ORACLE_VERSION" ] || die "--oracle-version needs a semantic version"
-      ;;
-    --claude-auth)
-      shift
-      CLAUDE_AUTH="${1:-}"
-      [ -n "$CLAUDE_AUTH" ] || die "--claude-auth needs api_key or subscription"
-      ;;
-    --claude-mode)
-      shift
-      CLAUDE_MODE="${1:-}"
-      [ -n "$CLAUDE_MODE" ] || die "--claude-mode needs headless or repl"
       ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;
@@ -107,6 +102,4 @@ set -- --host "$HOST" --skip-host-plugin
 [ -z "$AOS_CHANNEL" ] || set -- "$@" --aos-channel "$AOS_CHANNEL"
 [ -z "$AOS_VERSION" ] || set -- "$@" --aos-version "$AOS_VERSION"
 [ -z "$ORACLE_VERSION" ] || set -- "$@" --oracle-version "$ORACLE_VERSION"
-[ -z "$CLAUDE_AUTH" ] || set -- "$@" --claude-auth "$CLAUDE_AUTH"
-[ -z "$CLAUDE_MODE" ] || set -- "$@" --claude-mode "$CLAUDE_MODE"
 exec sh "$TMP/install.sh" "$@"

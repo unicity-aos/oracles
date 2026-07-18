@@ -22,7 +22,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$host" = codex ] || exit 91
 mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"
-touch "$AOS_HOME/extensions/oracles/codex/Pack.lock"
+printf '%s\n' 'version = "0.2.0"' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"
 cat > "$AOS_HOME/bin/aos" <<'AOS'
 #!/usr/bin/env sh
 set -eu
@@ -33,7 +33,11 @@ case " ${*:-} " in
     [ "${TEST_STOPPED:-0}" -eq 0 ] || exit 1
     printf '%s\n' '{"state":"running","pid":4242,"loaded_capsules":["aos-mcp"]}'
     ;;
-  *" update --check "*) exit 0 ;;
+  *" update --check "*)
+    [ "${TEST_UPDATE_AVAILABLE:-0}" -eq 1 ] \
+      && printf '%s\n' 'Update available: Unicity AOS 2026.1.0 -> 2026.1.1. Run `aos update` to install.'
+    exit 0
+    ;;
   *) exit 0 ;;
 esac
 AOS
@@ -63,9 +67,28 @@ PY
 test -x "$home/.aos/bin/aos"
 test -f "$home/.aos/extensions/oracles/codex/Pack.lock"
 test "$(wc -l < "$log" | tr -d ' ')" = 1
+
+rm -rf "$home/.aos/update/host-update-check"
+update_output=$(env -i \
+  PATH=/usr/bin:/bin \
+  HOME="$home" \
+  AOS_HOME="$home/.aos" \
+  AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
+  AOS_ORACLES_INSTALLER="$fake_installer" \
+  TEST_INSTALL_LOG="$log" \
+  TEST_UPDATE_AVAILABLE=1 \
+  "$repo_root/plugins/unicity-aos/bin/aos-doctor" --format hook </dev/null)
+python3 - "$update_output" <<'PY'
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload["systemMessage"].startswith("Update available: Unicity AOS")
+PY
 grep -Fq -- '--host codex' "$log"
 grep -Fq -- '--skip-host-plugin' "$log"
 grep -Fq -- '--yes' "$log"
+grep -Fq -- '--oracle-version 0.2.0' "$log"
 if grep -Eq -- '--host (claude|grok)' "$log"; then
   echo "Codex bootstrap attempted to install another host" >&2
   exit 1

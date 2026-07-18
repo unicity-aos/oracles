@@ -170,7 +170,8 @@ jobs:
           test "$resolved" = "direct|$bin_root/aos"
 
           mkdir -p "$bin_root/home/extensions/oracles/codex"
-          touch "$bin_root/home/extensions/oracles/codex/Pack.lock"
+          printf 'version = "%s"\n' "$(cat release/oracle-version)" \
+            > "$bin_root/home/extensions/oracles/codex/Pack.lock"
           forwarded="$(AOS_HOME="$bin_root/home" AOS_BIN=/bin/echo plugins/unicity-aos/bin/aos-up --principal codex-code)"
           test "$forwarded" = "--principal codex-code mcp serve"
 

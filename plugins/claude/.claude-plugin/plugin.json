@@ -1,7 +1,7 @@
 {
   "name": "unicity-aos",
   "displayName": "Unicity AOS",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Connect Claude Code to Unicity AOS as a principal-scoped agent with capsule tools over MCP, a readiness doctor, an AOS HUD, and /unicity-aos:* operator commands.",
   "author": {
     "name": "Unicity Labs",

@@ -3,7 +3,7 @@ schema-version = 1
 [pack]
 id = "grok-oracle"
 name = "Unicity AOS for Grok Build"
-version = "0.2.3"
+version = "0.2.4"
 host = "grok"
 principal = "grok-code"
 description = "Grok Build integration for Unicity AOS."

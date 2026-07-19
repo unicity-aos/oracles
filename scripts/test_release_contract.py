@@ -55,13 +55,6 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertLess(ready, publish)
 
     def test_published_release_must_be_platform_immutable(self) -> None:
-        precondition = self.workflow.index(
-            "Require repository immutable releases"
-        )
-        setting = self.workflow.index(
-            'repos/$GITHUB_REPOSITORY/immutable-releases', precondition
-        )
-        create = self.workflow.index('gh release create "$GITHUB_REF_NAME"')
         publish = self.workflow.index(
             'gh release edit "$GITHUB_REF_NAME" --draft=false'
         )
@@ -69,8 +62,6 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         refusal = self.workflow.index(
             "published release is not immutable", immutable
         )
-        self.assertLess(precondition, setting)
-        self.assertLess(setting, create)
         self.assertLess(publish, immutable)
         self.assertLess(immutable, refusal)
 

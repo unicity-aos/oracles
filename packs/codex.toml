@@ -3,7 +3,7 @@ schema-version = 1
 [pack]
 id = "codex-oracle"
 name = "Unicity AOS for Codex"
-version = "0.2.4"
+version = "0.2.5"
 host = "codex"
 principal = "codex-code"
 description = "Codex integration for Unicity AOS."

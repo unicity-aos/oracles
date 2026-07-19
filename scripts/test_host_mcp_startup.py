@@ -191,7 +191,7 @@ def exercise_host(host: str, root: Path) -> None:
     wait_for(wait_marker, process)
     receipt = home / f"extensions/oracles/{host}/Pack.lock"
     receipt.parent.mkdir(parents=True)
-    receipt.write_text('version = "0.2.4"\n')
+    receipt.write_text('version = "0.2.5"\n')
     wait_gate.touch()
     assert_success(process)
 
@@ -245,7 +245,7 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
         'done\n'
         '[ "$host" = "$TEST_EXPECTED_HOST" ]\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" \'version = "0.2.4"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.2.5"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'pwd -P > "$TEST_AOS_CWD"\n'
@@ -273,7 +273,7 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
     assert f"--host {host}" in invocation
     assert "--skip-host-plugin" in invocation
     assert "--yes" in invocation
-    assert "--oracle-version 0.2.4" in invocation
+    assert "--oracle-version 0.2.5" in invocation
     assert "--claude-auth" not in invocation
     assert "--claude-mode" not in invocation
 
@@ -315,7 +315,7 @@ def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> Non
         "fi\n"
         'host="$TEST_EXPECTED_HOST"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" \'version = "0.2.4"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.2.5"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'case " ${*:-} " in\n'
@@ -416,7 +416,7 @@ def exercise_abandoned_lock_recovery(
         "fi\n"
         'host="$TEST_EXPECTED_HOST"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" \'version = "0.2.4"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.2.5"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
@@ -518,7 +518,7 @@ def exercise_concurrent_launchers_use_private_logs(host: str, root: Path) -> Non
         '  while [ ! -e "$TEST_RELEASE_GATE" ]; do /bin/sleep 0.01; done\n'
         '  host="$TEST_EXPECTED_HOST"\n'
         '  mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        '  printf "%s\\n" \'version = "0.2.4"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        '  printf "%s\\n" \'version = "0.2.5"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         '  cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
@@ -596,7 +596,7 @@ def exercise_bootstrap_survives_wrapper_timeout(host: str, root: Path) -> None:
         'touch "$TEST_STARTED_MARKER"\n'
         'while [ ! -e "$TEST_RELEASE_GATE" ]; do /bin/sleep 0.01; done\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" \'version = "0.2.4"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.2.5"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n'

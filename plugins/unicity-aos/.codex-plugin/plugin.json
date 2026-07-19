@@ -1,6 +1,6 @@
 {
   "name": "unicity-aos",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Connect Codex to Unicity AOS, the operating system for agents, with governed tools, construction skills, policy hooks, and a principal-scoped identity.",
   "author": {
     "name": "Unicity Labs",

@@ -2,10 +2,10 @@ schema-version = 1
 
 [runtime]
 repository = "astrid-runtime/astrid"
-version = "0.10.2"
-tag = "v0.10.2"
-version-requirement = "=0.10.2"
-release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.10.2"
+version = "0.10.4"
+tag = "v0.10.4"
+version-requirement = "=0.10.4"
+release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.10.4"
 release-ready = true
 
 # Update every field together; never point a release build at a moving channel.

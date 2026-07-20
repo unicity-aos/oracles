@@ -8,7 +8,8 @@ teaches a fresh session how to operate and build on the OS.
 On installation, Codex reads `.codex-plugin/plugin.json` and discovers:
 
 - `skills/unicity-aos` for the operating-system and principal boundary;
-- `skills/capsule-forge` for a complete capsule authoring workflow;
+- `skills/capsule-forge` for a compact authoring workflow plus progressively
+  loaded reference chapters;
 - `skills/meta-harness` for proactively extending the agent's user-space world
   when work reveals missing capability or reusable leverage;
 - `.mcp.json`, which starts `aos --principal codex-code mcp serve`; and
@@ -20,18 +21,17 @@ The MCP server independently exposes the tool surface granted to `codex-code` as
 `mcp__aos__*`. Installing the plugin therefore supplies both the knowledge of
 how to build and the governed tools for inspecting or changing the live OS.
 
-Capsules can also contribute skills after the plugin was published. Their
-install hooks write valid files under the principal's `home://skills/`, and the
-`aos-skills` capsule exposes them through `list_skills` and `read_skill`. The
-Codex bootstrap skill tells the agent to inspect that index when it is present,
-so this path works for third-party and user-authored capsules—not only Forge.
+Users and agents can add Skills after the plugin was published by placing valid
+entries in the workspace or the principal's `home://skills/`; `aos-skills`
+exposes them through `list_skills` and `read_skill`. Capsules remain free to
+serve their own detailed manuals over ordinary IPC tools without adding an
+AI-specific section to the generic capsule manifest.
 
 This does not rewrite the installed plugin. Codex discovers native plugin
 skills from the signed `skills/` snapshot at session start, while AOS-native
 skills are fetched on demand through the governed MCP surface. Important
 first-party workflows remain vendored into the plugin for automatic routing and
-offline use; the capsule copy is the live AOS source for agents and skills added
-after publication.
+offline use; Forge's bus-served manual is the live, version-matched reference.
 
 ## Fresh-session path
 
@@ -63,17 +63,17 @@ useful extension proactively. It uses judgment about whether the extension is
 needed to complete the present objective, is better made after that work, or
 should be retained as a future opportunity.
 
-The static skills are sufficient to explain the architecture and author a
-capsule from zero, even if AOS is temporarily offline. Live discovery,
-installation, grants, and live operation still require the MCP server and the
-relevant AOS capsules. Workers and subagents are optional mechanisms: a useful
-meta-harness can improve memory, skills, context, harness code, composition, or
-capsules without them.
+The static Skills and vendored Forge reference chapters are sufficient to
+explain the architecture and author a capsule from zero even if AOS is
+temporarily offline. Live discovery, installation, grants, and operation still
+require the MCP server and relevant AOS capsules. Workers and subagents are
+optional mechanisms: a useful meta-harness can improve memory, skills, context,
+harness code, composition, or capsules without them.
 
-The `capsule-forge` instructions are vendored from the Forge capsule in the AOS
-Community Edition source. Host-specific text may explain MCP discovery, but the
-capsule guide remains the authority for SDK, manifest, WIT, secret, toolchain,
-and packaging behavior.
+The `capsule-forge` trigger and references are vendored from Forge in the AOS
+Community Edition source. Host-specific text may explain MCP discovery, but
+Forge's bus-served guide remains the version-matched authority for SDK,
+manifest, WIT, secret, toolchain, and packaging behavior.
 
 After installing or updating the plugin, start a new Codex thread so its skills,
 hooks, and MCP tools are discovered together.

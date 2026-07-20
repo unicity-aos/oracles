@@ -66,9 +66,10 @@ payload = json.loads(sys.argv[1])
 context = payload["hookSpecificOutput"]["additionalContext"]
 assert "Unicity AOS is ready for this Codex session" in context
 assert "codex-code" in context
-assert "Capsules may contribute durable, principal-scoped skills" in context
+assert "Workspace and principal-home Skills can extend this host" in context
 assert 'dir_path "skills"' in context
 assert "read_skill" in context
+assert "ordinary IPC tools" in context
 PY
 
 test -x "$home/.aos/bin/aos"

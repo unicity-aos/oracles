@@ -21,18 +21,19 @@ resources, and audits actions.
 ## What this plugin gives you
 
 - This skill provides the OS and principal boundary.
-- The `capsule-forge` skill is the complete authoring guide for building a
-  least-privilege capsule from zero.
+- The `capsule-forge` skill is the compact authoring trigger for building a
+  least-privilege capsule from zero. Its progressively loaded references and
+  Forge's `forge_guide` tool contain the exhaustive manual.
 - The `meta-harness` skill teaches the agent to treat instructions, memory,
   skills, harness code, tools, capsules, and traces as an improvable user-space
   world and to reach proactively for useful extensions while it works.
 - The `aos` MCP server exposes the tools visible to `codex-code`. Tool names are
   surfaced as `mcp__aos__*`; the exact set comes from the installed and granted
   capsules, not from this prompt.
-- The AOS skills service discovers any valid `SKILL.md` contributed by a
-  capsule under the principal's `home://skills/`. Use `list_skills` and
-  `read_skill` when those tools are present; this works for user-installed
-  capsules as well as the Community Edition fleet.
+- The AOS Skills service indexes valid workspace and principal-home `SKILL.md`
+  entries. Use `list_skills` and `read_skill` when those tools are present.
+  Capsule-owned detailed guidance can be exposed through ordinary IPC tools;
+  the runtime does not interpret an agent-specific manifest protocol.
 - Session hooks provision and register the Codex host and apply AOS policy at
   tool and approval boundaries.
 
@@ -56,10 +57,10 @@ move them behind AOS policy.
    friction, or a useful harness improvement. Let the user's instructions and
    standing preferences steer how much initiative to exercise.
 
-Reading a capsule-provided skill supplies instructions, not authority. The
-capsule's installation, the principal's grants, and AOS policy still determine
-which effects are possible. Skills written to `home://skills/` remain available
-to later sessions for that principal without modifying the signed Codex plugin.
+Reading a user-space Skill supplies instructions, not authority. Capsule
+installation, principal grants, and AOS policy still determine which effects
+are possible. Skills written to `home://skills/` remain available to later
+sessions for that principal without modifying the signed Codex plugin.
 
 Use the AOS commands, tools, contracts, grants, and provider surfaces that
 inspection proves are available. When a required runtime surface is absent,

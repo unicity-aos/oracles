@@ -48,8 +48,9 @@ The signed pack distinguishes Oracle-owned capsule assets from selected
 AOS-owned services. The installer resolves an `[[aos-capsule]]` only from the
 active signed AOS release, never downloads or republishes its bytes, and grants
 only the entries declared by the host pack. `aos-skills` makes skills written by
-any installed capsule discoverable to the host principal; Forge is the first
-construction service using that generic path, not a special skill loader.
+the host principal in its workspace or principal home discoverable over the
+bus. Forge serves version-matched authoring guidance as an ordinary tool, while
+the host plugin vendors compact trigger Skills for native session discovery.
 
 Pack manifests live under `packs/`. Host plugins are installed from the signed
 release snapshot under `~/.aos/extensions/oracles/plugins/<version>`, never from

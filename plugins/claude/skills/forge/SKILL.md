@@ -576,10 +576,11 @@ vs. shared from operator action. (The forge `validate_manifest` warns if you try
 - `[[command]]` — slash-command registrations.
 - `[[mcp_server]]` — stdio MCP servers (the "airlock override"; `command` must be
   in `host_process`; this breaks out of the WASM sandbox into a host process).
-- `[[skill]]` — Skills the capsule contributes. **Note:** the StaticEngine that
-  would place these is currently a no-op — to actually land a Skill, write it from
-  an `#[astrid::install]` hook (footgun 5).
 - `[[context_file]]`, `[[uplink]]`, `[[tool]]`, `[[topic]]` (legacy).
+
+Agent Skills are user-space instructions, not a Capsule.toml protocol. Vendor a
+trigger through the host plugin or add it to the agent-level Skills service;
+serve capsule-owned detailed guidance through an ordinary IPC tool.
 
 ---
 
@@ -598,7 +599,7 @@ some take a **bool**. Getting this wrong is a parse/semantics error.
 | `net_bind` | **list** | Bind a listening socket. `["unix:*"]`. Rare. |
 | `kv` | **list** | Reserved (declared, NOT yet gate-enforced). Per-capsule KV already works without it (auto-scoped per capsule + principal). Use `kv = []` or omit. |
 | `fs_read` | **list** | Read under the given VFS prefixes. `["home://"]`. |
-| `fs_write` | **list** | Write under the given prefixes. `["home://skills/"]`. |
+| `fs_write` | **list** | Write under the given prefixes. `["home://documents/"]`. |
 | `host_process` | **list** | Spawn the named host binaries via `process`. `["git", "cargo"]`. The "airlock override". |
 | `allow_persistent` | **bool** | Operator sub-grant on top of `host_process`: allow persistent (instance-outliving) child processes. |
 | `identity` | **list** | Identity ops. Values: `"resolve"` < `"link"` < `"admin"` (each implies the lesser). `["resolve"]`. |
@@ -772,11 +773,10 @@ ask the LLM to call the tool    # verify behaviour
    `aos capsule install ./dist/<name>.capsule`. **Do not** hand-copy the
    `.wasm` into `~/.aos/runtime` — install records a BLAKE3 hash in `meta.json`, and a
    capsule whose binary doesn't match (or wasn't installed this way) fails to load.
-5. **A Skill needs an `#[astrid::install]` hook to land.** The StaticEngine that
-   would place `[[skill]]` files is a no-op stub. If your capsule ships a Skill,
-   `include_str!` it into a `const` and `fs::write` it to
-   `home://skills/<name>/SKILL.md` from an `#[astrid::install]` hook (create the
-   dir first with `create_dir_all`). Otherwise the file never appears.
+5. **Keep agent instruction protocols out of Capsule.toml.** Host plugins may
+   vendor a compact trigger and the user-space Skills service may index
+   workspace or principal-home entries. Serve version-matched capsule guidance
+   through an ordinary IPC tool.
 6. **`tool_describe` must publish, not return** — covered by depending on
    `astrid-sdk = "0.7"` (0.7.1+). The macro does it right; don't hand-roll describe.
 7. **Empty `[publish]`/`[subscribe]` = silent muteness.** Fail-closed means no

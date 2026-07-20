@@ -198,7 +198,8 @@ Use the mcp__aos__* tools for governed operations. The public AOS CLI owns
 runtime startup and authentication; tool execution remains scoped to this
 principal and enforced by the Astrid engine broker.
 
-Capsules may contribute durable, principal-scoped skills after this plugin was
+Workspace and principal-home Skills can extend this host after the plugin was
 published. When list_skills is available, inspect dir_path \"skills\" and load
-relevant entries with read_skill."
+relevant entries with read_skill. Capsules may serve detailed guidance through
+ordinary IPC tools."
 exit 0

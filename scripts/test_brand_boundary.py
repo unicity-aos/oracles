@@ -67,7 +67,7 @@ class BrandBoundaryTests(unittest.TestCase):
             "skills/unicity-aos/SKILL.md": (
                 "Unicity AOS is not itself an agent harness",
                 "Load `capsule-forge` before authoring a capsule",
-                "works for user-installed",
+                "workspace and principal-home",
                 "`list_skills`",
                 "`read_skill`",
                 "supplies instructions, not authority",
@@ -77,14 +77,13 @@ class BrandBoundaryTests(unittest.TestCase):
                 "AOS is the common operating environment",
             ),
             "skills/capsule-forge/SKILL.md": (
-                "Author a Unicity AOS Capsule From Zero",
-                "AOS bridges its tools into this Codex session",
-                "`meta_harness_quickstart`",
-                'channel = "1.94.0"',
-                "secrets/<scope>/<capsule>/<key>",
-                "receives the plaintext only when it calls",
-                "raw `.wasm` is not",
-                "No checked-in `wit/`",
+                "Build naturally on Unicity AOS",
+                "Call `forge_guide`",
+                "`references/<topic>.md`",
+                "Keep Skills out of Capsule.toml",
+                "Generated code does not self-promote",
+                "where it should live",
+                "Priority is not just sort order",
             ),
             "skills/meta-harness/SKILL.md": (
                 "Treat the AOS user-space environment",
@@ -102,7 +101,26 @@ class BrandBoundaryTests(unittest.TestCase):
             for needle in needles:
                 self.assertIn(needle, body, relative)
 
-    def test_aos_hosts_discover_capsule_contributed_skills(self) -> None:
+        references = plugin / "skills/capsule-forge/references"
+        for topic in (
+            "foundations",
+            "workspace",
+            "capsule",
+            "manifest",
+            "capabilities",
+            "ipc",
+            "wit",
+            "skills",
+            "authority",
+            "build",
+            "security",
+            "meta-harness",
+        ):
+            reference = references / f"{topic}.md"
+            self.assertTrue(reference.is_file(), reference)
+            self.assertGreaterEqual(len(reference.read_text().splitlines()), 35, reference)
+
+    def test_aos_hosts_describe_user_space_skills(self) -> None:
         for path in (
             "plugins/common/bin/aos-doctor",
             "plugins/claude/bin/aos-doctor",
@@ -110,9 +128,10 @@ class BrandBoundaryTests(unittest.TestCase):
             "plugins/unicity-aos/bin/aos-doctor",
         ):
             body = (ROOT / path).read_text()
-            self.assertIn("Capsules may contribute durable", body, path)
+            self.assertIn("Workspace and principal-home Skills", body, path)
             self.assertIn("list_skills", body, path)
             self.assertIn("read_skill", body, path)
+            self.assertIn("ordinary IPC tools", body, path)
 
     def test_retired_public_names_do_not_return(self) -> None:
         roots = [ROOT / "README.md", ROOT / "install.sh", ROOT / "plugins"]

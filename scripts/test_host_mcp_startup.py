@@ -12,6 +12,9 @@ import time
 
 
 ROOT = Path(__file__).resolve().parent.parent
+RUNTIME_GENERATION = (
+    ROOT / "plugins/unicity-aos/.aos-runtime-generation"
+).read_text().strip()
 HOSTS = {
     "claude": {
         "root_var": "CLAUDE_PLUGIN_ROOT",
@@ -47,6 +50,21 @@ def write_executable(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
     path.chmod(0o700)
+
+
+def write_active_generation(home: Path) -> None:
+    marker = home / "update/active-generation.toml"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        'schema-version = 1\n'
+        f'runtime-generation = "{RUNTIME_GENERATION}"\n'
+    )
+
+
+def write_oracle_generation(home: Path, host: str, version: str = "0.2.6") -> None:
+    marker = home / f"extensions/oracles/{host}/Generation.lock"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(f"oracle:{host}:{version}:{RUNTIME_GENERATION}\n")
 
 
 def wait_for_log_text(
@@ -102,8 +120,23 @@ def wait_for_path(path: Path, timeout: float = 5.0) -> None:
 
 
 def launch(
-    host: str, workspace: Path, environment: dict[str, str]
+    host: str,
+    workspace: Path,
+    environment: dict[str, str],
+    *,
+    write_generation: bool = True,
 ) -> subprocess.Popen[str]:
+    if write_generation:
+        write_active_generation(Path(environment["AOS_HOME"]))
+    receipt = Path(environment["AOS_HOME"]) / f"extensions/oracles/{host}/Pack.lock"
+    if receipt.is_file():
+        versions = [
+            line.removeprefix('version = "').removesuffix('"')
+            for line in receipt.read_text().splitlines()
+            if line.startswith('version = "') and line.endswith('"')
+        ]
+        if len(versions) == 1:
+            write_oracle_generation(Path(environment["AOS_HOME"]), host, versions[0])
     server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
         "mcpServers"
     ]["aos"]
@@ -145,6 +178,7 @@ def exercise_host(host: str, root: Path) -> None:
     assert "cwd" not in server
 
     home = root / host / "home" / ".aos"
+    write_active_generation(home)
     workspace = root / host / "user-project"
     fake_bin = root / host / "fake-bin"
     wait_marker = root / host / "wait-observed"
@@ -192,6 +226,7 @@ def exercise_host(host: str, root: Path) -> None:
     receipt = home / f"extensions/oracles/{host}/Pack.lock"
     receipt.parent.mkdir(parents=True)
     receipt.write_text('version = "0.2.6"\n')
+    write_oracle_generation(home, host)
     wait_gate.touch()
     assert_success(process)
 
@@ -226,6 +261,7 @@ def exercise_host(host: str, root: Path) -> None:
 def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
     spec = HOSTS[host]
     home = root / f"{host}-bootstrap" / "home" / ".aos"
+    write_active_generation(home)
     workspace = root / f"{host}-bootstrap" / "user-project"
     installer_log = root / f"{host}-bootstrap" / "installer-args"
     cwd_log = root / f"{host}-bootstrap" / "aos-cwd"
@@ -246,6 +282,7 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
         '[ "$host" = "$TEST_EXPECTED_HOST" ]\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
         'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "oracle:%s:0.2.6:%s\\n" "$host" "$TEST_RUNTIME_GENERATION" > "$AOS_HOME/extensions/oracles/$host/Generation.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'pwd -P > "$TEST_AOS_CWD"\n'
@@ -262,6 +299,7 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
         "AOS_ORACLES_INSTALLER": str(fake_installer),
         "PATH": "/usr/bin:/bin",
         "TEST_EXPECTED_HOST": host,
+        "TEST_RUNTIME_GENERATION": RUNTIME_GENERATION,
         "TEST_INSTALL_LOG": str(installer_log),
         "TEST_AOS_CWD": str(cwd_log),
         "TEST_AOS_ARGS": str(args_log),
@@ -286,10 +324,131 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
     )
 
 
+def exercise_stale_snapshot_fences_without_installing(host: str, root: Path) -> None:
+    spec = HOSTS[host]
+    test_root = root / f"{host}-stale-snapshot"
+    home = test_root / "home/.aos"
+    workspace = test_root / "workspace"
+    installer_marker = test_root / "installer-called"
+    aos_marker = test_root / "aos-called"
+    workspace.mkdir(parents=True)
+    write_active_generation(home)
+    receipt = home / f"extensions/oracles/{host}/Pack.lock"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text('version = "0.2.7"\n')
+    write_executable(
+        home / "bin/aos",
+        "#!/bin/sh\n" f': > "{aos_marker}"\n',
+    )
+    fake_installer = test_root / "installer"
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n" f': > "{installer_marker}"\n',
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_HOME": str(home),
+        "AOS_HOST": host,
+        str(spec["root_var"]): str(ROOT / f"plugins/{host}"),
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "PATH": "/usr/bin:/bin",
+    }
+
+    process = launch(host, workspace, environment)
+    stdout, stderr = process.communicate(timeout=5)
+    assert process.returncode == 78, (process.returncode, stdout, stderr)
+    assert stdout == ""
+    assert "newer or invalid for plugin release" in stderr
+    assert receipt.read_text() == 'version = "0.2.7"\n'
+    assert not installer_marker.exists()
+    assert not aos_marker.exists()
+
+    receipt.write_text('version = "0.2.6"\n')
+    write_oracle_generation(home, host)
+    (home / "update/active-generation.toml").write_text(
+        'schema-version = 1\n'
+        'runtime-generation = "astrid:0.10.3:0000000000000000000000000000000000000000"\n'
+    )
+    server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
+        "mcpServers"
+    ]["aos"]
+    command = server["command"].replace(
+        f"${{{spec['root_var']}}}", str(ROOT / f"plugins/{host}")
+    )
+    mismatch = subprocess.run(
+        [command, *server["args"]],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert mismatch.returncode == 78, mismatch
+    assert "does not match installed AOS runtime" in mismatch.stderr
+    assert not installer_marker.exists()
+    assert not aos_marker.exists()
+
+    doctor = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        input="{}",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert doctor.returncode == 0, doctor
+    context = json.loads(doctor.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "does not match installed AOS runtime" in context
+    assert "No installed state was changed" in context
+    assert not installer_marker.exists()
+    assert not aos_marker.exists()
+
+
+def exercise_legacy_aos_fails_before_provisioning(host: str, root: Path) -> None:
+    spec = HOSTS[host]
+    test_root = root / f"{host}-legacy-aos"
+    home = test_root / "home/.aos"
+    workspace = test_root / "workspace"
+    installer_marker = test_root / "installer-called"
+    aos_marker = test_root / "aos-called"
+    workspace.mkdir(parents=True)
+    write_executable(
+        home / "bin/aos",
+        "#!/bin/sh\n" f': > "{aos_marker}"\n',
+    )
+    fake_installer = test_root / "installer"
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n" f': > "{installer_marker}"\n',
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_HOME": str(home),
+        "AOS_HOST": host,
+        str(spec["root_var"]): str(ROOT / f"plugins/{host}"),
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "PATH": "/usr/bin:/bin",
+    }
+
+    process = launch(host, workspace, environment, write_generation=False)
+    stdout, stderr = process.communicate(timeout=5)
+    assert process.returncode == 78, (process.returncode, stdout, stderr)
+    assert stdout == ""
+    assert "no committed runtime generation" in stderr
+    assert not installer_marker.exists()
+    assert not aos_marker.exists()
+
+
 def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> None:
     spec = HOSTS[host]
     test_root = root / f"{host}-doctor-race"
     home = test_root / "home" / ".aos"
+    write_active_generation(home)
     fake_bin = test_root / "fake-bin"
     wait_marker = test_root / "wait-observed"
     wait_gate = test_root / "release-waiter"
@@ -316,6 +475,7 @@ def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> Non
         'host="$TEST_EXPECTED_HOST"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
         'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "oracle:%s:0.2.6:%s\\n" "$host" "$TEST_RUNTIME_GENERATION" > "$AOS_HOME/extensions/oracles/$host/Generation.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'case " ${*:-} " in\n'
@@ -347,6 +507,7 @@ def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> Non
         "TEST_WAIT_GATE": str(wait_gate),
         "TEST_INSTALL_ATTEMPTS": str(attempts),
         "TEST_EXPECTED_HOST": host,
+        "TEST_RUNTIME_GENERATION": RUNTIME_GENERATION,
     }
     doctor = subprocess.Popen(
         [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
@@ -378,6 +539,7 @@ def exercise_abandoned_lock_recovery(
     spec = HOSTS[host]
     test_root = root / f"{host}-{actor}-abandoned-lock"
     home = test_root / "home" / ".aos"
+    write_active_generation(home)
     workspace = test_root / "user-project"
     fake_bin = test_root / "fake-bin"
     fake_installer = test_root / "contended-installer"
@@ -417,6 +579,7 @@ def exercise_abandoned_lock_recovery(
         'host="$TEST_EXPECTED_HOST"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
         'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "oracle:%s:0.2.6:%s\\n" "$host" "$TEST_RUNTIME_GENERATION" > "$AOS_HOME/extensions/oracles/$host/Generation.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
@@ -439,6 +602,7 @@ def exercise_abandoned_lock_recovery(
         "PATH": f"{fake_bin}:/usr/bin:/bin",
         "TMPDIR": str(test_root),
         "TEST_EXPECTED_HOST": host,
+        "TEST_RUNTIME_GENERATION": RUNTIME_GENERATION,
         "TEST_INSTALL_ATTEMPTS": str(attempts),
         "TEST_WAIT_MARKER": str(wait_marker),
         "TEST_WAIT_GATE": str(wait_gate),
@@ -493,6 +657,7 @@ def exercise_concurrent_launchers_use_private_logs(host: str, root: Path) -> Non
     spec = HOSTS[host]
     test_root = root / f"{host}-concurrent-launchers"
     home = test_root / "home" / ".aos"
+    write_active_generation(home)
     workspace = test_root / "user-project"
     fake_installer = test_root / "contended-installer"
     arrivals = test_root / "arrivals"
@@ -519,6 +684,7 @@ def exercise_concurrent_launchers_use_private_logs(host: str, root: Path) -> Non
         '  host="$TEST_EXPECTED_HOST"\n'
         '  mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
         '  printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        '  printf "oracle:%s:0.2.6:%s\\n" "$host" "$TEST_RUNTIME_GENERATION" > "$AOS_HOME/extensions/oracles/$host/Generation.lock"\n'
         '  cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
@@ -545,6 +711,7 @@ def exercise_concurrent_launchers_use_private_logs(host: str, root: Path) -> Non
         "TEST_LOSER_MARKER": str(loser_marker),
         "TEST_RELEASE_GATE": str(release_gate),
         "TEST_AOS_ARGS": str(args_log),
+        "TEST_RUNTIME_GENERATION": RUNTIME_GENERATION,
     }
 
     first = launch(host, workspace, environment)
@@ -576,6 +743,7 @@ def exercise_bootstrap_survives_wrapper_timeout(host: str, root: Path) -> None:
     spec = HOSTS[host]
     test_root = root / f"{host}-wrapper-timeout"
     home = test_root / "home" / ".aos"
+    write_active_generation(home)
     workspace = test_root / "user-project"
     fake_installer = test_root / "delayed-installer"
     started_marker = test_root / "installer-started"
@@ -597,6 +765,7 @@ def exercise_bootstrap_survives_wrapper_timeout(host: str, root: Path) -> None:
         'while [ ! -e "$TEST_RELEASE_GATE" ]; do /bin/sleep 0.01; done\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
         'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "oracle:%s:0.2.6:%s\\n" "$host" "$TEST_RUNTIME_GENERATION" > "$AOS_HOME/extensions/oracles/$host/Generation.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n'
@@ -615,14 +784,15 @@ def exercise_bootstrap_survives_wrapper_timeout(host: str, root: Path) -> None:
         "TEST_STARTED_MARKER": str(started_marker),
         "TEST_RELEASE_GATE": str(release_gate),
         "TEST_AOS_ARGS": str(args_log),
+        "TEST_RUNTIME_GENERATION": RUNTIME_GENERATION,
     }
 
     first = launch(host, workspace, environment)
-    wait_for(started_marker, first)
     stdout, stderr = first.communicate(timeout=3)
     assert first.returncode == 1, (first.returncode, stdout, stderr)
     assert stdout == "", stdout
     assert "startup timed out" in stderr
+    wait_for_path(started_marker)
     receipt = home / f"extensions/oracles/{host}/Pack.lock"
     assert not receipt.exists()
 
@@ -642,6 +812,8 @@ def main() -> None:
         for host in HOSTS:
             exercise_host(host, root)
             exercise_blank_slate_bootstrap(host, root)
+            exercise_stale_snapshot_fences_without_installing(host, root)
+            exercise_legacy_aos_fails_before_provisioning(host, root)
             exercise_doctor_waits_for_concurrent_bootstrap(host, root)
             exercise_abandoned_lock_recovery(host, root, "launcher")
             exercise_abandoned_lock_recovery(host, root, "doctor")

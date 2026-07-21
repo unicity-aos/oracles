@@ -359,14 +359,34 @@ if grep -Eq '^aos --principal codex-code capsule install .*/aos-(cli|fs|openai-c
 fi
 grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.6" "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-test -L "$AOS_HOME/extensions/oracles/codex/current"
-test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
-test -f "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
-grep -Fq 'source = "local"' "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
+test -d "$AOS_HOME/extensions/oracles/codex/current"
+test -L "$AOS_HOME/extensions/oracles/codex/current/generation"
+test -f "$AOS_HOME/extensions/oracles/codex/current/generation/Receipt.toml"
+test -f "$AOS_HOME/extensions/oracles/codex/current/generation/ManagedCapsules.toml"
+test -f "$AOS_HOME/extensions/oracles/codex/Generation.lock"
+test -L "$AOS_HOME/extensions/oracles/codex/Generation.lock"
+grep -Fqx \
+  "oracle:codex:0.2.6:$(cat "$repo_root/plugins/unicity-aos/.aos-runtime-generation")" \
+  "$AOS_HOME/extensions/oracles/codex/Generation.lock"
+mkdir -p "$AOS_HOME/update"
+printf 'schema-version = 1\nruntime-generation = "%s"\n' \
+  "$(cat "$repo_root/plugins/unicity-aos/.aos-runtime-generation")" \
+  > "$AOS_HOME/update/active-generation.toml"
+(
+  AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos"
+  . "$repo_root/plugins/common/bin/lib-aos-generation.sh"
+  aos_snapshot_generation_load "$AOS_PLUGIN_ROOT"
+  aos_oracle_generation_preflight \
+    "$AOS_HOME/extensions/oracles/codex/Pack.lock" 0.2.6 "$AOS_HOME"
+) || {
+  echo "generation preflight rejected the installer's canonical receipt symlinks" >&2
+  exit 1
+}
+grep -Fq 'source = "local"' "$AOS_HOME/extensions/oracles/codex/current/generation/Receipt.toml"
 grep -Fq 'name = "aos-mcp"' \
-  "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
+  "$AOS_HOME/extensions/oracles/codex/current/generation/ManagedCapsules.toml"
 grep -Fq 'wasm-hash = "a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e"' \
-  "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
+  "$AOS_HOME/extensions/oracles/codex/current/generation/ManagedCapsules.toml"
 test -f "$TEST_STATE/installed-codex-code-aos-mcp"
 test -f "$TEST_STATE/installed-codex-code-aos-skills"
 test -f "$TEST_STATE/installed-codex-code-aos-forge"
@@ -374,6 +394,25 @@ test -f "$TEST_STATE/granted-codex-code-aos-mcp"
 test -f "$TEST_STATE/granted-codex-code-aos-skills"
 test -f "$TEST_STATE/granted-codex-code-aos-forge"
 test ! -e "$AOS_HOME/extensions/oracles/.install.lock"
+
+if "$repo_root/install.sh" --host codex --oracle-version 0.2.5 --yes --no-install-aos \
+  >"$work/oracle-downgrade.log" 2>&1
+then
+  echo "oracle installer downgraded a committed host pack" >&2
+  exit 1
+fi
+grep -Fq 'refusing to downgrade codex Oracle pack from 0.2.6 to 0.2.5' \
+  "$work/oracle-downgrade.log"
+if "$repo_root/install.sh" --host codex --oracle-version 0.2.5 --yes \
+  --no-install-aos --plugins-only >"$work/plugin-downgrade.log" 2>&1
+then
+  echo "oracle installer activated an older cached host plugin" >&2
+  exit 1
+fi
+grep -Fq 'refusing to downgrade codex Oracle pack from 0.2.6 to 0.2.5' \
+  "$work/plugin-downgrade.log"
+grep -Fqx 'version = "0.2.6"' "$AOS_HOME/extensions/oracles/codex/Pack.lock"
+test -d "$AOS_HOME/extensions/oracles/codex/current"
 
 # AOS-owned optional services are resolved from the active signed product
 # release. Older compatible AOS releases can omit Forge while the generic
@@ -536,7 +575,7 @@ if grep -Eq '^(codex|claude) ' "$work/grok-only.log"; then
   echo "Grok installation touched another oracle host" >&2
   exit 1
 fi
-grok_receipt="$AOS_HOME/extensions/oracles/grok/current/Receipt.toml"
+grok_receipt="$AOS_HOME/extensions/oracles/grok/current/generation/Receipt.toml"
 test -f "$grok_receipt"
 grep -Fq 'host = "grok"' "$grok_receipt"
 grep -Fq 'principal = "grok-code"' "$grok_receipt"

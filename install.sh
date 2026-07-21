@@ -31,6 +31,9 @@ PLUGIN_STAGE=""
 RECEIPT_STAGE=""
 PREVIOUS_BINDINGS=""
 CURRENT_PACK_BINDINGS=""
+CURRENT_POINTER_STAGE=""
+ORACLE_RUNTIME_VERSION=""
+ORACLE_RUNTIME_SOURCE=""
 
 say() { printf '%s\n' "$*"; }
 die() { say "aos-oracles: $*" >&2; exit 1; }
@@ -56,6 +59,7 @@ cleanup() {
   release_install_lock
   [ -z "$PLUGIN_STAGE" ] || rm -rf "$PLUGIN_STAGE"
   [ -z "$RECEIPT_STAGE" ] || rm -rf "$RECEIPT_STAGE"
+  [ -z "$CURRENT_POINTER_STAGE" ] || rm -rf "$CURRENT_POINTER_STAGE"
   [ -z "$WORK" ] || rm -rf "$WORK"
 }
 
@@ -277,6 +281,49 @@ calendar_version_at_least() {
          (a[1] == f[1] && a[2] == f[2] && a[3] >= f[3])
     exit !ok
   }'
+}
+
+semantic_version_at_least() {
+  actual=$1
+  floor=$2
+  awk -v actual="$actual" -v floor="$floor" 'BEGIN {
+    split(actual, a, ".")
+    split(floor, f, ".")
+    ok = (a[1] > f[1]) ||
+         (a[1] == f[1] && a[2] > f[2]) ||
+         (a[1] == f[1] && a[2] == f[2] && a[3] >= f[3])
+    exit !ok
+  }'
+}
+
+oracle_pack_version() {
+  awk '
+    $1 == "version" {
+      count++
+      if ($2 != "=" || NF != 3 || $3 !~ /^"[0-9]+\.[0-9]+\.[0-9]+"$/) bad = 1
+      value = $3
+      sub(/^"/, "", value)
+      sub(/"$/, "", value)
+    }
+    END {
+      if (bad || count != 1) exit 1
+      print value
+    }
+  ' "$1"
+}
+
+enforce_monotonic_host_versions() {
+  for monotonic_host in $hosts; do
+    monotonic_pack="$AOS_HOME_DIR/extensions/oracles/$monotonic_host/Pack.lock"
+    if [ -e "$monotonic_pack" ] || [ -L "$monotonic_pack" ]; then
+      [ -f "$monotonic_pack" ] \
+        || die "installed $monotonic_host Oracle pack is not a readable regular file"
+      monotonic_version=$(oracle_pack_version "$monotonic_pack") \
+        || die "installed $monotonic_host Oracle pack has no valid version"
+      semantic_version_at_least "$ORACLES_VERSION" "$monotonic_version" \
+        || die "refusing to downgrade $monotonic_host Oracle pack from $monotonic_version to $ORACLES_VERSION"
+    fi
+  done
 }
 
 ensure_aos() {
@@ -626,7 +673,12 @@ load_previous_bindings() {
   lp_principal=$2
   lp_root="$AOS_HOME_DIR/extensions/oracles/$lp_host"
   lp_pack="$lp_root/Pack.lock"
-  lp_receipt="$lp_root/current/Receipt.toml"
+  if [ -d "$lp_root/current" ] && [ ! -L "$lp_root/current" ]; then
+    lp_active="$lp_root/current/generation"
+  else
+    lp_active="$lp_root/current"
+  fi
+  lp_receipt="$lp_active/Receipt.toml"
   PREVIOUS_BINDINGS="$WORK/previous-$lp_host.bindings"
   : > "$PREVIOUS_BINDINGS"
   [ -r "$lp_pack" ] || return 0
@@ -640,7 +692,7 @@ load_previous_bindings() {
   grep -Fqx "principal = \"$lp_principal\"" "$lp_receipt" \
     || die "installed $lp_host Oracle receipt has the wrong principal"
 
-  lp_managed="$lp_root/current/ManagedCapsules.toml"
+  lp_managed="$lp_active/ManagedCapsules.toml"
   if [ -r "$lp_managed" ]; then
     pack_capsules_tsv "$lp_pack" > "$PREVIOUS_BINDINGS"
     lp_expected="$WORK/expected-$lp_host-managed.toml"
@@ -797,6 +849,15 @@ stage_release_metadata() {
   validate_checksum_manifest "$RELEASE_STAGE/BLAKE3SUMS.txt"
   verify_blake3 "$RELEASE_STAGE/aos-oracle-plugins.tar.gz" aos-oracle-plugins.tar.gz
   verify_blake3 "$RELEASE_STAGE/runtime-compatibility.toml" runtime-compatibility.toml
+  ORACLE_RUNTIME_VERSION=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' \
+    "$RELEASE_STAGE/runtime-compatibility.toml" | sed -n '1p')
+  ORACLE_RUNTIME_SOURCE=$(sed -n 's/^source-commit = "\([^"]*\)"$/\1/p' \
+    "$RELEASE_STAGE/runtime-compatibility.toml" | sed -n '1p')
+  printf '%s\n' "$ORACLE_RUNTIME_VERSION" \
+    | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    || die "signed runtime compatibility has an invalid version"
+  printf '%s\n' "$ORACLE_RUNTIME_SOURCE" | grep -Eq '^[0-9a-f]{40}$' \
+    || die "signed runtime compatibility has an invalid source commit"
   PLUGIN_BLAKE3=$(expected_blake3 aos-oracle-plugins.tar.gz)
   validate_plugin_archive "$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
 }
@@ -1133,6 +1194,9 @@ write_receipt() {
   write_managed_capsules "$CURRENT_PACK_BINDINGS" "$stage/ManagedCapsules.toml"
   cp "$RELEASE_STAGE/BLAKE3SUMS.txt" "$stage/BLAKE3SUMS.txt"
   cp "$RELEASE_STAGE/runtime-compatibility.toml" "$stage/runtime-compatibility.toml"
+  printf 'oracle:%s:%s:astrid:%s:%s\n' \
+    "$host" "$ORACLES_VERSION" "$ORACLE_RUNTIME_VERSION" "$ORACLE_RUNTIME_SOURCE" \
+    > "$stage/Generation.lock"
   for bundle in \
     "$pack_stage/Pack.toml.sigstore.json" \
     "$pack_stage"/*.capsule.sigstore.json \
@@ -1166,10 +1230,28 @@ write_receipt() {
   fi
   RECEIPT_STAGE=""
 
-  atomic_symlink "releases/$ORACLES_VERSION" "$receipt_root/current"
-  atomic_symlink current/Pack.lock "$receipt_root/Pack.lock" 1
+  current_root="$receipt_root/current"
+  if [ -L "$current_root" ]; then
+    current_stage="$receipt_root/.current.$$"
+    CURRENT_POINTER_STAGE=$current_stage
+    rm -rf "$current_stage"
+    mkdir "$current_stage"
+    ln -s "../releases/$ORACLES_VERSION" "$current_stage/generation"
+    rm -f "$current_root"
+    mv "$current_stage" "$current_root"
+    CURRENT_POINTER_STAGE=""
+  else
+    if [ -e "$current_root" ]; then
+      [ -d "$current_root" ] || die "$current_root is not a directory"
+    else
+      mkdir "$current_root"
+    fi
+    atomic_symlink "../releases/$ORACLES_VERSION" "$current_root/generation"
+  fi
+  atomic_symlink current/generation/Pack.lock "$receipt_root/Pack.lock" 1
+  atomic_symlink current/generation/Generation.lock "$receipt_root/Generation.lock" 1
   if [ -f "$destination/Pack.toml.sigstore.json" ]; then
-    atomic_symlink current/Pack.toml.sigstore.json \
+    atomic_symlink current/generation/Pack.toml.sigstore.json \
       "$receipt_root/Pack.lock.sigstore.json" 1
   else
     rm -f "$receipt_root/Pack.lock.sigstore.json"
@@ -1182,6 +1264,7 @@ hosts=$(select_hosts)
 acquire_install_lock
 ensure_aos
 stage_release_metadata
+enforce_monotonic_host_versions
 if [ "$PLUGINS_ONLY" -eq 1 ]; then
   prepare_plugin_snapshot
   for host in $hosts; do

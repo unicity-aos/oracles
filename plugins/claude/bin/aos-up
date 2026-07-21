@@ -36,10 +36,6 @@ fi
 . "$RESOLVE"
 
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
-aos_enter_product_workspace || {
-  log "could not enter the AOS product runtime workspace"
-  exit 1
-}
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/$AOS_HOST/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$AOS_PLUGIN_ROOT/bin/aos-install"
@@ -59,9 +55,34 @@ ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
 printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || { log "plugin snapshot has an invalid Oracle release identity"; exit 1; }
 
+GENERATION_LIB="$AOS_PLUGIN_ROOT/bin/lib-aos-generation.sh"
+[ -f "$GENERATION_LIB" ] && [ ! -L "$GENERATION_LIB" ] \
+  || { log "plugin snapshot has no generation fencing library"; exit 1; }
+# shellcheck source=lib-aos-generation.sh
+. "$GENERATION_LIB"
+aos_snapshot_generation_load "$AOS_PLUGIN_ROOT" \
+  || { log "$AOS_GENERATION_ERROR"; exit 78; }
+
+generation_preflight_status() {
+  generation_status=0
+  aos_oracle_generation_preflight "$PACK_RECEIPT" "$ORACLE_VERSION" "$AOS_HOME_DIR" \
+    || generation_status=$?
+}
+
+generation_preflight_status
+case "$generation_status" in
+  0) ;;
+  1) log "$AOS_GENERATION_ERROR"; exit 78 ;;
+  2) ;;
+esac
+
+aos_enter_product_workspace || {
+  log "could not enter the AOS product runtime workspace"
+  exit 1
+}
+
 host_ready() {
-  [ -r "$PACK_RECEIPT" ] \
-    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
+  aos_oracle_generation_preflight "$PACK_RECEIPT" "$ORACLE_VERSION" "$AOS_HOME_DIR" \
     && aos_resolve_apply 2>/dev/null \
     && "$AOS" capsule show aos-mcp --agent "${AOS_HOST}-code" >/dev/null 2>&1
 }
@@ -79,10 +100,13 @@ install_lock_reclaimable() {
 
 start_bootstrap() {
   [ "$BOOTSTRAP_ATTEMPTED" -eq 0 ] || return 0
+  if [ -f "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ] \
+    && ! install_lock_reclaimable
+  then
+    WAITING_FOR_INSTALL_LOCK=1
+    return 0
+  fi
   if [ "$WAITING_FOR_INSTALL_LOCK" -eq 1 ]; then
-    if [ -f "$INSTALL_LOCK" ] && ! install_lock_reclaimable; then
-      return 0
-    fi
     WAITING_FOR_INSTALL_LOCK=0
   fi
   [ -x "$INSTALLER" ] || return 1
@@ -126,7 +150,28 @@ bootstrap_failed() {
   return 0
 }
 
-if ! host_ready; then
+if [ "$generation_status" -eq 0 ] && ! host_ready; then
+  if [ -f "$INSTALL_LOCK" ] && [ ! -L "$INSTALL_LOCK" ] && ! install_lock_reclaimable; then
+    deadline=$(($(date +%s) + STARTUP_TIMEOUT_SECS))
+    while ! host_ready; do
+      if [ ! -f "$INSTALL_LOCK" ] || install_lock_reclaimable; then
+        log "the committed $AOS_HOST oracle pack is not usable after provisioning finished"
+        exit 1
+      fi
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        log "startup timed out waiting for active $AOS_HOST provisioning"
+        exit 1
+      fi
+      sleep 0.1
+    done
+  else
+    log "the committed $AOS_HOST oracle pack is not usable; refusing to overwrite it automatically"
+    log "explicitly reinstall the host pack, then restart this host"
+    exit 1
+  fi
+fi
+
+if [ "$generation_status" -eq 2 ]; then
   if ! start_bootstrap; then
     log "could not find this plugin's AOS installer."
     log "install AOS from https://aos.unicity.ai/install.sh, then provision the $AOS_HOST oracle pack."
@@ -134,8 +179,20 @@ if ! host_ready; then
   fi
   deadline=$(($(date +%s) + STARTUP_TIMEOUT_SECS))
   while ! host_ready; do
+    generation_preflight_status
+    if [ "$generation_status" -eq 1 ]; then
+      log "$AOS_GENERATION_ERROR"
+      exit 78
+    fi
     if bootstrap_failed; then
       log "retry with: $INSTALLER --host $AOS_HOST --yes"
+      exit 1
+    fi
+    if [ "$generation_status" -eq 0 ] && [ -z "$BOOTSTRAP_PID" ]; then
+      if host_ready; then
+        break
+      fi
+      log "provisioning committed an unusable $AOS_HOST oracle pack"
       exit 1
     fi
     start_bootstrap || true
@@ -164,6 +221,10 @@ fi
 case "$PRINCIPAL" in
   ""|'${user_config.principal}') PRINCIPAL="${AOS_HOST}-code" ;;
 esac
+
+ASTRID_HOST_GENERATION=$(aos_expected_host_generation "$AOS_HOST" "$ORACLE_VERSION")
+ASTRID_HOST_GENERATION_FILE="${PACK_RECEIPT%/Pack.lock}/Generation.lock"
+export ASTRID_HOST_GENERATION ASTRID_HOST_GENERATION_FILE
 
 # AOS owns daemon startup, runtime keys, authentication, and home selection.
 # Any post-commit principal/capsule failure remains visible on stderr with the

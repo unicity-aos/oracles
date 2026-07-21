@@ -23,6 +23,12 @@ done
 [ "$host" = codex ] || exit 91
 mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"
 printf '%s\n' 'version = "0.2.6"' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"
+mkdir -p "$AOS_HOME/update"
+runtime_generation=$(cat "$AOS_PLUGIN_ROOT/.aos-runtime-generation")
+printf 'schema-version = 1\nruntime-generation = "%s"\n' "$runtime_generation" \
+  > "$AOS_HOME/update/active-generation.toml"
+printf 'oracle:codex:0.2.6:%s\n' "$runtime_generation" \
+  > "$AOS_HOME/extensions/oracles/codex/Generation.lock"
 cat > "$AOS_HOME/bin/aos" <<'AOS'
 #!/usr/bin/env sh
 set -eu

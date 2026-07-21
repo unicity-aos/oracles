@@ -177,6 +177,14 @@ jobs:
           mkdir -p "$bin_root/home/extensions/oracles/codex"
           printf 'version = "%s"\n' "$(cat release/oracle-version)" \
             > "$bin_root/home/extensions/oracles/codex/Pack.lock"
+          mkdir -p "$bin_root/home/update"
+          printf 'schema-version = 1\nruntime-generation = "%s"\n' \
+            "$(cat plugins/unicity-aos/.aos-runtime-generation)" \
+            > "$bin_root/home/update/active-generation.toml"
+          printf 'oracle:codex:%s:%s\n' \
+            "$(cat release/oracle-version)" \
+            "$(cat plugins/unicity-aos/.aos-runtime-generation)" \
+            > "$bin_root/home/extensions/oracles/codex/Generation.lock"
           forwarded="$(AOS_HOME="$bin_root/home" AOS_BIN=/bin/echo plugins/unicity-aos/bin/aos-up --principal codex-code)"
           test "$forwarded" = "--principal codex-code mcp serve"
 
@@ -189,7 +197,7 @@ jobs:
           # or a symlink into ../../common, dangles in the installed cache and the
           # MCP stdio server dies on launch ("-32000 failed to reconnect").
           for h in claude grok; do
-            for f in aos-up aos-doctor aos-install aos-update-check lib-aos-resolve.sh; do
+            for f in aos-up aos-doctor aos-install aos-update-check lib-aos-resolve.sh lib-aos-generation.sh; do
               p="plugins/$h/bin/$f"
               test -f "$p"   || { echo "::error::$p is missing"; exit 1; }
               test ! -L "$p" || { echo "::error::$p is a symlink; must be a regular file"; exit 1; }
@@ -205,15 +213,23 @@ jobs:
           scripts/sync-plugins.sh
           if ! git diff --quiet -- \
             plugins/claude/bin plugins/grok/bin \
+            plugins/claude/.aos-runtime-generation \
+            plugins/grok/.aos-runtime-generation \
+            plugins/unicity-aos/.aos-runtime-generation \
             plugins/unicity-aos/bin/aos-install \
-            plugins/unicity-aos/bin/aos-update-check
+            plugins/unicity-aos/bin/aos-update-check \
+            plugins/unicity-aos/bin/lib-aos-generation.sh
           then
             echo "::error::vendored plugin scripts drifted from plugins/common/bin."
             echo "Edit plugins/common/bin, then run scripts/sync-plugins.sh and commit."
             git --no-pager diff --stat -- \
               plugins/claude/bin plugins/grok/bin \
+              plugins/claude/.aos-runtime-generation \
+              plugins/grok/.aos-runtime-generation \
+              plugins/unicity-aos/.aos-runtime-generation \
               plugins/unicity-aos/bin/aos-install \
-              plugins/unicity-aos/bin/aos-update-check
+              plugins/unicity-aos/bin/aos-update-check \
+              plugins/unicity-aos/bin/lib-aos-generation.sh
             exit 1
           fi
 

@@ -61,6 +61,11 @@ jobs:
           runtime = tomllib.loads(pathlib.Path("release/runtime-compatibility.toml").read_text())["runtime"]
           if runtime["release-ready"] is not True:
               raise SystemExit("runtime compatibility pin is not release-ready")
+          if len(runtime.get("source-commit", "")) != 40 or any(
+              character not in "0123456789abcdef"
+              for character in runtime["source-commit"]
+          ):
+              raise SystemExit("runtime compatibility source commit is not exact")
           for host in ("claude", "codex", "grok"):
               pack = tomllib.loads(pathlib.Path(f"packs/{host}.toml").read_text())["pack"]
               if pack["version"] != version:
@@ -69,6 +74,7 @@ jobs:
           print(f"RUNTIME_VERSION={runtime['version']}")
           print(f"RUNTIME_TAG={runtime['tag']}")
           print(f"RUNTIME_IDENTITY={runtime['release-workflow-identity']}")
+          print(f"RUNTIME_SOURCE_COMMIT={runtime['source-commit']}")
           PY
           marker="<!-- aos-oracles-source:${GITHUB_SHA} -->"
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
@@ -100,7 +106,13 @@ jobs:
           cargo clippy --workspace --all-targets --locked \
             --target x86_64-unknown-linux-gnu -- -D warnings
           scripts/sync-plugins.sh
-          git diff --exit-code -- plugins/claude/bin plugins/grok/bin
+          git diff --exit-code -- \
+            plugins/claude plugins/grok \
+            plugins/unicity-aos/.aos-oracle-version \
+            plugins/unicity-aos/.aos-runtime-generation \
+            plugins/unicity-aos/bin/aos-install \
+            plugins/unicity-aos/bin/aos-update-check \
+            plugins/unicity-aos/bin/lib-aos-generation.sh
           python3 scripts/test_pack_contract.py
           python3 scripts/test_brand_boundary.py
           python3 scripts/test_wit_contract.py

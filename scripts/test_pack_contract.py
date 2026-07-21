@@ -41,10 +41,19 @@ class PackContractTests(unittest.TestCase):
 
     def test_plugin_snapshot_is_bound_to_the_pack_release(self) -> None:
         release = (ROOT / "release" / "oracle-version").read_text().strip()
+        compatibility = tomllib.loads(
+            (ROOT / "release" / "runtime-compatibility.toml").read_text()
+        )["runtime"]
+        runtime_generation = (
+            f"astrid:{compatibility['version']}:{compatibility['source-commit']}"
+        )
+        self.assertRegex(compatibility["source-commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(release, r"^[0-9]+\.[0-9]+\.[0-9]+$")
         for host in ("claude", "grok", "unicity-aos"):
             marker = (ROOT / "plugins" / host / ".aos-oracle-version")
             self.assertEqual(marker.read_text().strip(), release)
+            generation = ROOT / "plugins" / host / ".aos-runtime-generation"
+            self.assertEqual(generation.read_text().strip(), runtime_generation)
 
     def test_packs_do_not_redeclare_the_ce_distribution(self) -> None:
         for path in sorted((ROOT / "packs").glob("*.toml")):

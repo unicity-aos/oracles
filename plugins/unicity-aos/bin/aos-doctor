@@ -51,10 +51,6 @@ if [ ! -f "$RESOLVE" ]; then
 fi
 # shellcheck source=lib-aos-resolve.sh
 . "$RESOLVE"
-aos_enter_product_workspace || {
-  emit "Unicity AOS could not enter its product runtime workspace."
-  exit 0
-}
 
 json_escape() {
   printf '%s' "$1" \
@@ -87,14 +83,44 @@ emit() {
   fi
 }
 
+AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
+PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/codex/Pack.lock"
+GENERATION_LIB="$AOS_PLUGIN_ROOT/bin/lib-aos-generation.sh"
+if [ ! -f "$GENERATION_LIB" ] || [ -L "$GENERATION_LIB" ]; then
+  emit "Unicity AOS plugin snapshot has no generation fencing library. Reinstall the Codex plugin."
+  exit 0
+fi
+# shellcheck source=lib-aos-generation.sh
+. "$GENERATION_LIB"
+if ! aos_snapshot_generation_load "$AOS_PLUGIN_ROOT"; then
+  emit "Unicity AOS — $AOS_GENERATION_ERROR."
+  exit 0
+fi
+
+generation_preflight_status() {
+  GENERATION_STATUS=0
+  aos_oracle_generation_preflight "$PACK_RECEIPT" "$ORACLE_VERSION" "$AOS_HOME_DIR" \
+    || GENERATION_STATUS=$?
+}
+
+generation_preflight_status
+if [ "$GENERATION_STATUS" -eq 1 ]; then
+  emit "Unicity AOS — $AOS_GENERATION_ERROR. No installed state was changed."
+  exit 0
+fi
+
+aos_enter_product_workspace || {
+  emit "Unicity AOS could not enter its product runtime workspace."
+  exit 0
+}
+
 PRINCIPAL="${ASTRID_PRINCIPAL_ID:-codex-code}"
 case "$PRINCIPAL" in
   ""|*[!A-Za-z0-9_-]*) PRINCIPAL=codex-code ;;
 esac
 
 pack_is_current() {
-  pack="${AOS_HOME:-$HOME/.aos}/extensions/oracles/codex/Pack.lock"
-  [ -r "$pack" ] && grep -Fqx "version = \"$ORACLE_VERSION\"" "$pack"
+  [ "$(aos_oracle_pack_state "$PACK_RECEIPT" "$ORACLE_VERSION")" = current ]
 }
 
 resolve_initial() {
@@ -134,14 +160,9 @@ fi
 
 VERSION="$("$AOS" --version 2>/dev/null | head -n1 || true)"
 
-if ! pack_is_current \
-  || ! "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1
-then
-  if bootstrap_codex \
-    && "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1
-  then
-    :
-  else
+generation_preflight_status
+if [ "$GENERATION_STATUS" -eq 2 ]; then
+  if ! bootstrap_codex; then
   emit "Unicity AOS — Codex principal '$PRINCIPAL' is not provisioned for the oracle pack.
 
 Automatic setup could not complete${BOOTSTRAP_ERROR:+: $BOOTSTRAP_ERROR}.
@@ -152,6 +173,18 @@ Retry with:
 Then start a new Codex session."
     exit 0
   fi
+fi
+generation_preflight_status
+if [ "$GENERATION_STATUS" -ne 0 ]; then
+  emit "Unicity AOS — $AOS_GENERATION_ERROR. No installed state was changed."
+  exit 0
+fi
+if ! "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1; then
+  emit "Unicity AOS — the committed Codex oracle pack is not usable for principal '$PRINCIPAL'.
+
+It was not overwritten automatically. Explicitly reinstall the Codex pack,
+then restart Codex."
+  exit 0
 fi
 
 STATUS="$("$AOS" status --json 2>/dev/null || true)"

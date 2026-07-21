@@ -18,15 +18,12 @@ RESOLVE="$HERE/lib-aos-resolve.sh"
 . "$RESOLVE"
 
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
-aos_enter_product_workspace || {
-  echo "aos-up: could not enter the AOS product runtime workspace" >&2
-  exit 1
-}
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/codex/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$HERE/aos-install"
 VERSION_FILE="$AOS_PLUGIN_ROOT/.aos-oracle-version"
 BOOTSTRAP_LOG=""
+GENERATION_WARNING_FILE="$AOS_HOME_DIR/cache/oracles/codex-stale-generation.warned"
 
 cleanup_bootstrap_log() {
   [ -z "$BOOTSTRAP_LOG" ] || rm -f "$BOOTSTRAP_LOG"
@@ -45,9 +42,71 @@ printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
   exit 1
 }
 
+IS_CODEX_HOOK=0
+if [ "${1:-}" = codex ]; then
+  case "${2:-}" in session-start|hook) IS_CODEX_HOOK=1 ;; esac
+fi
+
+generation_failure() {
+  if [ "$IS_CODEX_HOOK" -eq 1 ]; then
+    warning_dir="$AOS_HOME_DIR/cache/oracles"
+    warning_file="$GENERATION_WARNING_FILE"
+    warning="$AOS_GENERATION_ERROR"
+    mkdir -p "$warning_dir" 2>/dev/null || return 0
+    chmod 700 "$warning_dir" 2>/dev/null || true
+    previous=""
+    if [ -f "$warning_file" ] && [ ! -L "$warning_file" ]; then
+      IFS= read -r previous < "$warning_file" || previous=""
+    fi
+    if [ "$previous" != "$warning" ]; then
+      printf '%s\n' "aos-up: $warning" >&2
+      warning_stage="${warning_file}.new.$$"
+      printf '%s\n' "$warning" > "$warning_stage" 2>/dev/null \
+        && chmod 600 "$warning_stage" 2>/dev/null \
+        && mv -f "$warning_stage" "$warning_file" 2>/dev/null \
+        || rm -f "$warning_stage" 2>/dev/null || true
+    fi
+    exit 0
+  fi
+  printf '%s\n' "aos-up: $AOS_GENERATION_ERROR" >&2
+  exit 78
+}
+
+GENERATION_LIB="$AOS_PLUGIN_ROOT/bin/lib-aos-generation.sh"
+[ -f "$GENERATION_LIB" ] && [ ! -L "$GENERATION_LIB" ] || {
+  AOS_GENERATION_ERROR="plugin snapshot has no generation fencing library; reinstall the Codex plugin"
+  generation_failure
+}
+# shellcheck source=lib-aos-generation.sh
+. "$GENERATION_LIB"
+aos_snapshot_generation_load "$AOS_PLUGIN_ROOT" || generation_failure
+
+generation_preflight_status() {
+  GENERATION_STATUS=0
+  aos_oracle_generation_preflight "$PACK_RECEIPT" "$ORACLE_VERSION" "$AOS_HOME_DIR" \
+    || GENERATION_STATUS=$?
+}
+
+generation_preflight_status
+[ "$GENERATION_STATUS" -ne 1 ] || generation_failure
+if [ "$GENERATION_STATUS" -eq 0 ] && [ -f "$GENERATION_WARNING_FILE" ] \
+  && [ ! -L "$GENERATION_WARNING_FILE" ]
+then
+  rm -f "$GENERATION_WARNING_FILE"
+fi
+if [ "$IS_CODEX_HOOK" -eq 1 ] && [ "$GENERATION_STATUS" -ne 0 ]; then
+  # SessionStart provisioning owns activation. Other short-lived hooks stay
+  # quiet until this exact snapshot has a committed generation.
+  exit 0
+fi
+
+aos_enter_product_workspace || {
+  echo "aos-up: could not enter the AOS product runtime workspace" >&2
+  exit 1
+}
+
 codex_ready() {
-  [ -r "$PACK_RECEIPT" ] \
-    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
+  aos_oracle_generation_preflight "$PACK_RECEIPT" "$ORACLE_VERSION" "$AOS_HOME_DIR" \
     && aos_resolve_apply 2>/dev/null \
     && "$AOS" capsule show aos-mcp --agent codex-code >/dev/null 2>&1
 }
@@ -64,7 +123,16 @@ install_lock_reclaimable() {
 }
 
 ensure_codex() {
-  codex_ready && return 0
+  generation_preflight_status
+  case "$GENERATION_STATUS" in
+    0)
+      codex_ready && return 0
+      echo "aos-up: the committed Codex oracle pack is unusable; refusing to overwrite it automatically" >&2
+      return 1
+      ;;
+    1) generation_failure ;;
+    2) ;;
+  esac
   [ -x "$INSTALLER" ] || {
     echo "aos-up: could not find this plugin's AOS installer" >&2
     return 127
@@ -85,6 +153,11 @@ ensure_codex() {
       if codex_ready; then
         cleanup_bootstrap_log
         return 0
+      fi
+      generation_preflight_status
+      if [ "$GENERATION_STATUS" -eq 1 ]; then
+        echo "aos-up: $AOS_GENERATION_ERROR" >&2
+        return 78
       fi
       echo "aos-up: Codex provisioning completed without a usable aos-mcp pack" >&2
       return 1
@@ -301,6 +374,9 @@ mcp_serve() {
     [ "$#" -eq 0 ] || shift
   fi
   principal="$(principal_id "$principal")"
+  ASTRID_HOST_GENERATION=$(aos_expected_host_generation codex "$ORACLE_VERSION")
+  ASTRID_HOST_GENERATION_FILE="${PACK_RECEIPT%/Pack.lock}/Generation.lock"
+  export ASTRID_HOST_GENERATION ASTRID_HOST_GENERATION_FILE
   exec "$AOS" --principal "$principal" mcp serve "$@"
 }
 

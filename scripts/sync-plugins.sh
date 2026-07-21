@@ -26,7 +26,7 @@ MIRROR_HOSTS="claude grok"
 
 # Shared scripts to vendor into every mirrored host plugin. Host-specific
 # scripts such as status lines are deliberately absent from this list.
-SHARED="aos-up aos-doctor aos-install aos-update-check lib-aos-resolve.sh"
+SHARED="aos-up aos-doctor aos-install aos-update-check lib-aos-resolve.sh lib-aos-generation.sh"
 
 for host in $MIRROR_HOSTS; do
   hb="$ROOT/plugins/$host/bin"
@@ -43,14 +43,24 @@ for host in $MIRROR_HOSTS; do
   done
 done
 
+runtime_version=$(sed -n 's/^version = "\([^"]*\)"$/\1/p' "$ROOT/release/runtime-compatibility.toml" | sed -n '1p')
+runtime_source=$(sed -n 's/^source-commit = "\([^"]*\)"$/\1/p' "$ROOT/release/runtime-compatibility.toml" | sed -n '1p')
+printf '%s\n' "$runtime_version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+  || { echo "runtime compatibility has an invalid version" >&2; exit 1; }
+printf '%s\n' "$runtime_source" | grep -Eq '^[0-9a-f]{40}$' \
+  || { echo "runtime compatibility has an invalid source commit" >&2; exit 1; }
+
 for host in claude grok unicity-aos; do
   [ -d "$ROOT/plugins/$host" ] || continue
   cp "$ROOT/release/oracle-version" "$ROOT/plugins/$host/.aos-oracle-version"
   chmod 644 "$ROOT/plugins/$host/.aos-oracle-version"
+  printf 'astrid:%s:%s\n' "$runtime_version" "$runtime_source" \
+    > "$ROOT/plugins/$host/.aos-runtime-generation"
+  chmod 644 "$ROOT/plugins/$host/.aos-runtime-generation"
 done
 
 if [ -d "$ROOT/plugins/unicity-aos/bin" ]; then
-  for f in aos-install aos-update-check; do
+  for f in aos-install aos-update-check lib-aos-generation.sh; do
     cp "$COMMON/$f" "$ROOT/plugins/unicity-aos/bin/$f"
     chmod 755 "$ROOT/plugins/unicity-aos/bin/$f"
   done

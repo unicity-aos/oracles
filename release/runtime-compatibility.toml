@@ -6,6 +6,7 @@ version = "0.10.4"
 tag = "v0.10.4"
 version-requirement = "=0.10.4"
 release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.10.4"
+source-commit = "b6bf5d1d579915eb5d3c944857d84e62a4fcc878"
 release-ready = true
 
 # Update every field together; never point a release build at a moving channel.

@@ -110,48 +110,12 @@ jobs:
       - name: Install pinned BLAKE3 tool
         run: cargo install b3sum --locked --version "$B3SUM_VERSION"
 
-      - name: Download and verify the pinned runtime builder
-        run: |
-          set -euo pipefail
-          target=x86_64-unknown-linux-gnu
-          asset="astrid-${RUNTIME_VERSION}-${target}.tar.gz"
-          base="https://github.com/${RUNTIME_REPOSITORY}/releases/download/${RUNTIME_TAG}"
-          curl --proto '=https' --tlsv1.2 -fsSLO "$base/$asset"
-          curl --proto '=https' --tlsv1.2 -fsSLO "$base/BLAKE3SUMS.txt"
-          curl --proto '=https' --tlsv1.2 -fsSLo "$asset.sigstore.json" "$base/$asset.sigstore.json"
-          expected=$(awk -v name="$asset" '$2 == name {print $1; exit}' BLAKE3SUMS.txt)
-          test -n "$expected"
-          test "$(b3sum "$asset" | awk '{print $1}')" = "$expected"
-          cosign verify-blob \
-            --bundle "$asset.sigstore.json" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            --certificate-identity "$RUNTIME_IDENTITY" \
-            --use-signed-timestamps \
-            "$asset"
-          mkdir -p runtime
-          tar -xzf "$asset" -C runtime
-          builder=$(find runtime -type f -name astrid-build -print -quit)
-          test -n "$builder"
-          chmod +x "$builder"
-          echo "ASTRID_BUILD=$builder" >> "$GITHUB_ENV"
-
-      - name: Build installable capsules and pack manifests
+      - name: Build host adapter pack manifests
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          for crate in aos-mcp
-          do
-            "$ASTRID_BUILD" "crates/$crate" --output artifacts
-          done
-          wasm_member=$(tar -tf artifacts/aos-mcp.capsule | grep -E '^[^/]+\.wasm$')
-          test "$(printf '%s\n' "$wasm_member" | wc -l)" -eq 1
-          tar -xOf artifacts/aos-mcp.capsule "$wasm_member" > artifacts/aos-mcp.wasm
-          built_hash=$(b3sum artifacts/aos-mcp.wasm | awk '{print $1}')
-          rm artifacts/aos-mcp.wasm
           for host in claude codex grok; do
             install -m 0644 "packs/$host.toml" "artifacts/$host-pack.toml"
-            printf 'wasm-blake3 = "%s"\n' "$built_hash" \
-              >> "artifacts/$host-pack.toml"
           done
           tar --sort=name --mtime='UTC 1970-01-01' \
             --owner=0 --group=0 --numeric-owner \
@@ -160,16 +124,12 @@ jobs:
             plugins/claude plugins/grok plugins/unicity-aos
           cp release/runtime-compatibility.toml artifacts/runtime-compatibility.toml
           cd artifacts
-          b3sum ./*.capsule ./*-pack.toml aos-oracle-plugins.tar.gz \
+          b3sum ./*-pack.toml aos-oracle-plugins.tar.gz \
             runtime-compatibility.toml | sed 's#  \./#  #' > BLAKE3SUMS.txt
-
-      - name: Verify capsule-owned WIT contracts in release archives
-        run: AOS_WIT_ARTIFACTS=artifacts python3 scripts/test_wit_contract.py
 
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: |
-            artifacts/*.capsule
             artifacts/*-pack.toml
             artifacts/aos-oracle-plugins.tar.gz
             artifacts/BLAKE3SUMS.txt
@@ -182,7 +142,7 @@ jobs:
           set -euo pipefail
           cd artifacts
           identity="https://github.com/unicity-aos/oracles/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
-          for asset in ./*.capsule ./*-pack.toml aos-oracle-plugins.tar.gz \
+          for asset in ./*-pack.toml aos-oracle-plugins.tar.gz \
             BLAKE3SUMS.txt runtime-compatibility.toml; do
             cosign sign-blob --yes --bundle "$asset.sigstore.json" "$asset"
             cosign verify-blob \
@@ -199,11 +159,9 @@ jobs:
           cd artifacts
           {
             printf '%s\n' \
-              aos-mcp.capsule \
               claude-pack.toml codex-pack.toml grok-pack.toml \
               aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml
             for asset in \
-              aos-mcp.capsule \
               claude-pack.toml codex-pack.toml grok-pack.toml \
               aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml
             do

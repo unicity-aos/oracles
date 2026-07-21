@@ -65,12 +65,12 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertLess(publish, immutable)
         self.assertLess(immutable, refusal)
 
-    def test_signed_pack_records_the_built_wasm_identity(self) -> None:
-        build = self.workflow.index("built_hash=$(b3sum artifacts/aos-mcp.wasm")
-        inject = self.workflow.index("wasm-blake3", build)
-        sign = self.workflow.index("cosign sign-blob", inject)
-        self.assertLess(build, inject)
-        self.assertLess(inject, sign)
+    def test_release_contains_host_adapters_but_no_aos_owned_capsules(self) -> None:
+        self.assertNotIn("aos-mcp.wasm", self.workflow)
+        self.assertNotIn("aos-mcp.capsule", self.workflow)
+        build = self.workflow.index("Build host adapter pack manifests")
+        sign = self.workflow.index("cosign sign-blob", build)
+        self.assertLess(build, sign)
 
 
 if __name__ == "__main__":

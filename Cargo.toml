@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-default-members = ["crates/oracle-core", "crates/oracle-broker", "crates/oracle-host"]
+default-members = ["crates/oracle-core", "crates/oracle-host"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,7 +16,6 @@ rust-version = "1.94"
 
 [workspace.dependencies]
 oracle-core = { path = "crates/oracle-core" }
-oracle-broker = { path = "crates/oracle-broker" }
 oracle-host = { path = "crates/oracle-host" }
 astrid-sdk = { version = "0.7", features = ["derive"] }
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }

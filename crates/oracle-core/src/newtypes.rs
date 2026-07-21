@@ -47,30 +47,6 @@ str_newtype!(
     PrincipalFamily
 );
 str_newtype!(
-    /// MCP server namespace segment (`aos` in `mcp__aos__*`).
-    McpNamespace
-);
-str_newtype!(
-    /// Full MCP tool name prefix including trailing `__` (`mcp__aos__`).
-    McpToolPrefix
-);
-str_newtype!(
-    /// Capsule package / component id (`aos-mcp`).
-    CapsuleName
-);
-str_newtype!(
     /// Human host product name (`Claude Code`, `Grok Build`, `Codex`).
     HostDisplayName
-);
-str_newtype!(
-    /// Static bus topic string.
-    Topic
-);
-str_newtype!(
-    /// Prefix for Astrid oracle audit topics (`astrid.v1.audit.`).
-    AuditTopicPrefix
-);
-str_newtype!(
-    /// Log line tag (`aos-mcp`).
-    LogTag
 );

@@ -10,20 +10,16 @@ home="$work/home"
 mkdir -p "$fake_bin" "$assets" "$home"
 for host in claude codex grok; do
   cp "$repo_root/packs/$host.toml" "$assets/$host.toml"
-  printf '%s\n' \
-    'wasm-blake3 = "a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e"' \
-    >> "$assets/$host.toml"
 done
 cp "$repo_root/release/runtime-compatibility.toml" "$assets/runtime-compatibility.toml"
 (cd "$repo_root" && tar -czf "$assets/aos-oracle-plugins.tar.gz" \
   .agents .claude-plugin .grok-plugin \
   plugins/claude plugins/grok plugins/unicity-aos)
-printf 'signed fixture for aos-mcp\n' > "$assets/aos-mcp.capsule"
-
 product_assets="$work/product-assets"
 mkdir -p "$product_assets/capsules"
 printf '%s\n' \
   aos-cli.capsule \
+  aos-mcp.capsule \
   aos-fs.capsule \
   aos-openai-compat.capsule \
   aos-skills.capsule \
@@ -33,11 +29,15 @@ schema-version = 1
 
 [distro]
 id = "unicity-ce"
-version = "2026.1.0"
+version = "2026.1.3"
 
 [[capsule]]
 name = "aos-cli"
 source = "capsules/aos-cli.capsule"
+
+[[capsule]]
+name = "aos-mcp"
+source = "capsules/aos-mcp.capsule"
 
 [[capsule]]
 name = "aos-fs"
@@ -55,7 +55,7 @@ source = "capsules/aos-skills.capsule"
 name = "aos-forge"
 source = "capsules/aos-forge.capsule"
 EOF
-for capsule in aos-cli aos-fs aos-openai-compat aos-skills aos-forge; do
+for capsule in aos-cli aos-mcp aos-fs aos-openai-compat aos-skills aos-forge; do
   printf 'signed product fixture for %s\n' "$capsule" \
     > "$product_assets/capsules/$capsule.capsule"
 done
@@ -64,7 +64,6 @@ write_fixture_checksums() {
   root=$1
   : > "$root/BLAKE3SUMS.txt"
   for asset in \
-    aos-mcp.capsule \
     claude-pack.toml codex-pack.toml grok-pack.toml \
     aos-oracle-plugins.tar.gz runtime-compatibility.toml
   do
@@ -83,9 +82,9 @@ cat > "$fake_bin/aos" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = --version ]; then
-  mkdir -p "$AOS_HOME/releases/2026.1.0"
-  cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.1.0/"
-  printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.1.0}"
+  mkdir -p "$AOS_HOME/releases/2026.1.3"
+  cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.1.3/"
+  printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.1.3}"
   exit 0
 fi
 printf 'aos' >> "$TEST_LOG"
@@ -347,9 +346,9 @@ if grep -Fq -- '--inherit-from' "$TEST_LOG"; then
   echo "oracle principal inherited another principal's state" >&2
   exit 1
 fi
-grep -Eq 'capsule install .*/aos-mcp\.capsule' "$TEST_LOG"
-grep -Eq 'capsule install .*/releases/2026\.1\.0/capsules/aos-skills\.capsule --yes$' "$TEST_LOG"
-grep -Eq 'capsule install .*/releases/2026\.1\.0/capsules/aos-forge\.capsule --yes$' "$TEST_LOG"
+grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-mcp\.capsule --yes$' "$TEST_LOG"
+grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-skills\.capsule --yes$' "$TEST_LOG"
+grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-forge\.capsule --yes$' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-skills' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-forge' "$TEST_LOG"
@@ -363,10 +362,8 @@ test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
 test -f "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
 grep -Fq 'source = "local"' "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
-grep -Fq 'name = "aos-mcp"' \
-  "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
-grep -Fq 'wasm-hash = "a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e"' \
-  "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
+test "$(cat "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml")" \
+  = 'schema-version = 1'
 test -f "$TEST_STATE/installed-codex-code-aos-mcp"
 test -f "$TEST_STATE/installed-codex-code-aos-skills"
 test -f "$TEST_STATE/installed-codex-code-aos-forge"
@@ -452,13 +449,13 @@ test "$(sed -n '2p' "$local_skills_state/installed-codex-code-aos-skills")" \
 minimal_assets="$work/minimal-assets"
 mkdir -p "$minimal_assets"
 for asset in \
-  aos-oracle-plugins.tar.gz runtime-compatibility.toml codex.toml aos-mcp.capsule
+  aos-oracle-plugins.tar.gz runtime-compatibility.toml codex.toml
 do
   cp "$assets/$asset" "$minimal_assets/$asset"
 done
 : > "$minimal_assets/BLAKE3SUMS.txt"
 for asset in \
-  aos-mcp.capsule codex-pack.toml \
+  codex-pack.toml \
   aos-oracle-plugins.tar.gz runtime-compatibility.toml
 do
   source_name=$asset
@@ -527,7 +524,7 @@ grok_start=$(wc -l < "$TEST_LOG")
 "$repo_root/install.sh" --host grok --yes --no-install-aos
 tail -n "+$((grok_start + 1))" "$TEST_LOG" > "$work/grok-only.log"
 cmp "$work/grok-before" "$legacy_grok"
-grep -Eq 'capsule install .*/aos-mcp\.capsule$' "$work/grok-only.log"
+grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-mcp\.capsule --yes$' "$work/grok-only.log"
 grep -Fq -- 'agent modify grok-code --add-capsule aos-mcp' "$work/grok-only.log"
 grep -Fq -- '--add-capsule aos-skills' "$work/grok-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/grok-only.log"
@@ -548,7 +545,7 @@ env -u ANTHROPIC_API_KEY \
   "$repo_root/install.sh" --host claude --yes --no-install-aos
 test -f "$AOS_HOME/extensions/oracles/claude/Pack.lock"
 tail -n "+$((claude_start + 1))" "$TEST_LOG" > "$work/claude-only.log"
-grep -Eq 'capsule install .*/aos-mcp\.capsule$' "$work/claude-only.log"
+grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-mcp\.capsule --yes$' "$work/claude-only.log"
 grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-skills' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/claude-only.log"
@@ -618,12 +615,12 @@ test ! -e "$exact_home/extensions/oracles/.install.lock"
 tampered_assets="$work/tampered-assets"
 mkdir -p "$tampered_assets"
 cp -R "$assets/." "$tampered_assets/"
-printf 'tampered\n' >> "$tampered_assets/aos-mcp.capsule"
+printf 'tampered\n' >> "$tampered_assets/codex.toml"
 tampered_home="$home/tampered/.aos"
 if AOS_HOME="$tampered_home" AOS_ORACLE_ASSETS="$tampered_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 then
-  echo "checksum-mismatched capsule unexpectedly installed" >&2
+  echo "checksum-mismatched pack unexpectedly installed" >&2
   exit 1
 fi
 test ! -e "$tampered_home/extensions/oracles/codex/Pack.lock"
@@ -823,7 +820,7 @@ for capsule in aos-mcp codex-install codex-runner aos-cli aos-fs user-capsule; d
 done
 
 if TEST_FAIL_PLUGIN=1 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.1.3 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
     --oracle-version 0.2.6
@@ -836,7 +833,7 @@ test -f "$legacy_state/granted-codex-code-aos-cli"
 test ! -e "$legacy_home/extensions/oracles/codex/releases/0.2.6"
 
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.1.3 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
     --oracle-version 0.2.6
@@ -850,8 +847,8 @@ test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
   = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
 test -f "$legacy_state/installed-codex-code-codex-install"
 test -f "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml"
-grep -Fq 'name = "aos-mcp"' \
-  "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml"
+test "$(cat "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml")" \
+  = 'schema-version = 1'
 if grep -Eq 'codex-(install|runner)|aos-(cli|fs)' \
   "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml"
 then
@@ -865,7 +862,7 @@ receipt_before=$(shasum -a 256 \
   "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml" \
   | awk '{print $1}')
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.1.1 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.1.3 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
     --oracle-version 0.2.6

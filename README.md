@@ -29,8 +29,8 @@ curl -fsSL https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh
 ```
 
 The installer is idempotent. It provisions a least-authority host principal,
-installs the exact signed oracle pack, grants that principal only the pack's
-capsules, and installs the host marketplace plugin. It writes product state
+installs the exact signed oracle pack, grants that principal only its selected
+AOS services, and installs the host marketplace plugin. It writes product state
 under `~/.aos`; it never imports or changes a standalone `~/.astrid` tree.
 
 ## Host packs
@@ -40,14 +40,16 @@ distributions.
 
 | Host | Principal | Oracle capsule | Selected AOS services |
 |---|---|---|---|
-| Claude Code | `claude-code` | `aos-mcp` | `aos-skills`, `aos-forge` when shipped |
-| Codex | `codex-code` | `aos-mcp` | `aos-skills`, `aos-forge` when shipped |
-| Grok Build | `grok-code` | `aos-mcp` | `aos-skills`, `aos-forge` when shipped |
+| Claude Code | `claude-code` | None | `aos-mcp`, `aos-skills`, `aos-forge` when shipped |
+| Codex | `codex-code` | None | `aos-mcp`, `aos-skills`, `aos-forge` when shipped |
+| Grok Build | `grok-code` | None | `aos-mcp`, `aos-skills`, `aos-forge` when shipped |
 
 The signed pack distinguishes Oracle-owned capsule assets from selected
 AOS-owned services. The installer resolves an `[[aos-capsule]]` only from the
 active signed AOS release, never downloads or republishes its bytes, and grants
-only the entries declared by the host pack. `aos-skills` makes skills written by
+only the entries declared by the host pack. The shared broker is now an AOS CE
+service; Oracles ships host adapters and no longer republishes `aos-mcp` bytes.
+`aos-skills` makes skills written by
 the host principal in its workspace or principal home discoverable over the
 bus. Forge serves version-matched authoring guidance as an ordinary tool, while
 the host plugin vendors compact trigger Skills for native session discovery.

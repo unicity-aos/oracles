@@ -10,11 +10,12 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EXPECTED = {
-    "claude": ["aos-mcp"],
-    "codex": ["aos-mcp"],
-    "grok": ["aos-mcp"],
+    "claude": [],
+    "codex": [],
+    "grok": [],
 }
 EXPECTED_AOS_CAPSULES = [
+    {"name": "aos-mcp", "availability": "required"},
     {"name": "aos-skills", "availability": "required"},
     {"name": "aos-forge", "availability": "if-present"},
 ]
@@ -29,7 +30,7 @@ class PackContractTests(unittest.TestCase):
             self.assertEqual(pack["host"], host)
             self.assertEqual(pack["principal"], f"{host}-code")
             self.assertEqual(pack["version"], "0.2.6")
-            capsules = value["capsule"]
+            capsules = value.get("capsule", [])
             self.assertEqual([item["name"] for item in capsules], expected)
             self.assertEqual(
                 [item["asset"] for item in capsules],
@@ -50,14 +51,14 @@ class PackContractTests(unittest.TestCase):
         for path in sorted((ROOT / "packs").glob("*.toml")):
             value = tomllib.loads(path.read_text())
             self.assertNotIn("distro", value)
-            names = {item["name"] for item in value["capsule"]}
+            names = {item["name"] for item in value.get("capsule", [])}
             self.assertNotIn("astrid-capsule-cli", names)
             self.assertNotIn("astrid-capsule-system", names)
             self.assertNotIn("astrid-capsule-forge", names)
             self.assertFalse(any(name.endswith(("-install", "-runner")) for name in names))
             self.assertEqual(
                 {item["name"] for item in value["aos-capsule"]},
-                {"aos-skills", "aos-forge"},
+                {"aos-mcp", "aos-skills", "aos-forge"},
             )
 
 

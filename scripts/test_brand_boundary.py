@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import tomllib
 import unittest
 
 
@@ -170,16 +171,16 @@ class BrandBoundaryTests(unittest.TestCase):
             ]
             self.assertNotIn(".astrid", "\n".join(active_lines), str(path.relative_to(ROOT)))
 
-    def test_aos_broker_preserves_the_neutral_engine_wire(self) -> None:
-        identity = (ROOT / "crates/oracle-core/src/identity.rs").read_text()
-        self.assertIn('CapsuleName("aos-mcp")', identity)
-        self.assertNotIn('CapsuleName("astrid-mcp")', identity)
-        self.assertIn('Topic("astrid.v1.tools.list")', identity)
-        self.assertIn('McpNamespace("aos")', identity)
-        self.assertIn('McpToolPrefix("mcp__aos__")', identity)
-        manifest = (ROOT / "crates/aos-mcp/Capsule.toml").read_text()
-        self.assertIn("@unicity-astrid/wit/", manifest)
-        self.assertNotIn("@astrid-runtime/wit/", manifest)
+    def test_aos_broker_is_a_product_dependency_not_an_oracle_asset(self) -> None:
+        self.assertFalse((ROOT / "crates/oracle-broker").exists())
+        self.assertFalse((ROOT / "crates/aos-mcp").exists())
+        for pack in (ROOT / "packs").glob("*.toml"):
+            value = tomllib.loads(pack.read_text())
+            self.assertNotIn("capsule", value)
+            self.assertIn(
+                {"name": "aos-mcp", "availability": "required"},
+                value["aos-capsule"],
+            )
 
 
 if __name__ == "__main__":

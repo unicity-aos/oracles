@@ -426,7 +426,7 @@ principal_for() {
 
 capsules_for() {
   case "$1" in
-    claude|codex|grok) printf '%s\n' aos-mcp ;;
+    claude|codex|grok) : ;;
   esac
 }
 
@@ -438,6 +438,7 @@ aos_capsules_for() {
   case "$1" in
     claude|codex|grok)
       printf '%s\n' \
+        'aos-mcp required' \
         'aos-skills required' \
         'aos-forge if-present'
       ;;
@@ -735,7 +736,6 @@ validate_checksum_manifest() {
   fi
   while IFS= read -r name; do
     case "$name" in
-      aos-mcp.capsule|\
       claude-pack.toml|codex-pack.toml|grok-pack.toml|\
       aos-oracle-plugins.tar.gz|runtime-compatibility.toml) ;;
       *) die "release checksum manifest names an unknown asset: $name" ;;
@@ -956,13 +956,23 @@ resolve_aos_capsules() {
   RESOLVED_AOS_CAPSULES="$WORK/resolved-$rac_principal.aos-capsules"
   : > "$RESOLVED_AOS_CAPSULES"
 
+  # Validate the complete required set before installing or granting any of
+  # it. A partially compatible product release must not leave a half-applied
+  # host principal when a later dependency is missing.
+  while read -r rac_name rac_availability rac_extra; do
+    [ -n "$rac_name" ] || continue
+    [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
+    if [ "$rac_availability" = required ] \
+      && ! aos_release_has_capsule "$rac_name" "$rac_release"
+    then
+      die "installed Unicity AOS $ACTIVE_AOS_VERSION is missing required capsule '$rac_name'"
+    fi
+  done < "$CURRENT_AOS_CAPSULES"
+
   while read -r rac_name rac_availability rac_extra; do
     [ -n "$rac_name" ] || continue
     [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
     if ! aos_release_has_capsule "$rac_name" "$rac_release"; then
-      if [ "$rac_availability" = required ]; then
-        die "installed Unicity AOS $ACTIVE_AOS_VERSION is missing required capsule '$rac_name'"
-      fi
       say "AOS capsule '$rac_name' is unavailable in Unicity AOS $ACTIVE_AOS_VERSION; continuing without it."
       continue
     fi
@@ -1056,11 +1066,13 @@ install_pack() {
   while read -r previous_name previous_hash previous_extra; do
     [ -n "$previous_name" ] || continue
     [ -z "${previous_extra:-}" ] || die "invalid previous ownership state"
-    if ! binding_hash "$CURRENT_PACK_BINDINGS" "$previous_name" >/dev/null 2>&1; then
+    if ! binding_hash "$CURRENT_PACK_BINDINGS" "$previous_name" >/dev/null 2>&1 \
+      && ! grep -Fqx "$previous_name" "$RESOLVED_AOS_CAPSULES"
+    then
       append_binding "$OBSOLETE_BINDINGS" "$previous_name" "$previous_hash"
     fi
   done < "$PREVIOUS_BINDINGS"
-  say "✓ $host oracle capsules ready as $principal"
+  say "✓ $host oracle integration ready as $principal"
 }
 
 reconcile_obsolete_bindings() {

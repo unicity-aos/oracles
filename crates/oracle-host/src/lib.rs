@@ -9,8 +9,8 @@
 //! - [`mode`] — shared `InteractionMode`
 //! - [`topics`] — host-scoped bus topic builders
 //!
-//! The MCP broker lives in `oracle-broker` / `aos-mcp`. This crate is
-//! everything **around** the broker that a host plugin still needs.
+//! The MCP broker lives in AOS CE. This crate is everything at the host edge
+//! that an Oracle plugin still needs.
 
 #![deny(unsafe_code)]
 #![deny(clippy::all)]

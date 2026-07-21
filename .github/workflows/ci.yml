@@ -64,7 +64,6 @@ jobs:
       - name: Build all capsule crates
         run: |
           cargo build --locked --release \
-            -p aos-mcp \
             -p claude-runner -p claude-install -p claude-completion \
             -p codex-runner -p codex-install
 

@@ -9,6 +9,8 @@
 use astrid_sdk::prelude::*;
 use oracle_broker::handlers;
 
+mod host_hooks;
+
 /// Unicity AOS MCP broker capsule over the Astrid runtime wire.
 #[derive(Default)]
 pub struct AosMcp;
@@ -19,6 +21,34 @@ fn ensure_identity() {
 
 #[capsule]
 impl AosMcp {
+    /// Token-validated hook ingress from the Codex plugin.
+    #[astrid::interceptor("handle_codex_hook")]
+    pub fn handle_codex_hook(&self, payload: serde_json::Value) -> Result<(), SysError> {
+        ensure_identity();
+        host_hooks::handle("codex", payload)
+    }
+
+    /// Token-validated hook ingress from the Claude plugin.
+    #[astrid::interceptor("handle_claude_hook")]
+    pub fn handle_claude_hook(&self, payload: serde_json::Value) -> Result<(), SysError> {
+        ensure_identity();
+        host_hooks::handle("claude", payload)
+    }
+
+    /// Token-validated hook ingress from the Grok plugin.
+    #[astrid::interceptor("handle_grok_hook")]
+    pub fn handle_grok_hook(&self, payload: serde_json::Value) -> Result<(), SysError> {
+        ensure_identity();
+        host_hooks::handle("grok", payload)
+    }
+
+    /// Relay a validated bridge response to the exact authenticated host call.
+    #[astrid::interceptor("relay_host_hook_response")]
+    pub fn relay_host_hook_response(&self, payload: serde_json::Value) -> Result<(), SysError> {
+        ensure_identity();
+        host_hooks::relay_response(payload)
+    }
+
     /// astrid.v1.tools.describe
     #[astrid::interceptor("describe_tools")]
     pub fn describe_tools(&self, payload: serde_json::Value) -> Result<(), SysError> {

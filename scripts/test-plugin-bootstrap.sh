@@ -38,8 +38,9 @@ case " ${*:-} " in
       && printf '%s\n' 'Update available: Unicity AOS 2026.1.0 -> 2026.1.1. Run `aos update` to install.'
     exit 0
     ;;
-  *" emit --topic "*)
+  *" hook --host codex "*)
     pwd -P > "$TEST_HOOK_AOS_CWD"
+    printf '%s\n' "$*" > "$TEST_HOOK_ARGS"
     cat > "$TEST_HOOK_PAYLOAD"
     ;;
   *) exit 0 ;;
@@ -129,6 +130,7 @@ test "$(wc -l < "$log" | tr -d ' ')" = 1
 project="$work/user-project"
 hook_payload="$work/hook-payload.json"
 hook_aos_cwd="$work/hook-aos-cwd"
+hook_args="$work/hook-args"
 mkdir -p "$project"
 (cd "$project" && printf '%s\n' '{"session_id":"release-smoke"}' | env -i \
   PATH=/usr/bin:/bin \
@@ -136,18 +138,26 @@ mkdir -p "$project"
   AOS_HOME="$home/.aos" \
   AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
   TEST_INSTALL_LOG="$log" \
+  TEST_HOOK_ARGS="$hook_args" \
   TEST_HOOK_PAYLOAD="$hook_payload" \
   TEST_HOOK_AOS_CWD="$hook_aos_cwd" \
   "$repo_root/plugins/unicity-aos/bin/aos-up" codex hook user_prompt_submit)
-python3 - "$hook_payload" "$project" "$hook_aos_cwd" "$home/.aos/runtime" <<'PY'
-import base64
+project_physical=$(cd "$project" && pwd -P)
+expected_workspace="cwd-$(printf '%s\n' "$project_physical" | cksum | sed 's/ .*//')"
+python3 - "$hook_payload" "$hook_args" "$expected_workspace" "$hook_aos_cwd" "$home/.aos/runtime" <<'PY'
 import json
 from pathlib import Path
 import sys
 
 payload = json.loads(Path(sys.argv[1]).read_text())
-assert base64.b64decode(payload["cwd_b64"]).decode().strip() == str(Path(sys.argv[2]).resolve())
-assert Path(sys.argv[3]).read_text().strip() == str(Path(sys.argv[4]).resolve())
+assert payload == {"session_id": "release-smoke"}
+args = Path(sys.argv[2]).read_text().strip()
+assert args.startswith("--principal codex-code hook --host codex "), args
+assert "--session codex-release-smoke" in args, args
+assert "--event user_prompt_submit" in args, args
+assert f"--workspace {sys.argv[3]}" in args, args
+assert " emit " not in f" {args} ", args
+assert Path(sys.argv[4]).read_text().strip() == str(Path(sys.argv[5]).resolve())
 PY
 
 # The startup update nudge checks only the AOS channel, is cached, and never

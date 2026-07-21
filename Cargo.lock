@@ -13,6 +13,7 @@ name = "aos-mcp"
 version = "0.1.0"
 dependencies = [
  "astrid-sdk",
+ "blake3",
  "oracle-broker",
  "oracle-core",
  "serde",

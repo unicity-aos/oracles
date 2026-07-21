@@ -36,6 +36,80 @@ def launch(environment: dict[str, str], plugin: Path = PLUGIN) -> subprocess.Com
     )
 
 
+def exercise_hook_adapter(root: Path) -> None:
+    home = root / "hook-home" / ".aos"
+    workspace = root / "hook-workspace"
+    plugin_data = root / "hook-plugin-data"
+    fake_aos = root / "hook-bin" / "aos"
+    args_log = root / "hook-args"
+    token_log = root / "hook-tokens"
+    payload_log = root / "hook-payload"
+    workspace.mkdir()
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'printf "%s\\n" "$*" >> "$TEST_HOOK_ARGS"\n'
+        'printf "%s\\n" "$ASTRID_HOOK_TOKEN" >> "$TEST_HOOK_TOKENS"\n'
+        'cat > "$TEST_HOOK_PAYLOAD"\n'
+        'printf "%s\\n" "private same-turn context"\n',
+    )
+    environment = {
+        "HOME": str(root / "hook-home"),
+        "AOS_HOME": str(home),
+        "AOS_BIN": str(fake_aos),
+        "AOS_PLUGIN_ROOT": str(PLUGIN),
+        "CODEX_PLUGIN_ROOT": str(PLUGIN),
+        "PLUGIN_ROOT": str(PLUGIN),
+        "CODEX_PLUGIN_DATA": str(plugin_data),
+        "ASTRID_PRINCIPAL_ID": "codex-code",
+        "ASTRID_CODEX_HOOK_FAIL_CLOSED": "1",
+        "PATH": "/usr/bin:/bin",
+        "TEST_HOOK_ARGS": str(args_log),
+        "TEST_HOOK_TOKENS": str(token_log),
+        "TEST_HOOK_PAYLOAD": str(payload_log),
+        "TMPDIR": str(root),
+    }
+    payload = json.dumps(
+        {"session_id": "hook-session", "turn_id": "turn-one", "prompt": "hello"}
+    )
+    command = [str(PLUGIN / "bin/aos-up"), "codex", "hook", "user_prompt_submit"]
+    for _ in range(2):
+        result = subprocess.run(
+            command,
+            cwd=workspace,
+            env=environment,
+            input=payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+        assert result.stderr == "", result.stderr
+        hook_output = json.loads(result.stdout)["hookSpecificOutput"]
+        assert hook_output == {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "private same-turn context",
+        }
+
+    invocations = args_log.read_text().splitlines()
+    assert len(invocations) == 2, invocations
+    assert all(
+        invocation.startswith(
+            "--principal codex-code hook --host codex --session codex-hook-session "
+            "--event user_prompt_submit --workspace cwd-"
+        )
+        for invocation in invocations
+    ), invocations
+    assert all(" emit " not in f" {invocation} " for invocation in invocations)
+    tokens = token_log.read_text().splitlines()
+    assert len(tokens) == 2 and tokens[0] == tokens[1], tokens
+    assert 32 <= len(tokens[0]) <= 128 and tokens[0].isalnum(), tokens[0]
+    assert json.loads(payload_log.read_text()) == json.loads(payload)
+
+
 def main() -> None:
     assert SERVER["command"] == "/bin/sh"
     assert SERVER["args"] == ["./bin/aos-up", "--principal", "codex-code"]
@@ -132,6 +206,7 @@ def main() -> None:
         assert generated["startup_timeout_sec"] == SERVER["startup_timeout_sec"]
         assert generated["env_vars"] == SERVER["env_vars"]
         assert generated["env"] == {"AOS_BIN": str(home / "bin/aos")}
+        exercise_hook_adapter(root)
 
 
 if __name__ == "__main__":

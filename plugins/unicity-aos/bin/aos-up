@@ -129,18 +129,6 @@ topic_segment() {
   printf '%s' "$1" | sed 's/[^A-Za-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//'
 }
 
-json_id() {
-  printf '%s' "$1" | sed 's/[^A-Za-z0-9._:-]/-/g'
-}
-
-base64_file() {
-  base64 <"$1" | tr -d '\n'
-}
-
-base64_stream() {
-  base64 | tr -d '\n'
-}
-
 principal_id() {
   candidate="${1:-${ASTRID_PRINCIPAL_ID:-codex-code}}"
   candidate="$(topic_segment "$candidate")"
@@ -172,7 +160,82 @@ mint_hook_token() {
     uuidgen | tr -d '-'
     return
   fi
-  printf '%s' "$(date +%s)-$$"
+  echo "aos-up: openssl or uuidgen is required to create a hook route" >&2
+  return 1
+}
+
+json_escape() {
+  printf '%s' "$1" \
+    | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+    | awk 'NR>1{printf "\\n"} {printf "%s", $0}'
+}
+
+hook_token_dir() {
+  printf '%s\n' "${CODEX_PLUGIN_DATA:-${PLUGIN_DATA:-$AOS_HOME_DIR/cache/oracles/hooks}}/codex"
+}
+
+hook_token() {
+  session_id="$1"
+  token_dir="$(hook_token_dir)"
+  old_umask=$(umask)
+  umask 077
+  mkdir -p "$token_dir"
+  chmod 700 "$token_dir"
+  token_file="$token_dir/$session_id.token"
+  token_lock="$token_file.lock"
+  tries=0
+  while ! mkdir "$token_lock" 2>/dev/null; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 100 ] || {
+      umask "$old_umask"
+      echo "aos-up: timed out acquiring the Codex hook route" >&2
+      return 1
+    }
+    sleep 0.01
+  done
+
+  token=""
+  if [ -f "$token_file" ] && [ ! -L "$token_file" ]; then
+    IFS= read -r token < "$token_file" || token=""
+  fi
+  if ! printf '%s\n' "$token" | grep -Eq '^[A-Fa-f0-9]{32,128}$'; then
+    token=$(mint_hook_token) || {
+      rmdir "$token_lock" 2>/dev/null || true
+      umask "$old_umask"
+      return 1
+    }
+    temporary="$token_file.$$"
+    printf '%s\n' "$token" > "$temporary"
+    chmod 600 "$temporary"
+    mv "$temporary" "$token_file"
+  fi
+  rmdir "$token_lock" 2>/dev/null || true
+  umask "$old_umask"
+  printf '%s' "$token"
+}
+
+retire_hook_token() {
+  token_file="$(hook_token_dir)/$1.token"
+  [ -f "$token_file" ] && [ ! -L "$token_file" ] && rm -f "$token_file"
+  return 0
+}
+
+render_hook_context() {
+  event="$1"
+  context="$2"
+  [ -n "$context" ] || return 0
+  case "$event" in
+    user_prompt_submit) hook_name=UserPromptSubmit ;;
+    session_start) hook_name=SessionStart ;;
+    *) return 0 ;;
+  esac
+  if command -v jq >/dev/null 2>&1; then
+    jq -n --arg event "$hook_name" --arg context "$context" \
+      '{hookSpecificOutput:{hookEventName:$event,additionalContext:$context}}'
+  else
+    printf '{"hookSpecificOutput":{"hookEventName":"%s","additionalContext":"%s"}}\n' \
+      "$hook_name" "$(json_escape "$context")"
+  fi
 }
 
 parent_codex_pid() {
@@ -242,31 +305,26 @@ emit_hook() {
   principal="$(principal_id)"
   session_id="$(derive_session_id "$tmp")"
   workspace_id="$(derive_workspace_id)"
-  token="${ASTRID_HOOK_TOKEN:-$(mint_hook_token)}"
-  payload_b64="$(base64_file "$tmp")"
-  cwd_b64="$(printf '%s\n' "$HOST_WORKSPACE" | base64_stream)"
-  workspace_json=null
-  if [ -n "$workspace_id" ]; then
-    workspace_json="\"$workspace_id\""
+  if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
+    token="$ASTRID_HOOK_TOKEN"
+  else
+    token=$(hook_token "$session_id") || return 1
   fi
-
-  envelope="$(printf '{"schema_version":1,"principal_id":"%s","session_id":"%s","event":"%s","workspace_id":%s,"pid":%s,"ppid":%s,"payload_b64":"%s","cwd_b64":"%s","token":"%s","transport":"codex-plugin"}' \
-    "$(json_id "$principal")" \
-    "$session_id" \
-    "$event" \
-    "$workspace_json" \
-    "$$" \
-    "${PPID:-0}" \
-    "$payload_b64" \
-    "$cwd_b64" \
-    "$(json_id "$token")")"
-
-  topic="codex.v1.hook.$session_id.$event"
+  context=""
+  if context=$(ASTRID_HOOK_TOKEN="$token" "$AOS" --principal "$principal" hook \
+      --host codex --session "$session_id" --event "$event" \
+      --workspace "$workspace_id" < "$tmp" 2>/dev/null); then
+    render_hook_context "$event" "$context"
+    case "$event" in
+      stop|session_end) retire_hook_token "$session_id" ;;
+    esac
+    return 0
+  fi
   if [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}" = "1" ]; then
-    printf '%s' "$envelope" | "$AOS" --principal "$principal" emit --topic "$topic" --stdin
-    return $?
+    echo "aos-up: AOS rejected the Codex hook" >&2
+    return 1
   fi
-  printf '%s' "$envelope" | "$AOS" --principal "$principal" emit --topic "$topic" --stdin >/dev/null 2>&1 || true
+  return 0
 }
 
 launch_codex() {

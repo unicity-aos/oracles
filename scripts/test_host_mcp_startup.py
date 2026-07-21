@@ -132,6 +132,80 @@ def assert_success(process: subprocess.Popen[str]) -> None:
     assert stderr == "", stderr
 
 
+def exercise_hook_adapter(host: str, root: Path) -> None:
+    spec = HOSTS[host]
+    test_root = root / f"{host}-hook"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    plugin_data = test_root / "plugin-data"
+    fake_aos = test_root / "bin" / "aos"
+    args_log = test_root / "hook-args"
+    token_log = test_root / "hook-tokens"
+    payload_log = test_root / "hook-payload"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'printf "%s\\n" "$*" >> "$TEST_HOOK_ARGS"\n'
+        'printf "%s\\n" "$ASTRID_HOOK_TOKEN" >> "$TEST_HOOK_TOKENS"\n'
+        'cat > "$TEST_HOOK_PAYLOAD"\n'
+        'printf "%s\\n" "private same-turn context"\n',
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_HOME": str(home),
+        "AOS_BIN": str(fake_aos),
+        "AOS_HOST": host,
+        "AOS_PLUGIN_ROOT": str(ROOT / f"plugins/{host}"),
+        str(spec["root_var"]): str(ROOT / f"plugins/{host}"),
+        "PLUGIN_DATA": str(plugin_data),
+        "ASTRID_PRINCIPAL_ID": str(spec["principal"]),
+        "ASTRID_HOST_HOOK_FAIL_CLOSED": "1",
+        "PATH": "/usr/bin:/bin",
+        "TEST_HOOK_ARGS": str(args_log),
+        "TEST_HOOK_TOKENS": str(token_log),
+        "TEST_HOOK_PAYLOAD": str(payload_log),
+        "TMPDIR": str(test_root),
+    }
+    payload = json.dumps(
+        {"session_id": "hook-session", "turn_id": "turn-one", "prompt": "hello"}
+    )
+    command = [str(ROOT / f"plugins/{host}/bin/aos-up"), "hook", "user_prompt_submit"]
+    for _ in range(2):
+        result = subprocess.run(
+            command,
+            cwd=workspace,
+            env=environment,
+            input=payload,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+        assert result.stderr == "", result.stderr
+        hook_output = json.loads(result.stdout)["hookSpecificOutput"]
+        assert hook_output == {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "private same-turn context",
+        }
+
+    invocations = args_log.read_text().splitlines()
+    assert len(invocations) == 2, invocations
+    expected = (
+        f"--principal {spec['principal']} hook --host {host} "
+        f"--session {host}-hook-session --event user_prompt_submit --workspace cwd-"
+    )
+    assert all(invocation.startswith(expected) for invocation in invocations), invocations
+    assert all(" emit " not in f" {invocation} " for invocation in invocations)
+    tokens = token_log.read_text().splitlines()
+    assert len(tokens) == 2 and tokens[0] == tokens[1], tokens
+    assert 32 <= len(tokens[0]) <= 128 and tokens[0].isalnum(), tokens[0]
+    assert json.loads(payload_log.read_text()) == json.loads(payload)
+
+
 def exercise_host(host: str, root: Path) -> None:
     spec = HOSTS[host]
     server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
@@ -640,6 +714,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="aos-host-mcp-") as raw:
         root = Path(raw)
         for host in HOSTS:
+            exercise_hook_adapter(host, root)
             exercise_host(host, root)
             exercise_blank_slate_bootstrap(host, root)
             exercise_doctor_waits_for_concurrent_bootstrap(host, root)

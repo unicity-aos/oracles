@@ -10,6 +10,26 @@
             "statusMessage": "Setting up Unicity AOS for Claude"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/aos-up hook session_start",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/aos-up hook user_prompt_submit",
+            "timeout": 15
+          }
+        ]
       }
     ]
   }

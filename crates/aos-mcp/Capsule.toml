@@ -47,6 +47,16 @@ policy_rules = { type = "string", default = "", request = "Per-principal policy 
 # host agent calls directly; there is no `astrid.v1.tool.call.*`
 # agent-runner leg (it would double-execute against the broker).
 [subscribe]
+# Authenticated host shims enter through the same kernel-recognized request
+# plane as MCP. aos-mcp validates the kernel-stamped principal plus the
+# session token before releasing a token-free event onto the internal bus.
+"astrid.v1.request.mcp.hook.codex" = { wit = "opaque", handler = "handle_codex_hook" }
+"astrid.v1.request.mcp.hook.claude" = { wit = "opaque", handler = "handle_claude_hook" }
+"astrid.v1.request.mcp.hook.grok" = { wit = "opaque", handler = "handle_grok_hook" }
+# The hook bridge answers on an internal delivery topic. aos-mcp revalidates
+# its principal/session/secret-derived route, then relays it to the exact
+# `astrid.v1.response.<delivery>` topic awaited by the originating uplink.
+"oracle.v1.hook.response.*" = { wit = "opaque", handler = "relay_host_hook_response" }
 "astrid.v1.tools.describe" = { wit = "opaque", handler = "describe_tools" }
 "tool.v1.response.describe.*" = { wit = "@unicity-astrid/wit/tool/describe-response", handler = "collect_tool_descriptors" }
 # Capsule-set change signal. The kernel publishes `astrid.v1.capsules_loaded`
@@ -122,6 +132,7 @@ policy_rules = { type = "string", default = "", request = "Per-principal policy 
 "hook.v1.event.before_tool_call" = { wit = "opaque", handler = "handle_before_tool_call" }
 
 [publish]
+"oracle.v1.hook.validated.*" = "opaque"
 "astrid.v1.tools.list" = "opaque"
 # Policy-gate audits emitted at the broker. The in-process `mcp__aos__*`
 # gate emits `astrid.v1.audit.policy_deny` (a tool call refused by a rule) and

@@ -16,7 +16,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
@@ -27,7 +27,7 @@ jobs:
     name: Clippy (host)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
@@ -40,7 +40,7 @@ jobs:
     name: Test (host)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
@@ -55,7 +55,7 @@ jobs:
     name: Build (wasm capsules)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.94.0"
@@ -71,7 +71,7 @@ jobs:
     name: Plugin shell syntax
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: sh -n wrappers and common scripts
         run: |
           set -euo pipefail
@@ -220,7 +220,7 @@ jobs:
     name: AOS product contracts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'

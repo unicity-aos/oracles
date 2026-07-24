@@ -4,9 +4,10 @@
       "command": "/bin/sh",
       "args": [
         "-c",
-        "set -eu; if [ -n \"${AOS_BIN:-}\" ]; then aos=$AOS_BIN; elif [ -n \"${AOS_BIN_ROOT:-}\" ]; then aos=$AOS_BIN_ROOT/aos; elif [ -x \"${AOS_HOME:-$HOME/.aos}/bin/aos\" ]; then aos=${AOS_HOME:-$HOME/.aos}/bin/aos; else aos=$(command -v aos); fi; exec \"$aos\" --principal codex-code mcp serve"
+        "set -eu; if [ -n \"${AOS_BIN:-}\" ]; then aos=$AOS_BIN; elif [ -n \"${AOS_BIN_ROOT:-}\" ]; then aos=$AOS_BIN_ROOT/aos; elif [ -x \"${AOS_HOME:-$HOME/.aos}/bin/aos\" ]; then aos=${AOS_HOME:-$HOME/.aos}/bin/aos; else aos=$(command -v aos); fi; exec \"$aos\" --principal codex-code mcp serve --request-timeout 1d5m"
       ],
       "startup_timeout_sec": 305,
+      "tool_timeout_sec": 86100,
       "env_vars": [
         "AOS_HOME",
         "AOS_BIN",

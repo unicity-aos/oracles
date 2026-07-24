@@ -114,7 +114,11 @@ def exercise_hook_adapter(root: Path) -> None:
 def main() -> None:
     assert SERVER["command"] == "/bin/sh"
     assert SERVER["args"][0] == "-c"
-    assert "exec \"$aos\" --principal codex-code mcp serve" in SERVER["args"][1]
+    assert (
+        "exec \"$aos\" --principal codex-code mcp serve --request-timeout 1d5m"
+        in SERVER["args"][1]
+    )
+    assert SERVER["tool_timeout_sec"] == 86_100
     assert "cwd" not in SERVER
     assert SERVER["env_vars"] == ["AOS_HOME", "AOS_BIN", "AOS_BIN_ROOT"]
 
@@ -133,7 +137,7 @@ def main() -> None:
             "set -eu\n"
             'pwd -P > "$TEST_AOS_CWD"\n'
             'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
-            '[ "$*" = "--principal codex-code mcp serve" ] || exit 91\n'
+            '[ "$*" = "--principal codex-code mcp serve --request-timeout 1d5m" ] || exit 91\n'
             'printf "%s\\n" mcp-ready\n',
         )
 
@@ -152,7 +156,7 @@ def main() -> None:
         assert first.stdout == "mcp-ready\n", first.stdout
         assert first.stderr == "", first.stderr
         assert aos_log.read_text().splitlines() == [
-            "--principal codex-code mcp serve",
+            "--principal codex-code mcp serve --request-timeout 1d5m",
         ]
         assert Path(aos_cwd.read_text().strip()) == workspace.resolve()
 
@@ -180,6 +184,7 @@ def main() -> None:
         assert generated["args"] == SERVER["args"]
         assert "cwd" not in generated
         assert generated["startup_timeout_sec"] == SERVER["startup_timeout_sec"]
+        assert generated["tool_timeout_sec"] == SERVER["tool_timeout_sec"]
         assert generated["env_vars"] == SERVER["env_vars"]
         assert generated["env"] == {"AOS_BIN": str(fake_aos)}
 

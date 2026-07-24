@@ -19,9 +19,11 @@ use oracle_host::{
 
 /// Artifact shape for managed `.codex/` files.
 ///
+/// v5: MCP tool and request deadlines admit one bounded foreground job up to
+/// the runtime's principal limit.
 /// v4: SessionStart doctor prefers the Codex plugin `bin/aos-doctor` (update
 /// clocks). The neutral runtime doctor has no `--format hook` equivalent.
-const ARTIFACT_VERSION: u32 = 4;
+const ARTIFACT_VERSION: u32 = 5;
 
 struct CodexLayout;
 
@@ -35,12 +37,12 @@ hooks = true
 
 [mcp_servers.aos]
 command = "aos"
-args = ["--principal", "{}", "mcp", "serve"]
+args = ["--principal", "{}", "mcp", "serve", "--request-timeout", "1d5m"]
 enabled = true
 required = true
 default_tools_approval_mode = "prompt"
 startup_timeout_sec = 20
-tool_timeout_sec = 600
+tool_timeout_sec = 86100
 "#,
         principal.as_str()
     )
@@ -127,8 +129,11 @@ mod tests {
                 Some("codex-code"),
                 Some("mcp"),
                 Some("serve"),
+                Some("--request-timeout"),
+                Some("1d5m"),
             ]
         );
+        assert_eq!(server["tool_timeout_sec"].as_integer(), Some(86_100));
     }
 }
 

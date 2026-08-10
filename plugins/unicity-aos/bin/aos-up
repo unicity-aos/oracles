@@ -316,7 +316,7 @@ emit_hook() {
       --workspace "$workspace_id" < "$tmp" 2>/dev/null); then
     render_hook_context "$event" "$context"
     case "$event" in
-      stop|session_end) retire_hook_token "$session_id" ;;
+      session_end) retire_hook_token "$session_id" ;;
     esac
     return 0
   fi

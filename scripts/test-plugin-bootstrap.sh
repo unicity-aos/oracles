@@ -125,6 +125,21 @@ assert "starts on MCP connect" in context
 PY
 test "$(wc -l < "$log" | tr -d ' ')" = 1
 
+python3 - "$repo_root/plugins/unicity-aos/hooks/hooks.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+hooks = json.loads(Path(sys.argv[1]).read_text())["hooks"]
+
+def command(event):
+    return hooks[event][0]["hooks"][0]["command"]
+
+assert "hook user_prompt_submit" in command("UserPromptSubmit")
+assert "hook stop" in command("Stop")
+assert "hook session_end" in command("SessionEnd")
+PY
+
 # Runtime IPC always uses the product workspace, but hook context retains the
 # actual Codex project so capsules receive the host's real working directory.
 project="$work/user-project"
@@ -159,6 +174,31 @@ assert f"--workspace {sys.argv[3]}" in args, args
 assert " emit " not in f" {args} ", args
 assert Path(sys.argv[4]).read_text().strip() == str(Path(sys.argv[5]).resolve())
 PY
+
+route_token="$home/.aos/cache/oracles/hooks/codex/codex-release-smoke.token"
+test -f "$route_token"
+(cd "$project" && printf '%s\n' '{"session_id":"release-smoke","last_assistant_message":"done"}' | env -i \
+  PATH=/usr/bin:/bin \
+  HOME="$home" \
+  AOS_HOME="$home/.aos" \
+  AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
+  TEST_INSTALL_LOG="$log" \
+  TEST_HOOK_ARGS="$hook_args" \
+  TEST_HOOK_PAYLOAD="$hook_payload" \
+  TEST_HOOK_AOS_CWD="$hook_aos_cwd" \
+  "$repo_root/plugins/unicity-aos/bin/aos-up" codex hook stop)
+test -f "$route_token"
+(cd "$project" && printf '%s\n' '{"session_id":"release-smoke"}' | env -i \
+  PATH=/usr/bin:/bin \
+  HOME="$home" \
+  AOS_HOME="$home/.aos" \
+  AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
+  TEST_INSTALL_LOG="$log" \
+  TEST_HOOK_ARGS="$hook_args" \
+  TEST_HOOK_PAYLOAD="$hook_payload" \
+  TEST_HOOK_AOS_CWD="$hook_aos_cwd" \
+  "$repo_root/plugins/unicity-aos/bin/aos-up" codex hook session_end)
+test ! -e "$route_token"
 
 # The startup update nudge checks only the AOS channel, is cached, and never
 # invokes a host plugin command.

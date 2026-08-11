@@ -131,6 +131,17 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook session_end",
+            "timeout": 15
+          }
+        ]
+      }
     ]
   }
 }

@@ -737,9 +737,9 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "uuid"
-version = "1.23.4"
+version = "1.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf80a72845275afea99e7f2b434723d3bc7e38470fcd1c7ed39a599c73319a53"
+checksum = "2cefc03fd367c0c6d4305de1b312cf00248c4114f4a0418ce6a6af769e3b0bd9"
 dependencies = [
  "getrandom",
  "js-sys",
@@ -751,9 +751,9 @@ dependencies = [
 
 [[package]]
 name = "uuid-rng-internal"
-version = "1.23.4"
+version = "1.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13ab16e069e7562ecbdfa2e7858097deff01e13284d62921b6db087d0d66dd76"
+checksum = "bbb6e4d912010d7646ef4e5a0ba89bafc6d9f8fd617c53433fe2aa86d26a3b77"
 dependencies = [
  "getrandom",
 ]

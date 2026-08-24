@@ -5,9 +5,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${GROK_PLUGIN_ROOT}\"/bin/aos-doctor --format hook",
-            "timeout": 300,
-            "statusMessage": "Setting up Unicity AOS for Grok"
+            "command": "\"${GROK_PLUGIN_ROOT}\"/bin/aos-up grok ready --format hook",
+            "timeout": 15,
+            "statusMessage": "Checking Unicity AOS readiness"
           }
         ]
       },
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"/bin/aos-up hook session_start",
+            "command": "\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"/bin/aos-up grok session-start",
             "timeout": 15
           }
         ]

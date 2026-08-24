@@ -1,8 +1,18 @@
 {
   "mcpServers": {
     "aos": {
-      "command": "${GROK_PLUGIN_ROOT}/bin/aos-up",
-      "args": ["--principal", "grok-code"],
+      "command": "/bin/sh",
+      "args": [
+        "-c",
+        "set -eu; workspace=$PWD; runtime=${AOS_HOME:-$HOME/.aos}/runtime; if [ -n \"${AOS_BIN:-}\" ]; then aos=$AOS_BIN; elif [ -n \"${AOS_BIN_ROOT:-}\" ]; then aos=$AOS_BIN_ROOT/aos; elif [ -x \"${AOS_HOME:-$HOME/.aos}/bin/aos\" ]; then aos=${AOS_HOME:-$HOME/.aos}/bin/aos; else aos=$(command -v aos); fi; cd \"$runtime\"; if [ \"${AOS_MCP_MODE:-gateway}\" = per-session ]; then exec \"$aos\" --principal grok-code mcp serve --workspace \"$workspace\" --request-timeout 1d5m; fi; exec \"$aos\" --principal grok-code mcp attach --workspace \"$workspace\""
+      ],
+      "startup_timeout_sec": 5,
+      "env_vars": [
+        "AOS_HOME",
+        "AOS_BIN",
+        "AOS_BIN_ROOT",
+        "AOS_MCP_MODE"
+      ],
       "env": {}
     }
   }

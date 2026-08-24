@@ -73,16 +73,15 @@ write_mcp_config() {
     "aos": {
       "command": "/bin/sh",
       "args": [
-        "./bin/aos-up",
-        "--principal",
-        "codex-code"
+        "-c",
+        "set -eu; workspace=\$PWD; runtime=\${AOS_HOME:-\$HOME/.aos}/runtime; if [ -n \"\${AOS_BIN:-}\" ]; then aos=\$AOS_BIN; elif [ -n \"\${AOS_BIN_ROOT:-}\" ]; then aos=\$AOS_BIN_ROOT/aos; elif [ -x \"\${AOS_HOME:-\$HOME/.aos}/bin/aos\" ]; then aos=\${AOS_HOME:-\$HOME/.aos}/bin/aos; else aos=\$(command -v aos); fi; cd \"\$runtime\"; if [ \"\${AOS_MCP_MODE:-gateway}\" = per-session ]; then exec \"\$aos\" --principal codex-code mcp serve --workspace \"\$workspace\" --request-timeout 1d5m; fi; exec \"\$aos\" --principal codex-code mcp attach --workspace \"\$workspace\""
       ],
-      "cwd": ".",
-      "startup_timeout_sec": 305,
+      "startup_timeout_sec": 5,
       "env_vars": [
         "AOS_HOME",
         "AOS_BIN",
-        "AOS_BIN_ROOT"
+        "AOS_BIN_ROOT",
+        "AOS_MCP_MODE"
       ],
       "env": {
         "AOS_BIN": "$escaped_aos"

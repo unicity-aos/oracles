@@ -138,6 +138,8 @@ def command(event):
 assert "hook user_prompt_submit" in command("UserPromptSubmit")
 assert "hook stop" in command("Stop")
 assert "hook session_end" in command("SessionEnd")
+assert "codex ready --format hook" in command("SessionStart")
+assert hooks["SessionStart"][0]["hooks"][0]["timeout"] == 15
 PY
 
 # Runtime IPC always uses the product workspace, but hook context retains the

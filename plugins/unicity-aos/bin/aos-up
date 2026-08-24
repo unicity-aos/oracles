@@ -382,6 +382,14 @@ if [ "${1:-}" = codex ]; then
       emit_hook session_start
       exit 0
       ;;
+    ready)
+      shift
+      if ! aos_resolve_apply 2>/dev/null; then
+        echo "aos-up: could not resolve the AOS command for readiness" >&2
+        exit 127
+      fi
+      exec "$AOS" --principal codex-code mcp ready "$@"
+      ;;
     hook)
       shift
       event="${1:-}"

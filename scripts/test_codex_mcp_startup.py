@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -22,10 +21,13 @@ def write_executable(path: Path, body: str) -> None:
     path.chmod(0o700)
 
 
-def launch(environment: dict[str, str], plugin: Path = PLUGIN) -> subprocess.CompletedProcess[str]:
-    cwd = (plugin / SERVER["cwd"]).resolve()
+def launch(
+    environment: dict[str, str],
+    cwd: Path,
+    server: dict = SERVER,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [SERVER["command"], *SERVER["args"]],
+        [server["command"], *server["args"]],
         cwd=cwd,
         env=environment,
         text=True,
@@ -112,84 +114,83 @@ def exercise_hook_adapter(root: Path) -> None:
 
 def main() -> None:
     assert SERVER["command"] == "/bin/sh"
-    assert SERVER["args"] == ["./bin/aos-up", "--principal", "codex-code"]
-    assert SERVER["cwd"] == "."
-    assert SERVER["env_vars"] == ["AOS_HOME", "AOS_BIN", "AOS_BIN_ROOT"]
+    assert SERVER["args"][0] == "-c"
+    command = SERVER["args"][1]
+    assert 'mcp attach --workspace "$workspace"' in command
+    assert 'mcp serve --workspace "$workspace" --request-timeout 1d5m' in command
+    assert SERVER["startup_timeout_sec"] == 5
+    assert SERVER["env_vars"] == [
+        "AOS_HOME",
+        "AOS_BIN",
+        "AOS_BIN_ROOT",
+        "AOS_MCP_MODE",
+    ]
+    assert "cwd" not in SERVER
 
     with tempfile.TemporaryDirectory(prefix="aos-codex-mcp-") as raw:
         root = Path(raw)
         home = root / "home" / ".aos"
-        installer = root / "oracle-installer"
-        install_log = root / "installer-args"
+        runtime = home / "runtime"
+        workspace = root / "user-project"
         aos_log = root / "aos-args"
         aos_cwd = root / "aos-cwd"
+        workspace.mkdir(parents=True)
+        runtime.mkdir(parents=True)
+        workspace = workspace.resolve()
 
+        aos = root / "aos"
         write_executable(
-            installer,
+            aos,
             "#!/bin/sh\n"
             "set -eu\n"
-            'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
-            '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 0.2.6" ] '
-            '|| { printf "%s\\n" "unexpected installer arguments: $*" >&2; exit 91; }\n'
-            'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"\n'
-            'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"\n'
-            'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
-            "#!/bin/sh\n"
             'pwd -P > "$TEST_AOS_CWD"\n'
             'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
             'case " $* " in\n'
-            '  *" capsule show aos-mcp --agent codex-code "*) exit 0 ;;\n'
-            '  *" --principal codex-code mcp serve "*) printf "%s\\n" mcp-ready ;;\n'
+            '  *" --principal codex-code mcp attach --workspace "*) printf "%s\\n" mcp-ready ;;\n'
+            '  *" --principal codex-code mcp serve --workspace "*) printf "%s\\n" mcp-ready ;;\n'
             '  *) exit 1 ;;\n'
-            "esac\n"
-            "AOS\n"
-            'chmod 700 "$AOS_HOME/bin/aos"\n',
+            "esac\n",
         )
 
         environment = {
             "HOME": str(root / "home"),
             "AOS_HOME": str(home),
-            "AOS_ORACLES_INSTALLER": str(installer),
+            "AOS_BIN": str(aos),
             "PATH": "/usr/bin:/bin",
-            "TEST_INSTALL_LOG": str(install_log),
             "TEST_AOS_LOG": str(aos_log),
             "TEST_AOS_CWD": str(aos_cwd),
-            "TMPDIR": str(root),
         }
 
-        first = launch(environment)
+        first = launch(environment, workspace)
         assert first.returncode == 0, (first.returncode, first.stdout, first.stderr)
         assert first.stdout == "mcp-ready\n", first.stdout
         assert first.stderr == "", first.stderr
-        assert (home / "extensions/oracles/codex/Pack.lock").is_file()
-        assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 0.2.6"
-        ]
         assert aos_log.read_text().splitlines() == [
-            "capsule show aos-mcp --agent codex-code",
-            "--principal codex-code mcp serve",
+            f"--principal codex-code mcp attach --workspace {workspace}",
         ]
         assert Path(aos_cwd.read_text().strip()) == (home / "runtime").resolve()
 
-        second = launch(environment)
+        fallback_environment = dict(environment)
+        fallback_environment["AOS_MCP_MODE"] = "per-session"
+        second = launch(fallback_environment, workspace)
         assert second.returncode == 0, (second.returncode, second.stdout, second.stderr)
         assert second.stdout == "mcp-ready\n", second.stdout
         assert second.stderr == "", second.stderr
-        assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 0.2.6"
-        ], "ready startup unexpectedly re-entered provisioning"
+        assert aos_log.read_text().splitlines() == [
+            f"--principal codex-code mcp attach --workspace {workspace}",
+            f"--principal codex-code mcp serve --workspace {workspace} --request-timeout 1d5m",
+        ]
 
         plugin_copy = root / "plugin-copy"
         shutil.copytree(PLUGIN, plugin_copy)
         configured_environment = dict(environment)
-        configured_environment["AOS_BIN"] = str(home / "bin/aos")
         configured_environment["AOS_PLUGIN_ROOT"] = str(plugin_copy)
         subprocess.run(
             [
                 "/bin/sh",
                 str(plugin_copy / "install.sh"),
                 "--bin-root",
-                str(home / "bin"),
+                str(root),
                 "--skip-codex-install",
             ],
             cwd=plugin_copy,
@@ -202,10 +203,10 @@ def main() -> None:
         generated = json.loads((plugin_copy / ".mcp.json").read_text())["mcpServers"]["aos"]
         assert generated["command"] == SERVER["command"]
         assert generated["args"] == SERVER["args"]
-        assert generated["cwd"] == SERVER["cwd"]
+        assert "cwd" not in generated
         assert generated["startup_timeout_sec"] == SERVER["startup_timeout_sec"]
         assert generated["env_vars"] == SERVER["env_vars"]
-        assert generated["env"] == {"AOS_BIN": str(home / "bin/aos")}
+        assert generated["env"] == {"AOS_BIN": str(aos)}
         exercise_hook_adapter(root)
 
 

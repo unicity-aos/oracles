@@ -102,11 +102,15 @@ def wait_for_path(path: Path, timeout: float = 5.0) -> None:
 
 
 def launch(
-    host: str, workspace: Path, environment: dict[str, str]
+    host: str,
+    workspace: Path,
+    environment: dict[str, str],
+    server: dict | None = None,
 ) -> subprocess.Popen[str]:
-    server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
-        "mcpServers"
-    ]["aos"]
+    if server is None:
+        server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
+            "mcpServers"
+        ]["aos"]
     command = server["command"].replace(
         f"${{{HOSTS[host]['root_var']}}}", str(ROOT / f"plugins/{host}")
     )
@@ -120,7 +124,7 @@ def launch(
     )
 
 
-def assert_success(process: subprocess.Popen[str]) -> None:
+def assert_success(process: subprocess.Popen[str], expected_stdout: str = "") -> None:
     try:
         stdout, stderr = process.communicate(timeout=5)
     except subprocess.TimeoutExpired:
@@ -128,7 +132,7 @@ def assert_success(process: subprocess.Popen[str]) -> None:
         stdout, stderr = process.communicate()
         raise AssertionError(f"MCP launcher did not exit: {stdout=} {stderr=}") from None
     assert process.returncode == 0, (process.returncode, stdout, stderr)
-    assert stdout == "", stdout
+    assert stdout == expected_stdout, stdout
     assert stderr == "", stderr
 
 
@@ -206,95 +210,164 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
     assert json.loads(payload_log.read_text()) == json.loads(payload)
 
 
+def exercise_session_hooks(host: str, root: Path) -> None:
+    spec = HOSTS[host]
+    hooks = json.loads((ROOT / f"plugins/{host}/hooks/hooks.json").read_text())["hooks"]
+    session_start = hooks["SessionStart"]
+    ready_hook = session_start[0]["hooks"][0]
+    session_hook = session_start[1]["hooks"][0]
+    assert "aos-doctor" not in ready_hook["command"]
+    assert f"aos-up {host} ready --format hook" in ready_hook["command"]
+    assert ready_hook["timeout"] == 15
+    assert f"aos-up {host} session-start" in session_hook["command"]
+    assert session_hook["timeout"] == 15
+
+    test_root = root / f"{host}-session-hooks"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    fake_aos = test_root / "fake-aos"
+    args_log = test_root / "args"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        'case " $* " in\n'
+        f'  *" --principal {spec["principal"]} mcp ready --format hook "*) printf "%s\\n" ready-context ;;\n'
+        f'  *" --principal {spec["principal"]} hook --host {host} "*) printf "%s\\n" session-context ;;\n'
+        '  *) exit 91 ;;\n'
+        "esac\n",
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_HOME": str(home),
+        "AOS_BIN": str(fake_aos),
+        "AOS_HOST": host,
+        str(spec["root_var"]): str(ROOT / f"plugins/{host}"),
+        "ASTRID_HOST_HOOK_FAIL_CLOSED": "1",
+        "PATH": "/usr/bin:/bin",
+        "TEST_AOS_ARGS": str(args_log),
+        "TMPDIR": str(test_root),
+    }
+    ready = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-up"), host, "ready", "--format", "hook"],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert ready.returncode == 0, (ready.returncode, ready.stdout, ready.stderr)
+    assert ready.stdout == "ready-context\n"
+    assert ready.stderr == ""
+
+    session = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-up"), host, "session-start"],
+        cwd=workspace,
+        env=environment,
+        input=json.dumps({"session_id": "session-hook"}),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert session.returncode == 0, (session.returncode, session.stdout, session.stderr)
+    assert session.stderr == ""
+    assert json.loads(session.stdout)["hookSpecificOutput"] == {
+        "hookEventName": "SessionStart",
+        "additionalContext": "session-context",
+    }
+    invocations = args_log.read_text().splitlines()
+    assert invocations[0] == (
+        f"--principal {spec['principal']} mcp ready --format hook"
+    )
+    assert invocations[1].startswith(
+        f"--principal {spec['principal']} hook --host {host} "
+    )
+    assert "--event session_start" in invocations[1]
+
+
 def exercise_host(host: str, root: Path) -> None:
     spec = HOSTS[host]
     server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
         "mcpServers"
     ]["aos"]
-    if spec["timeout_key"] is not None:
-        assert server[spec["timeout_key"]] == spec["timeout"]
-    else:
-        assert "timeout" not in server
-        assert "startup_timeout_sec" not in server
+    assert server["command"] == "/bin/sh"
+    assert server["args"][0] == "-c"
+    command = server["args"][1]
+    assert 'mcp attach --workspace "$workspace"' in command
+    assert 'mcp serve --workspace "$workspace" --request-timeout 1d5m' in command
+    assert server["startup_timeout_sec"] == 5
+    assert server["env_vars"] == [
+        "AOS_HOME",
+        "AOS_BIN",
+        "AOS_BIN_ROOT",
+        "AOS_MCP_MODE",
+    ]
     assert "cwd" not in server
 
     home = root / host / "home" / ".aos"
     workspace = root / host / "user-project"
-    fake_bin = root / host / "fake-bin"
-    wait_marker = root / host / "wait-observed"
-    wait_gate = root / host / "release-waiter"
     cwd_log = root / host / "aos-cwd"
     args_log = root / host / "aos-args"
     workspace.mkdir(parents=True)
-    fake_bin.mkdir()
-
+    (home / "runtime").mkdir(parents=True)
+    principal = spec["principal"]
+    expected_workspace = workspace.resolve()
     write_executable(
-        fake_bin / "sleep",
+        root / host / "fake-aos",
         "#!/bin/sh\n"
-        ': > "$TEST_WAIT_MARKER"\n'
-        'while [ ! -e "$TEST_WAIT_GATE" ]; do /bin/sleep 0.01; done\n',
+        "set -eu\n"
+        'pwd -P > "$TEST_AOS_CWD"\n'
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        'case " $* " in\n'
+        f'  *" --principal {principal} mcp attach --workspace "*) printf "%s\\n" mcp-ready ;;\n'
+        f'  *" --principal {principal} mcp serve --workspace "*) printf "%s\\n" mcp-ready ;;\n'
+        '  *" --principal operator-code mcp attach --workspace "*) printf "%s\\n" mcp-ready ;;\n'
+        '  *) exit 91 ;;\n'
+        "esac\n",
     )
     environment = {
         "HOME": str(root / host / "home"),
         "AOS_HOME": str(home),
-        "AOS_HOST": host,
+        "AOS_BIN": str(root / host / "fake-aos"),
         str(spec["root_var"]): str(ROOT / f"plugins/{host}"),
-        "PATH": f"{fake_bin}:/usr/bin:/bin",
-        "TEST_WAIT_MARKER": str(wait_marker),
-        "TEST_WAIT_GATE": str(wait_gate),
+        "PATH": "/usr/bin:/bin",
         "TEST_AOS_CWD": str(cwd_log),
         "TEST_AOS_ARGS": str(args_log),
     }
 
-    # Model a SessionStart installer already holding the shared lock. These
-    # cases control each half of readiness independently; launcher-owned
-    # bootstrap is exercised separately below.
-    active_lock = home / "extensions/oracles/.install.lock"
-    active_lock.parent.mkdir(parents=True)
-    active_lock.write_text(f"{os.getpid()}\n")
-
-    write_executable(
-        home / "bin/aos",
-        "#!/bin/sh\n"
-        'pwd -P > "$TEST_AOS_CWD"\n'
-        'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n',
-    )
-
-    # The executable alone is not a committed host installation.
-    process = launch(host, workspace, environment)
-    wait_for(wait_marker, process)
-    receipt = home / f"extensions/oracles/{host}/Pack.lock"
-    receipt.parent.mkdir(parents=True)
-    receipt.write_text('version = "0.2.6"\n')
-    wait_gate.touch()
-    assert_success(process)
-
+    first = launch(host, workspace, environment)
+    assert_success(first, "mcp-ready\n")
     assert Path(cwd_log.read_text().strip()) == (home / "runtime").resolve()
-    assert args_log.read_text().strip() == (
-        f"--principal {spec['principal']} mcp serve"
-    )
+    assert args_log.read_text().splitlines() == [
+        f"--principal {principal} mcp attach --workspace {expected_workspace}"
+    ]
 
-    # A receipt alone is not ready until the product command is executable.
-    (home / "bin/aos").unlink()
-    wait_marker.unlink()
-    wait_gate.unlink()
-    process = launch(host, workspace, environment)
-    wait_for(wait_marker, process)
-    write_executable(
-        home / "bin/aos",
-        "#!/bin/sh\n"
-        'pwd -P > "$TEST_AOS_CWD"\n'
-        'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n',
-    )
-    wait_gate.touch()
-    assert_success(process)
+    fallback_environment = dict(environment)
+    fallback_environment["AOS_MCP_MODE"] = "per-session"
+    second = launch(host, workspace, fallback_environment)
+    assert_success(second, "mcp-ready\n")
+    assert args_log.read_text().splitlines() == [
+        f"--principal {principal} mcp attach --workspace {expected_workspace}",
+        f"--principal {principal} mcp serve --workspace {expected_workspace} --request-timeout 1d5m",
+    ]
 
-    # A ready host never enters the polling path.
-    wait_marker.unlink()
-    wait_gate.unlink()
-    process = launch(host, workspace, environment)
-    assert_success(process)
-    assert not wait_marker.exists()
+    if host == "claude":
+        configured = dict(server)
+        configured["args"] = [*server["args"][:-1], "operator-code"]
+        configured_environment = dict(environment)
+        configured_process = launch(
+            host, workspace, configured_environment, configured
+        )
+        assert_success(configured_process, "mcp-ready\n")
+        assert args_log.read_text().splitlines()[-1] == (
+            f"--principal operator-code mcp attach --workspace {expected_workspace}"
+        )
 
 
 def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
@@ -715,13 +788,8 @@ def main() -> None:
         root = Path(raw)
         for host in HOSTS:
             exercise_hook_adapter(host, root)
+            exercise_session_hooks(host, root)
             exercise_host(host, root)
-            exercise_blank_slate_bootstrap(host, root)
-            exercise_doctor_waits_for_concurrent_bootstrap(host, root)
-            exercise_abandoned_lock_recovery(host, root, "launcher")
-            exercise_abandoned_lock_recovery(host, root, "doctor")
-            exercise_concurrent_launchers_use_private_logs(host, root)
-            exercise_bootstrap_survives_wrapper_timeout(host, root)
 
 
 if __name__ == "__main__":

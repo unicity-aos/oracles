@@ -120,8 +120,10 @@ jobs:
           set -euo pipefail
           jq -e '
             .mcpServers.aos.command == "/bin/sh" and
-            .mcpServers.aos.cwd == "." and
-            .mcpServers.aos.startup_timeout_sec == 305
+            (.mcpServers.aos | has("cwd") | not) and
+            .mcpServers.aos.args[0] == "-c" and
+            .mcpServers.aos.startup_timeout_sec == 5 and
+            (.mcpServers.aos.env_vars | index("AOS_MCP_MODE") != null)
           ' plugins/unicity-aos/.mcp.json
           python3 scripts/test_codex_mcp_startup.py
           jq -e '

@@ -16,21 +16,21 @@ long-lived principals for ordinary UI windows.
 
 ## Runtime path
 
-Codex starts the MCP adapter from `.mcp.json`:
+Codex attaches the MCP adapter from `.mcp.json`:
 
 ```text
-bin/aos-up --principal codex-code
+aos --principal codex-code mcp attach --workspace "$PWD"
 ```
 
 The adapter executes:
 
 ```text
-aos --principal codex-code mcp serve
+aos --principal codex-code mcp attach --workspace "$PWD"
 ```
 
-The public `aos` command selects the AOS home, starts the bundled runtime when
-needed, authenticates the principal, and exposes the capsule tool surface. The
-plugin does not launch the engine daemon or inspect its private home layout.
+The public `aos` command resolves the product runtime, authenticates the
+principal, and proxies the existing gateway over stdio. Set
+`AOS_MCP_MODE=per-session` to use the legacy per-session `mcp serve` process.
 
 ## Hook attribution
 
@@ -43,7 +43,8 @@ Hook envelopes carry:
 
 Those names are engine protocol identifiers. They remain stable even though
 the plugin, MCP server, scripts, and user commands are Unicity AOS branded.
-Hooks publish on `codex.v1.hook.<session>.<event>` through the public AOS CLI.
+Hooks use the short `aos hook` client, which publishes on
+`codex.v1.hook.<session>.<event>` through the public AOS CLI.
 
 Hook delivery is at-least-once and windows may interleave. Consumers must be
 idempotent and must not infer ordering across sessions.

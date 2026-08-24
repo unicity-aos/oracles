@@ -48,12 +48,16 @@ class BrandBoundaryTests(unittest.TestCase):
             self.assertEqual(set(load_json(path)["mcpServers"]), {"aos"})
 
         codex_mcp = load_json("plugins/unicity-aos/.mcp.json")["mcpServers"]["aos"]
-        self.assertEqual(codex_mcp["cwd"], ".")
         self.assertEqual(codex_mcp["command"], "/bin/sh")
-        self.assertGreaterEqual(codex_mcp["startup_timeout_sec"], 300)
+        self.assertNotIn("cwd", codex_mcp)
+        self.assertEqual(codex_mcp["startup_timeout_sec"], 5)
         self.assertEqual(
-            codex_mcp["env_vars"], ["AOS_HOME", "AOS_BIN", "AOS_BIN_ROOT"]
+            codex_mcp["env_vars"],
+            ["AOS_HOME", "AOS_BIN", "AOS_BIN_ROOT", "AOS_MCP_MODE"],
         )
+        self.assertEqual(codex_mcp["args"][0], "-c")
+        self.assertIn('mcp attach --workspace "$workspace"', codex_mcp["args"][1])
+        self.assertIn("AOS_MCP_MODE", codex_mcp["args"][1])
 
     def test_codex_plugin_teaches_building_on_the_os(self) -> None:
         plugin = ROOT / "plugins/unicity-aos"

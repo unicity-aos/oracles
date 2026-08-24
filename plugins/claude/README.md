@@ -7,11 +7,11 @@ commands, and the optional HUD.
 
 ## What it installs
 
-- `.mcp.json` registers the public `aos` MCP server through `bin/aos-up`.
-- `bin/aos-up` resolves the `aos` product command and executes
-  `aos --principal <name> mcp serve`.
-- `bin/aos-doctor` provisions this host pack on a blank slate, then reports
-  readiness at session start.
+- `.mcp.json` attaches the public `aos` MCP server to the invoking project
+  workspace.
+- `bin/aos-up` remains the host hook adapter and legacy serve entrypoint.
+- SessionStart performs the short `aos mcp ready --format hook` check and
+  registers the host session; provisioning is an explicit installer action.
 - `/unicity-aos:doctor`, `/unicity-aos:status`, `/unicity-aos:whoami`,
   `/unicity-aos:capsules`, and `/unicity-aos:hud`
   expose operator views.
@@ -20,11 +20,8 @@ commands, and the optional HUD.
 
 The adapter does not start a private daemon itself. The `aos` command owns the
 bundled runtime, authenticated principal selection, and quiet ephemeral startup.
-On a blank slate, the MCP launcher starts the non-interactive host installer in
-the background and waits for the signed Claude pack receipt. SessionStart uses
-the same idempotent installer, so concurrent startup still performs one
-host-scoped installation. Existing installations take the ready path without
-re-entering the installer.
+The default MCP path attaches to the shared project gateway; set
+`AOS_MCP_MODE=per-session` to use the bounded legacy `mcp serve` process.
 
 ## Install and provision
 
@@ -57,7 +54,7 @@ not the administrative `default` principal. The value is passed before the
 runtime command:
 
 ```sh
-aos --principal claude-code mcp serve
+aos --principal claude-code mcp attach --workspace "$PWD"
 ```
 
 On a blank slate, the host-scoped installer creates `claude-code` and installs

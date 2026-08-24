@@ -6,9 +6,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-doctor\" --format hook",
-            "timeout": 300,
-            "statusMessage": "Setting up Unicity AOS for Codex"
+            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex ready --format hook",
+            "timeout": 15,
+            "statusMessage": "Checking Unicity AOS readiness"
           }
         ]
       },

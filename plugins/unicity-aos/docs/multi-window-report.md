@@ -22,15 +22,19 @@ Codex starts the MCP adapter from `.mcp.json`:
 bin/aos-up --principal codex-code
 ```
 
-The adapter executes:
+The adapter starts one persistent MCP gateway for `codex-code` and then execs
+a short-lived stdio pipe:
 
 ```text
-aos --principal codex-code mcp serve
+python3 -u bin/aos-mcp-frame <astrid|aos> --principal codex-code mcp attach --workspace <host-project>
 ```
 
-The public `aos` command selects the AOS home, starts the bundled runtime when
-needed, authenticates the principal, and exposes the capsule tool surface. The
-plugin does not launch the engine daemon or inspect its private home layout.
+The gateway is the broker. Each Codex conversation is an attach child that
+must exit when stdin closes. `mcp serve` remains an explicit escape hatch and
+is not the default Codex stdio path. The attach workspace is the host project
+(`ASTRID_WORKSPACE` / `AOS_HOST_WORKSPACE` / `CODEX_WORKSPACE`), not the
+plugin cache directory. If those are unset and the plugin was launched with
+`cwd: "."`, attach uses the runtime home rather than the plugin snapshot.
 
 ## Hook attribution
 

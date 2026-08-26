@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""Translate host MCP stdio to Astrid `mcp attach`.
+
+rmcp 3.x attach is newline-delimited JSON. Codex / the TypeScript MCP SDK
+speak Content-Length. Accept either on stdin, feed attach JSON lines, and
+reply in the framing of the first host message.
+
+This process is a pipe, not a broker. When the attach child exits, the
+frame must exit immediately. CPython 3.14 aborts in Buffered_close if
+interpreter shutdown races a thread still reading stdin, which is what
+produced macOS "Python quit unexpectedly" dialogs under Codex.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import threading
+
+
+def read_exact(fp, n: int) -> bytes | None:
+    buf = b""
+    while len(buf) < n:
+        chunk = os.read(fp, n - len(buf))
+        if not chunk:
+            return None if not buf else buf
+        buf += chunk
+    return buf
+
+
+def read_host_message(fd: int):
+    first = read_exact(fd, 1)
+    if not first:
+        return None, None
+    buf = first
+    while len(buf) < 15 and not buf.endswith(b"\n"):
+        nxt = os.read(fd, 1)
+        if not nxt:
+            break
+        buf += nxt
+    lowered = buf.lower()
+    if lowered.startswith(b"content-length:"):
+        while b"\r\n\r\n" not in buf and b"\n\n" not in buf:
+            nxt = os.read(fd, 1)
+            if not nxt:
+                return None, None
+            buf += nxt
+        if b"\r\n\r\n" in buf:
+            head, extra = buf.split(b"\r\n\r\n", 1)
+        else:
+            head, extra = buf.split(b"\n\n", 1)
+        length = None
+        for line in head.split(b"\n"):
+            line = line.strip().strip(b"\r")
+            if line.lower().startswith(b"content-length:"):
+                length = int(line.split(b":", 1)[1].strip())
+        if length is None:
+            return None, None
+        body = extra
+        if len(body) < length:
+            more = read_exact(fd, length - len(body))
+            if more is None:
+                return None, None
+            body = body + more
+        return "content-length", body[:length].strip()
+    while not buf.endswith(b"\n"):
+        nxt = os.read(fd, 1)
+        if not nxt:
+            break
+        buf += nxt
+    line = buf.strip()
+    return ("json-line", line) if line else (None, None)
+
+
+def write_host(fd: int, mode: str, payload: bytes) -> None:
+    if mode == "content-length":
+        header = f"Content-Length: {len(payload)}\r\n\r\n".encode()
+        os.write(fd, header + payload)
+        return
+    if not payload.endswith(b"\n"):
+        payload += b"\n"
+    os.write(fd, payload)
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        sys.stderr.write("aos-mcp-frame: missing attach command\n")
+        return 2
+    proc = subprocess.Popen(
+        sys.argv[1:],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=None,
+        close_fds=True,
+    )
+    assert proc.stdin is not None and proc.stdout is not None
+    host_in = sys.stdin.fileno()
+    host_out = sys.stdout.fileno()
+    child_in = proc.stdin
+    child_out = proc.stdout
+    mode_holder = {"mode": None}
+
+    def host_to_attach() -> None:
+        try:
+            while True:
+                mode, payload = read_host_message(host_in)
+                if payload is None:
+                    break
+                if mode_holder["mode"] is None and mode is not None:
+                    mode_holder["mode"] = mode
+                if not payload.endswith(b"\n"):
+                    payload += b"\n"
+                child_in.write(payload)
+                child_in.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        finally:
+            try:
+                child_in.close()
+            except Exception:
+                pass
+
+    def attach_to_host() -> None:
+        try:
+            buf = b""
+            while True:
+                chunk = child_out.read(1)
+                if not chunk:
+                    break
+                buf += chunk
+                if b"\n" not in buf:
+                    continue
+                line, buf = buf.split(b"\n", 1)
+                payload = line.strip()
+                if not payload:
+                    continue
+                write_host(host_out, mode_holder["mode"] or "json-line", payload)
+        except (BrokenPipeError, OSError):
+            pass
+
+    t1 = threading.Thread(target=host_to_attach, daemon=True)
+    t2 = threading.Thread(target=attach_to_host, daemon=True)
+    t1.start()
+    t2.start()
+    code = proc.wait()
+    # Forward any last attach line, then skip CPython stdio teardown.
+    # A still-blocked stdin reader plus Buffered_close during interpreter
+    # shutdown is SIGABRT on 3.14 and shows as "Python quit unexpectedly".
+    t2.join(0.2)
+    os._exit(code if isinstance(code, int) and code >= 0 else 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

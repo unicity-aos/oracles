@@ -78,11 +78,13 @@ write_mcp_config() {
         "codex-code"
       ],
       "cwd": ".",
-      "startup_timeout_sec": 305,
+      "startup_timeout_sec": 20,
       "env_vars": [
         "AOS_HOME",
         "AOS_BIN",
-        "AOS_BIN_ROOT"
+        "AOS_BIN_ROOT",
+        "ASTRID_SESSION_ID",
+        "ASTRID_WORKSPACE"
       ],
       "env": {
         "AOS_BIN": "$escaped_aos"

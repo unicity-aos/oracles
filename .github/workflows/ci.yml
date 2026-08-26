@@ -177,7 +177,8 @@ jobs:
           printf 'version = "%s"\n' "$(cat release/oracle-version)" \
             > "$bin_root/home/extensions/oracles/codex/Pack.lock"
           forwarded="$(AOS_HOME="$bin_root/home" AOS_BIN=/bin/echo plugins/unicity-aos/bin/aos-up --principal codex-code)"
-          test "$forwarded" = "--principal codex-code mcp serve"
+          runtime_root="$(CDPATH= cd -P -- "$bin_root/home/runtime" && pwd -P)"
+          test "$forwarded" = "--principal codex-code mcp attach --workspace $runtime_root"
 
       - name: Verify Claude/Grok plugins are self-contained (synced from common)
         run: |

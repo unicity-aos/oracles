@@ -12,7 +12,9 @@ On installation, Codex reads `.codex-plugin/plugin.json` and discovers:
   loaded reference chapters;
 - `skills/meta-harness` for proactively extending the agent's user-space world
   when work reveals missing capability or reusable leverage;
-- `.mcp.json`, which starts `aos --principal codex-code mcp serve`; and
+- `.mcp.json`, which starts the persistent-gateway `mcp attach` path through
+  `aos-up` and its stdio frame; explicit `mcp serve` remains available as an
+  escape hatch; and
 - session and tool hooks under `hooks/hooks.json`.
 
 Skill metadata is available for routing. Codex reads a skill's complete

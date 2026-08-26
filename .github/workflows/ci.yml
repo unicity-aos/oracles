@@ -121,7 +121,7 @@ jobs:
           jq -e '
             .mcpServers.aos.command == "/bin/sh" and
             .mcpServers.aos.cwd == "." and
-            .mcpServers.aos.startup_timeout_sec == 305
+            .mcpServers.aos.startup_timeout_sec == 20
           ' plugins/unicity-aos/.mcp.json
           python3 scripts/test_codex_mcp_startup.py
           jq -e '

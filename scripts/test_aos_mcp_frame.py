@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""aos-mcp-frame must die with the attach child, without CPython 3.14 abort."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+
+ROOT = Path(__file__).resolve().parent.parent
+FRAME = ROOT / "plugins/unicity-aos/bin/aos-mcp-frame"
+
+
+def test_child_exit_with_open_stdin() -> None:
+    proc = subprocess.Popen(
+        [sys.executable, "-u", str(FRAME), "/bin/sh", "-c", "printf '%s\\n' mcp-ready"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.time() + 2
+        while proc.poll() is None and time.time() < deadline:
+            time.sleep(0.02)
+        assert proc.poll() == 0, (
+            proc.poll(),
+            proc.stdout.read() if proc.stdout else b"",
+            proc.stderr.read() if proc.stderr else b"",
+        )
+    finally:
+        if proc.poll() is None:
+            proc.send_signal(signal.SIGTERM)
+            proc.wait(timeout=1)
+
+
+def test_content_length_roundtrip() -> None:
+    child = (
+        "import sys\n"
+        "line = sys.stdin.readline()\n"
+        "sys.stdout.write(line if line.endswith('\\n') else line + '\\n')\n"
+        "sys.stdout.flush()\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-u", str(FRAME), sys.executable, "-u", "-c", child],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
+    assert proc.stdin is not None and proc.stdout is not None
+    proc.stdin.write(f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload)
+    proc.stdin.flush()
+    header = b""
+    while b"\r\n\r\n" not in header:
+        chunk = proc.stdout.read(1)
+        assert chunk, header
+        header += chunk
+    head, extra = header.split(b"\r\n\r\n", 1)
+    length = None
+    for line in head.split(b"\n"):
+        line = line.strip().strip(b"\r")
+        if line.lower().startswith(b"content-length:"):
+            length = int(line.split(b":", 1)[1].strip())
+    assert length is not None, head
+    body = extra
+    if len(body) < length:
+        more = proc.stdout.read(length - len(body))
+        assert more is not None
+        body += more
+    assert json.loads(body[:length])["method"] == "ping"
+    proc.stdin.close()
+    assert proc.wait(timeout=2) == 0
+
+
+def main() -> None:
+    assert FRAME.is_file()
+    test_child_exit_with_open_stdin()
+    test_content_length_roundtrip()
+
+
+if __name__ == "__main__":
+    main()

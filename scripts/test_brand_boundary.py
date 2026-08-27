@@ -50,9 +50,16 @@ class BrandBoundaryTests(unittest.TestCase):
         codex_mcp = load_json("plugins/unicity-aos/.mcp.json")["mcpServers"]["aos"]
         self.assertEqual(codex_mcp["cwd"], ".")
         self.assertEqual(codex_mcp["command"], "/bin/sh")
-        self.assertGreaterEqual(codex_mcp["startup_timeout_sec"], 300)
+        self.assertEqual(codex_mcp["startup_timeout_sec"], 20)
         self.assertEqual(
-            codex_mcp["env_vars"], ["AOS_HOME", "AOS_BIN", "AOS_BIN_ROOT"]
+            codex_mcp["env_vars"],
+            [
+                "AOS_HOME",
+                "AOS_BIN",
+                "AOS_BIN_ROOT",
+                "ASTRID_SESSION_ID",
+                "ASTRID_WORKSPACE",
+            ],
         )
 
     def test_codex_plugin_teaches_building_on_the_os(self) -> None:

@@ -1,9 +1,23 @@
 {
   "mcpServers": {
     "aos": {
-      "command": "${GROK_PLUGIN_ROOT}/bin/aos-up",
-      "args": ["--principal", "grok-code"],
-      "env": {}
+      "command": "/bin/sh",
+      "args": [
+        "./bin/aos-up",
+        "--principal",
+        "grok-code"
+      ],
+      "cwd": ".",
+      "startup_timeout_sec": 305,
+      "env_vars": [
+        "AOS_HOME",
+        "AOS_BIN",
+        "AOS_BIN_ROOT",
+        "GROK_PLUGIN_ROOT"
+      ],
+      "env": {
+        "AOS_HOST": "grok"
+      }
     }
   }
 }

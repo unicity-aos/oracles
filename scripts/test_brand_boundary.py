@@ -61,6 +61,29 @@ class BrandBoundaryTests(unittest.TestCase):
                 "ASTRID_WORKSPACE",
             ],
         )
+        self.assertEqual(
+            codex_mcp["args"], ["./bin/aos-up", "--principal", "codex-code"]
+        )
+
+        # Grok Build must not depend on ${GROK_PLUGIN_ROOT} expansion in the
+        # MCP command string. Use the same relative launch shape as Codex, but
+        # pin principal and AOS_HOST so a mixed-plugin install cannot act as
+        # codex-code.
+        grok_mcp = load_json("plugins/grok/.mcp.json")["mcpServers"]["aos"]
+        self.assertEqual(grok_mcp["cwd"], ".")
+        self.assertEqual(grok_mcp["command"], "/bin/sh")
+        self.assertGreaterEqual(grok_mcp["startup_timeout_sec"], 300)
+        self.assertEqual(
+            grok_mcp["args"], ["./bin/aos-up", "--principal", "grok-code"]
+        )
+        self.assertEqual(grok_mcp.get("env", {}).get("AOS_HOST"), "grok")
+        self.assertIn("AOS_HOME", grok_mcp["env_vars"])
+        self.assertIn("GROK_PLUGIN_ROOT", grok_mcp["env_vars"])
+        self.assertNotEqual(grok_mcp["args"], codex_mcp["args"])
+
+        claude_mcp = load_json("plugins/claude/.mcp.json")["mcpServers"]["aos"]
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}", claude_mcp["command"])
+        self.assertIn("--principal", claude_mcp["args"])
 
     def test_codex_plugin_teaches_building_on_the_os(self) -> None:
         plugin = ROOT / "plugins/unicity-aos"

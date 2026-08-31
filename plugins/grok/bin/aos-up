@@ -21,9 +21,23 @@ if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
 fi
 export AOS_PLUGIN_ROOT
 
+# Host selection must not depend only on GROK_PLUGIN_ROOT. Grok Build sets that
+# for hooks, but plugin MCP launch may only provide cwd + relative bin/aos-up
+# (the same shape Codex uses). Prefer an explicit AOS_HOST, then the principal
+# argument, then host-root env vars.
+if [ -z "${AOS_HOST:-}" ]; then
+  if [ "${1:-}" = "--principal" ]; then
+    case "${2:-}" in
+      grok-code) AOS_HOST=grok ;;
+      claude-code|'${user_config.principal}') AOS_HOST=claude ;;
+    esac
+  fi
+fi
 if [ -z "${AOS_HOST:-}" ]; then
   if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
     AOS_HOST=grok
+  elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then
+    AOS_HOST=claude
   else
     AOS_HOST=claude
   fi

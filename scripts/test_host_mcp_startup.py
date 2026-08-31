@@ -18,12 +18,17 @@ HOSTS = {
         "principal": "claude-code",
         "timeout_key": None,
         "timeout": None,
+        # Claude expands CLAUDE_PLUGIN_ROOT in the MCP command string.
+        "launch": "plugin-root-var",
     },
     "grok": {
         "root_var": "GROK_PLUGIN_ROOT",
         "principal": "grok-code",
-        "timeout_key": None,
-        "timeout": None,
+        "timeout_key": "startup_timeout_sec",
+        "timeout": 305,
+        # Grok Build is more reliable with Codex-style relative launch + cwd
+        # than with ${GROK_PLUGIN_ROOT} expansion in the command field.
+        "launch": "relative-cwd",
     },
 }
 
@@ -104,16 +109,25 @@ def wait_for_path(path: Path, timeout: float = 5.0) -> None:
 def launch(
     host: str, workspace: Path, environment: dict[str, str]
 ) -> subprocess.Popen[str]:
-    server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
-        "mcpServers"
-    ]["aos"]
-    command = server["command"].replace(
-        f"${{{HOSTS[host]['root_var']}}}", str(ROOT / f"plugins/{host}")
-    )
+    spec = HOSTS[host]
+    plugin = ROOT / f"plugins/{host}"
+    server = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["aos"]
+    env = dict(environment)
+    for key, value in server.get("env", {}).items():
+        env.setdefault(key, value)
+    if spec["launch"] == "relative-cwd":
+        cwd = (plugin / server.get("cwd", ".")).resolve()
+        argv = [server["command"], *server["args"]]
+    else:
+        cwd = workspace
+        command = server["command"].replace(
+            f"${{{spec['root_var']}}}", str(plugin)
+        )
+        argv = [command, *server["args"]]
     return subprocess.Popen(
-        [command, *server["args"]],
-        cwd=workspace,
-        env=environment,
+        argv,
+        cwd=cwd,
+        env=env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -216,7 +230,19 @@ def exercise_host(host: str, root: Path) -> None:
     else:
         assert "timeout" not in server
         assert "startup_timeout_sec" not in server
-    assert "cwd" not in server
+    if spec["launch"] == "relative-cwd":
+        assert server["command"] == "/bin/sh"
+        assert server["cwd"] == "."
+        assert server["args"] == ["./bin/aos-up", "--principal", spec["principal"]]
+        assert server.get("env", {}).get("AOS_HOST") == host
+        assert "AOS_HOME" in server.get("env_vars", [])
+        assert "GROK_PLUGIN_ROOT" in server.get("env_vars", [])
+    else:
+        assert "cwd" not in server
+        assert server["args"][-1] == spec["principal"] or server["args"] == [
+            "--principal",
+            "${user_config.principal}",
+        ]
 
     home = root / host / "home" / ".aos"
     workspace = root / host / "user-project"
@@ -234,11 +260,22 @@ def exercise_host(host: str, root: Path) -> None:
         ': > "$TEST_WAIT_MARKER"\n'
         'while [ ! -e "$TEST_WAIT_GATE" ]; do /bin/sleep 0.01; done\n',
     )
+    # Keep bootstrap attempts off the network. exercise_host only needs the
+    # readiness wait loop; blank-slate coverage owns the real installer path.
+    fake_installer = root / host / "fast-installer"
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        "set -eu\n"
+        'printf "%s\\n" "aos-oracles: another oracle installation is active for $AOS_HOME" >&2\n'
+        "exit 1\n",
+    )
     environment = {
         "HOME": str(root / host / "home"),
         "AOS_HOME": str(home),
         "AOS_HOST": host,
         str(spec["root_var"]): str(ROOT / f"plugins/{host}"),
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
         "PATH": f"{fake_bin}:/usr/bin:/bin",
         "TEST_WAIT_MARKER": str(wait_marker),
         "TEST_WAIT_GATE": str(wait_gate),

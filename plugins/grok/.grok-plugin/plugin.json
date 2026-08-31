@@ -1,7 +1,7 @@
 {
   "name": "unicity-aos",
   "displayName": "Unicity AOS",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Connect Grok Build to Unicity AOS as a principal-scoped agent with capsule tools over MCP, a readiness doctor, operator commands, and the capsule forge skill.",
   "author": {
     "name": "Unicity Labs",

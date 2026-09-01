@@ -290,6 +290,42 @@ write_test_capsule() {
     > "$state/installed-$principal-$name"
 }
 
+# A caller must not be able to turn the old per-capsule approval switch back
+# into a global trust bypass. Both public installer surfaces recognize the flag
+# as a rejected contract and fail before resolving installer bytes or creating
+# durable AOS state.
+approval_canary="$work/approval-installer"
+: > "$approval_canary"
+chmod 700 "$approval_canary"
+approval_plugin_home="$home/approval-plugin/.aos"
+if AOS_HOME="$approval_plugin_home" \
+  AOS_ORACLES_INSTALLER="$approval_canary" \
+  "$repo_root/plugins/unicity-aos/bin/aos-install" \
+  --host codex --yes --approve-untrusted >"$work/approval-plugin.out" 2>&1
+then
+  echo "plugin installer accepted --approve-untrusted" >&2
+  exit 1
+fi
+grep -Fq "aos-install: ERROR: --approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution" \
+  "$work/approval-plugin.out"
+test ! -s "$approval_canary"
+test ! -e "$approval_plugin_home"
+
+approval_root_home="$home/approval-root/.aos"
+if AOS_HOME="$approval_root_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  --approve-untrusted >"$work/approval-root.out" 2>&1
+then
+  echo "oracle installer accepted --approve-untrusted" >&2
+  exit 1
+fi
+grep -Fq "aos-oracles: --approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution" \
+  "$work/approval-root.out"
+test ! -e "$approval_root_home"
+test ! -e "$approval_root_home/runtime"
+test ! -e "$approval_root_home/extensions/oracles/codex/Pack.lock"
+test ! -s "$TEST_LOG"
+
 # The public one-command path installs only marketplace plugins. Host startup
 # owns principal and capsule provisioning, so this path must not initialize or
 # start AOS and must not create a pack receipt.

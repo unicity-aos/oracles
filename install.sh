@@ -87,6 +87,8 @@ Usage: install.sh [options]
   --no-install-aos  fail instead of invoking the canonical AOS installer
   --skip-host-plugin
                      provision capsules/receipt without reinstalling the active host plugin
+  --approve-untrusted
+                     rejected: AOS dependencies require the signed OperatorDistribution
   -h, --help
 EOF
 }
@@ -126,6 +128,9 @@ while [ "$#" -gt 0 ]; do
     --plugins-only) PLUGINS_ONLY=1 ;;
     --no-install-aos) NO_INSTALL_AOS=1 ;;
     --skip-host-plugin) SKIP_HOST_PLUGIN=1 ;;
+    --approve-untrusted)
+      die "--approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution"
+      ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument '$1'" ;;
   esac

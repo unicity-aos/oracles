@@ -134,10 +134,10 @@ def plant_fake_runtime(home: Path, installer: Path, install_log: Path) -> None:
         "#!/bin/sh\n"
         "set -eu\n"
         'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
-        '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 0.2.6" ] '
+        '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 0.3.0" ] '
         '|| { printf "%s\\n" "unexpected installer arguments: $*" >&2; exit 91; }\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/runtime/bin" "$AOS_HOME/extensions/oracles/codex"\n'
-        'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.3.0"\' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         f"{FAKE_AOS}"
         "AOS\n"
@@ -191,7 +191,7 @@ def main() -> None:
         assert first.stdout.strip() in {"mcp-ready", ""}, first.stdout
         assert (home / "extensions/oracles/codex/Pack.lock").is_file()
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 0.2.6"
+            "--host codex --skip-host-plugin --yes --oracle-version 0.3.0"
         ]
         invocations = aos_log.read_text().splitlines()
         assert invocations[0] == "capsule show aos-mcp --agent codex-code", invocations
@@ -208,7 +208,7 @@ def main() -> None:
         assert second.returncode == 0, (second.returncode, second.stdout, second.stderr)
         assert second.stderr == "", second.stderr
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 0.2.6"
+            "--host codex --skip-host-plugin --yes --oracle-version 0.3.0"
         ], "ready startup unexpectedly re-entered provisioning"
 
         override_env = dict(environment)

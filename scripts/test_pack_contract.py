@@ -29,7 +29,8 @@ class PackContractTests(unittest.TestCase):
             pack = value["pack"]
             self.assertEqual(pack["host"], host)
             self.assertEqual(pack["principal"], f"{host}-code")
-            self.assertEqual(pack["version"], "0.2.6")
+            self.assertEqual(pack["version"], "0.3.0")
+            self.assertEqual(pack["aos-version"], ">=2026.9.0")
             capsules = value.get("capsule", [])
             self.assertEqual([item["name"] for item in capsules], expected)
             self.assertEqual(

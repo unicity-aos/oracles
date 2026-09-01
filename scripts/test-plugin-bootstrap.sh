@@ -22,7 +22,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ "$host" = codex ] || exit 91
 mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"
-printf '%s\n' 'version = "0.2.6"' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"
+printf '%s\n' 'version = "0.3.0"' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"
 cat > "$AOS_HOME/bin/aos" <<'AOS'
 #!/usr/bin/env sh
 set -eu
@@ -97,7 +97,7 @@ PY
 grep -Fq -- '--host codex' "$log"
 grep -Fq -- '--skip-host-plugin' "$log"
 grep -Fq -- '--yes' "$log"
-grep -Fq -- '--oracle-version 0.2.6' "$log"
+grep -Fq -- '--oracle-version 0.3.0' "$log"
 if grep -Eq -- '--host (claude|grok)' "$log"; then
   echo "Codex bootstrap attempted to install another host" >&2
   exit 1

@@ -21,13 +21,71 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 [ "$host" = codex ] || exit 91
-mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/codex"
-printf '%s\n' 'version = "0.2.6"' > "$AOS_HOME/extensions/oracles/codex/Pack.lock"
+release="$AOS_HOME/releases/2026.9.0"
+receipt_root="$AOS_HOME/extensions/oracles/codex"
+receipt="$receipt_root/releases/0.3.0"
+mkdir -p "$AOS_HOME/bin" "$release/runtime/bin" "$receipt"
+printf '%s\n' 'version = "0.3.0"' > "$receipt/Pack.lock"
+cat > "$receipt/Receipt.toml" <<'RECEIPT'
+schema-version = 1
+oracle-version = "0.3.0"
+host = "codex"
+principal = "codex-code"
+source = "release"
+plugin-snapshot = "../../../plugins/0.3.0"
+plugin-blake3 = "0000000000000000000000000000000000000000000000000000000000000000"
+RECEIPT
+cat > "$receipt/runtime-compatibility.toml" <<'COMPAT'
+schema-version = 1
+
+[runtime]
+repository = "astrid-runtime/astrid"
+version = "0.11.0"
+tag = "v0.11.0"
+version-requirement = "=0.11.0"
+release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.11.0"
+release-ready = true
+COMPAT
+cat > "$release/Distro.toml" <<'DISTRO'
+schema-version = 1
+
+[distro]
+id = "unicity-ce"
+version = "2026.9.0"
+DISTRO
+cat > "$release/release-manifest.json" <<'MANIFEST'
+{
+  "schema_version": 2,
+  "product": {
+    "name": "Unicity AOS Community Edition",
+    "version": "2026.9.0"
+  },
+  "target": "aarch64-apple-darwin",
+  "layout": {
+    "release_directory": "releases/2026.9.0",
+    "runtime_executables": "runtime/bin",
+    "capsule_assets": "capsules"
+  },
+  "runtime": {
+    "repository": "astrid-runtime/astrid",
+    "version": "0.11.0",
+    "tag": "v0.11.0",
+    "asset": "astrid-0.11.0-aarch64-apple-darwin.tar.gz",
+    "digest": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
+    "release_workflow_identity": "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.11.0"
+  }
+}
+MANIFEST
+cat > "$release/runtime/bin/astrid" <<'ASTRID'
+#!/usr/bin/env sh
+set -eu
+[ "${1:-}" = --version ] && printf 'astrid 0.11.0\n'
+ASTRID
 cat > "$AOS_HOME/bin/aos" <<'AOS'
 #!/usr/bin/env sh
 set -eu
 case " ${*:-} " in
-  *" --version "*) printf 'Unicity AOS 2026.1.0\n' ;;
+  *" --version "*) printf 'Unicity AOS 2026.9.0\n' ;;
   *" capsule show aos-mcp "*) exit 0 ;;
   *" status --json "*)
     [ "${TEST_STOPPED:-0}" -eq 0 ] || exit 1
@@ -35,7 +93,7 @@ case " ${*:-} " in
     ;;
   *" update --check "*)
     [ "${TEST_UPDATE_AVAILABLE:-0}" -eq 1 ] \
-      && printf '%s\n' 'Update available: Unicity AOS 2026.1.0 -> 2026.1.1. Run `aos update` to install.'
+      && printf '%s\n' 'Update available: Unicity AOS 2026.9.0 -> 2026.9.1. Run `aos update` to install.'
     exit 0
     ;;
   *" hook --host codex "*)
@@ -46,7 +104,9 @@ case " ${*:-} " in
   *) exit 0 ;;
 esac
 AOS
-chmod 700 "$AOS_HOME/bin/aos"
+chmod 700 "$AOS_HOME/bin/aos" "$release/runtime/bin/astrid"
+ln -s "releases/0.3.0" "$receipt_root/current"
+ln -s "current/Pack.lock" "$receipt_root/Pack.lock"
 EOF
 chmod 700 "$fake_installer"
 
@@ -97,7 +157,7 @@ PY
 grep -Fq -- '--host codex' "$log"
 grep -Fq -- '--skip-host-plugin' "$log"
 grep -Fq -- '--yes' "$log"
-grep -Fq -- '--oracle-version 0.2.6' "$log"
+grep -Fq -- '--oracle-version 0.3.0' "$log"
 if grep -Eq -- '--host (claude|grok)' "$log"; then
   echo "Codex bootstrap attempted to install another host" >&2
   exit 1
@@ -210,7 +270,7 @@ cat > "$check_home/bin/aos" <<'EOF'
 set -eu
 printf '%s\n' "$*" >> "$TEST_CHECK_LOG"
 [ "$*" = 'update --check' ]
-printf '%s\n' 'Update available: Unicity AOS 2026.1.0 -> 2026.1.1. Run `aos update` to install.'
+printf '%s\n' 'Update available: Unicity AOS 2026.9.0 -> 2026.9.1. Run `aos update` to install.'
 EOF
 chmod 700 "$check_home/bin/aos"
 

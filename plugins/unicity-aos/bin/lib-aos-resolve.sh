@@ -118,3 +118,168 @@ aos_resolve_apply() {
   export AOS AOS_SOURCE
   return 0
 }
+
+# Resolve the Astrid CLI bundled in the authenticated active AOS release.
+#
+# The mutable runtime home is never an executable search path. The signed
+# Oracle snapshot fixes the expected Astrid release, while AOS fixes the active
+# product release. Both release receipts must agree before an MCP process may
+# execute any runtime byte.
+aos_resolve_active_runtime() {
+  aos_resolve_apply || return $?
+  _aos_home="${AOS_HOME:-$HOME/.aos}"
+  _aos_plugin_root="$(_aos_resolve_plugin_root)"
+  _aos_oracle_version_file="$_aos_plugin_root/.aos-oracle-version"
+  [ -f "$_aos_oracle_version_file" ] && [ ! -L "$_aos_oracle_version_file" ] || {
+    echo "aos-resolve: plugin snapshot has no regular Oracle release identity" >&2
+    return 1
+  }
+  IFS= read -r _aos_oracle_version < "$_aos_oracle_version_file" || return 1
+  printf '%s\n' "$_aos_oracle_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+    echo "aos-resolve: plugin snapshot has an invalid Oracle release identity" >&2
+    return 1
+  }
+  _aos_version=$("$AOS" --version 2>/dev/null \
+    | awk 'NF { value = $NF } END { print value }')
+  printf '%s\n' "$_aos_version" \
+    | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || {
+      echo "aos-resolve: active AOS command reported an invalid release version" >&2
+      return 1
+    }
+
+  _aos_release="$_aos_home/releases/$_aos_version"
+  _aos_runtime="$_aos_release/runtime/bin/astrid"
+  _aos_distro="$_aos_release/Distro.toml"
+  _aos_manifest="$_aos_release/release-manifest.json"
+  _aos_oracle_root="$_aos_home/extensions/oracles/codex"
+  _aos_current="$_aos_oracle_root/current"
+  _aos_receipt_release="$_aos_oracle_root/releases/$_aos_oracle_version"
+  _aos_receipt="$_aos_current/Receipt.toml"
+  _aos_pack="$_aos_current/Pack.lock"
+  _aos_compat="$_aos_current/runtime-compatibility.toml"
+  for _aos_path in \
+    "$_aos_home" "$_aos_home/releases" "$_aos_release" \
+    "$_aos_release/runtime" "$_aos_release/runtime/bin"
+  do
+    [ -d "$_aos_path" ] && [ ! -L "$_aos_path" ] || {
+      echo "aos-resolve: active AOS release has an unsafe directory: $_aos_path" >&2
+      return 1
+    }
+  done
+  [ -d "$_aos_oracle_root" ] && [ ! -L "$_aos_oracle_root" ] \
+    && [ -d "$_aos_oracle_root/releases" ] \
+    && [ ! -L "$_aos_oracle_root/releases" ] \
+    && [ -d "$_aos_receipt_release" ] \
+    && [ ! -L "$_aos_receipt_release" ] || {
+      echo "aos-resolve: Oracle receipt directory is unsafe or missing" >&2
+      return 1
+    }
+  [ -L "$_aos_current" ] \
+    && [ "$(readlink "$_aos_current" 2>/dev/null)" = "releases/$_aos_oracle_version" ] || {
+      echo "aos-resolve: active Oracle receipt does not select this plugin release" >&2
+      return 1
+    }
+  for _aos_path in \
+    "$_aos_distro" "$_aos_manifest" "$_aos_receipt" "$_aos_pack" "$_aos_compat"
+  do
+    [ -f "$_aos_path" ] && [ ! -L "$_aos_path" ] || {
+      echo "aos-resolve: active AOS release is missing a regular receipt: $_aos_path" >&2
+      return 1
+    }
+  done
+  [ -f "$_aos_runtime" ] && [ ! -L "$_aos_runtime" ] && [ -x "$_aos_runtime" ] || {
+    echo "aos-resolve: active AOS release is missing its bundled Astrid CLI" >&2
+    return 1
+  }
+  grep -Fqx 'id = "unicity-ce"' "$_aos_distro" \
+    && grep -Fqx "version = \"$_aos_version\"" "$_aos_distro" || {
+      echo "aos-resolve: active AOS distribution identity does not match its release" >&2
+      return 1
+    }
+  grep -Fqx "oracle-version = \"$_aos_oracle_version\"" "$_aos_receipt" \
+    && grep -Fqx 'host = "codex"' "$_aos_receipt" \
+    && grep -Fqx 'principal = "codex-code"' "$_aos_receipt" \
+    && grep -Fqx "plugin-snapshot = \"../../../plugins/$_aos_oracle_version\"" "$_aos_receipt" \
+    && grep -Fqx "version = \"$_aos_oracle_version\"" "$_aos_pack" || {
+      echo "aos-resolve: active Oracle receipt identity does not match this plugin" >&2
+      return 1
+    }
+
+  _aos_expected_runtime=0.11.0
+  grep -Fqx 'repository = "astrid-runtime/astrid"' "$_aos_compat" \
+    && grep -Fqx "version = \"$_aos_expected_runtime\"" "$_aos_compat" \
+    && grep -Fqx "tag = \"v$_aos_expected_runtime\"" "$_aos_compat" \
+    && grep -Fqx "version-requirement = \"=$_aos_expected_runtime\"" "$_aos_compat" \
+    && grep -Fqx "release-workflow-identity = \"https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v$_aos_expected_runtime\"" "$_aos_compat" \
+    && grep -Fqx 'release-ready = true' "$_aos_compat" || {
+      echo "aos-resolve: Oracle receipt does not authorize a released Astrid $_aos_expected_runtime" >&2
+      return 1
+    }
+
+  command -v python3 >/dev/null 2>&1 || {
+    echo "aos-resolve: python3 is required to verify the active AOS release manifest" >&2
+    return 127
+  }
+  python3 - "$_aos_manifest" "$_aos_version" "$_aos_expected_runtime" <<'PY' || return 1
+import json
+import pathlib
+import sys
+
+path, product_version, runtime_version = sys.argv[1:]
+try:
+    manifest = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"aos-resolve: invalid active AOS release manifest: {error}")
+if manifest.get("schema_version") != 2:
+    raise SystemExit("aos-resolve: unsupported active AOS release manifest schema")
+product = manifest.get("product")
+runtime = manifest.get("runtime")
+if (
+    not isinstance(product, dict)
+    or product.get("name") != "Unicity AOS Community Edition"
+    or product.get("version") != product_version
+):
+    raise SystemExit("aos-resolve: active AOS manifest product version mismatch")
+if manifest.get("layout") != {
+    "release_directory": f"releases/{product_version}",
+    "runtime_executables": "runtime/bin",
+    "capsule_assets": "capsules",
+}:
+    raise SystemExit("aos-resolve: active AOS manifest runtime layout mismatch")
+if not isinstance(runtime, dict):
+    raise SystemExit("aos-resolve: active AOS manifest has no runtime identity")
+if runtime.get("repository") != "astrid-runtime/astrid" or runtime.get("version") != runtime_version:
+    raise SystemExit("aos-resolve: active AOS manifest runtime identity mismatch")
+target = manifest.get("target")
+if not isinstance(target, str) or not target:
+    raise SystemExit("aos-resolve: active AOS manifest has no target identity")
+if runtime.get("tag") != f"v{runtime_version}":
+    raise SystemExit("aos-resolve: active AOS manifest runtime tag mismatch")
+if runtime.get("asset") != f"astrid-{runtime_version}-{target}.tar.gz":
+    raise SystemExit("aos-resolve: active AOS manifest runtime asset mismatch")
+digest = runtime.get("digest")
+if (
+    not isinstance(digest, str)
+    or not digest.startswith("blake3:")
+    or len(digest) != len("blake3:") + 64
+    or any(character not in "0123456789abcdef" for character in digest[7:])
+):
+    raise SystemExit("aos-resolve: active AOS manifest runtime digest is invalid")
+expected_identity = (
+    "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml"
+    f"@refs/tags/v{runtime_version}"
+)
+if runtime.get("release_workflow_identity") != expected_identity:
+    raise SystemExit("aos-resolve: active AOS manifest runtime signer mismatch")
+PY
+
+  _aos_reported_runtime=$("$_aos_runtime" --version 2>/dev/null \
+    | awk 'NF { value = $NF } END { print value }')
+  [ "$_aos_reported_runtime" = "$_aos_expected_runtime" ] || {
+    echo "aos-resolve: bundled Astrid reports $_aos_reported_runtime, expected $_aos_expected_runtime" >&2
+    return 1
+  }
+  ASTRID="$_aos_runtime"
+  ASTRID_RELEASE="$_aos_release"
+  export ASTRID ASTRID_RELEASE
+}

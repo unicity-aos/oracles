@@ -4,7 +4,7 @@ set -eu
 umask 077
 
 ORACLES_REPO="${AOS_ORACLES_REPO:-unicity-aos/oracles}"
-ORACLES_VERSION="${AOS_ORACLES_VERSION:-0.2.6}"
+ORACLES_VERSION="${AOS_ORACLES_VERSION:-0.3.0}"
 AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/base-install.sh}"
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 AOS_CHANNEL=""
@@ -78,7 +78,7 @@ Usage: install.sh [options]
   --host HOST       install claude, codex, or grok (repeatable)
   --all             install every supported host
   --yes, -y         non-interactive host-pack provisioning
-  --oracle-version V exact signed oracle pack version (default: 0.2.6)
+  --oracle-version V exact signed oracle pack version (default: 0.3.0)
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
@@ -404,13 +404,16 @@ ensure_base() {
   daemon_was_live=1
   if ! daemon_is_live; then daemon_was_live=0; fi
   if [ "$daemon_was_live" -eq 0 ]; then
-    version=$(aos --version | awk 'NF { value = $NF } END { print value }')
-    cli_artifact="$AOS_HOME_DIR/releases/$version/capsules/aos-cli.capsule"
-    [ -f "$cli_artifact" ] && [ ! -L "$cli_artifact" ] \
-      || die "installed Unicity AOS $version is missing aos-cli.capsule"
-    aos --principal default capsule install "$cli_artifact" --yes </dev/null
-    say "Starting Unicity CE..."
-    aos --principal default start >/dev/null
+    # The AOS-owned init command is the only supported bootstrap authority. It
+    # applies the authenticated release manifest as one OperatorDistribution;
+    # an Oracle must never turn the release's individual capsule files into
+    # caller-approved installs.
+    aos --principal default init --yes </dev/null \
+      || die "could not apply the signed Unicity AOS operator distribution"
+    if ! daemon_is_live; then
+      say "Starting Unicity CE..."
+      aos --principal default start >/dev/null
+    fi
     daemon_is_live \
       || die "Unicity CE did not become reachable after the runtime reported readiness"
   fi
@@ -876,7 +879,8 @@ aos_release_has_capsule() {
   ar_name=$1
   ar_release=$2
   ar_artifact="$ar_release/capsules/$ar_name.capsule"
-  [ -f "$ar_release/Distro.toml" ] && [ ! -L "$ar_release/Distro.toml" ] \
+  [ -d "$ar_release/capsules" ] && [ ! -L "$ar_release/capsules" ] \
+    && [ -f "$ar_release/Distro.toml" ] && [ ! -L "$ar_release/Distro.toml" ] \
     && [ -f "$ar_release/capsule-assets.txt" ] && [ ! -L "$ar_release/capsule-assets.txt" ] \
     && [ -f "$ar_artifact" ] && [ ! -L "$ar_artifact" ] \
     && grep -Fqx "$ar_name.capsule" "$ar_release/capsule-assets.txt" \
@@ -907,41 +911,6 @@ aos_release_has_capsule() {
     ' "$ar_release/Distro.toml"
 }
 
-install_aos_capsule_for_principal() {
-  iac_principal=$1
-  iac_name=$2
-  iac_artifact=$3
-  iac_install=1
-  AOS_CAPSULE_RESOLVED=0
-
-  if load_capsule_record "$iac_principal" "$iac_name"; then
-    case "$CAPSULE_SOURCE" in
-      "$iac_artifact") iac_install=0 ;;
-      "$AOS_HOME_DIR"/releases/*/capsules/"$iac_name".capsule) ;;
-      *)
-        say "Preserving locally supplied capsule '$iac_name' for $iac_principal without granting it as an AOS dependency."
-        return 0
-        ;;
-    esac
-  fi
-
-  if [ "$iac_install" -eq 1 ]; then
-    if [ "$ASSUME_YES" -eq 1 ]; then
-      aos --principal "$iac_principal" capsule install "$iac_artifact" --yes </dev/null
-    elif [ -r /dev/tty ]; then
-      aos --principal "$iac_principal" capsule install "$iac_artifact" </dev/tty
-    else
-      aos --principal "$iac_principal" capsule install "$iac_artifact"
-    fi
-  fi
-
-  load_capsule_record "$iac_principal" "$iac_name" \
-    || die "AOS capsule dependency '$iac_name' has no readable identity for $iac_principal"
-  [ "$CAPSULE_SOURCE" = "$iac_artifact" ] \
-    || die "AOS capsule dependency '$iac_name' did not resolve to the active product release"
-  AOS_CAPSULE_RESOLVED=1
-}
-
 resolve_aos_capsules() {
   rac_principal=$1
   rac_release="$AOS_HOME_DIR/releases/$ACTIVE_AOS_VERSION"
@@ -954,7 +923,9 @@ resolve_aos_capsules() {
   grep -Fqx "version = \"$ACTIVE_AOS_VERSION\"" "$rac_release/Distro.toml" \
     || die "installed Unicity AOS release and distribution versions differ"
   RESOLVED_AOS_CAPSULES="$WORK/resolved-$rac_principal.aos-capsules"
+  RESOLVED_AOS_IDENTITIES="$WORK/resolved-$rac_principal.aos-identities"
   : > "$RESOLVED_AOS_CAPSULES"
+  : > "$RESOLVED_AOS_IDENTITIES"
 
   # Validate the complete required set before installing or granting any of
   # it. A partially compatible product release must not leave a half-applied
@@ -969,6 +940,32 @@ resolve_aos_capsules() {
     fi
   done < "$CURRENT_AOS_CAPSULES"
 
+  # Reject an existing foreign same-name target before first-boot init. The
+  # operator transaction may establish the authenticated default identity,
+  # but it must never be used as a pretext to mutate around an already foreign
+  # host-principal binding.
+  while read -r rac_name rac_availability rac_extra; do
+    [ -n "$rac_name" ] || continue
+    [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
+    aos_release_has_capsule "$rac_name" "$rac_release" || continue
+    rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    if load_capsule_record "$rac_principal" "$rac_name" \
+      && [ "$CAPSULE_SOURCE" != "$rac_artifact" ]
+    then
+      die "AOS capsule dependency '$rac_name' for $rac_principal is outside the signed operator distribution"
+    fi
+  done < "$CURRENT_AOS_CAPSULES"
+
+  # Only bootstrap the distribution after the complete signed subset has been
+  # proven present. A release missing a required Oracle dependency must not
+  # make a partial first-boot mutation.
+  ensure_base
+
+  # The default principal is the authenticated source for host grants. If its
+  # installed identities do not exactly match this active product release,
+  # reconcile the entire signed distribution in one AOS-owned transaction.
+  # Never approve or install one capsule at a time here.
+  rac_apply=0
   while read -r rac_name rac_availability rac_extra; do
     [ -n "$rac_name" ] || continue
     [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
@@ -976,10 +973,43 @@ resolve_aos_capsules() {
       say "AOS capsule '$rac_name' is unavailable in Unicity AOS $ACTIVE_AOS_VERSION; continuing without it."
       continue
     fi
-    install_aos_capsule_for_principal \
-      "$rac_principal" "$rac_name" "$rac_release/capsules/$rac_name.capsule"
-    [ "$AOS_CAPSULE_RESOLVED" -eq 1 ] || continue
+    rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    if ! load_capsule_record default "$rac_name" \
+      || [ "$CAPSULE_SOURCE" != "$rac_artifact" ]
+    then
+      rac_apply=1
+    fi
+  done < "$CURRENT_AOS_CAPSULES"
+
+  if [ "$rac_apply" -eq 1 ]; then
+    say "Reconciling the signed Unicity AOS operator distribution..."
+    aos --principal default init --yes </dev/null \
+      || die "could not reconcile the signed Unicity AOS operator distribution"
+  fi
+
+  # Snapshot every selected default identity and reject a same-name foreign
+  # target before the grant transaction. agent modify intentionally preserves
+  # an existing target package; without this preflight that behavior could
+  # silently grant bytes outside the signed distribution.
+  while read -r rac_name rac_availability rac_extra; do
+    [ -n "$rac_name" ] || continue
+    [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
+    if ! aos_release_has_capsule "$rac_name" "$rac_release"; then
+      continue
+    fi
+    rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    load_capsule_record default "$rac_name" \
+      || die "signed AOS distribution has no readable identity for '$rac_name'"
+    [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+      || die "signed AOS distribution capsule '$rac_name' does not resolve to the active release"
+    rac_hash=$CAPSULE_HASH
+    printf '%s %s\n' "$rac_name" "$rac_hash" >> "$RESOLVED_AOS_IDENTITIES"
     printf '%s\n' "$rac_name" >> "$RESOLVED_AOS_CAPSULES"
+    if load_capsule_record "$rac_principal" "$rac_name"; then
+      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+        && [ "$CAPSULE_HASH" = "$rac_hash" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
+    fi
   done < "$CURRENT_AOS_CAPSULES"
 }
 
@@ -1018,8 +1048,8 @@ install_pack() {
   load_previous_bindings "$host" "$principal"
   OBSOLETE_BINDINGS="$WORK/obsolete-$host.bindings"
   : > "$OBSOLETE_BINDINGS"
-  ensure_principal "$host" "$principal"
   resolve_aos_capsules "$principal"
+  ensure_principal "$host" "$principal"
 
   for capsule in $(capsules_for "$host"); do
     expected_hash=$(binding_hash "$CURRENT_PACK_BINDINGS" "$capsule") \
@@ -1062,6 +1092,17 @@ install_pack() {
     set -- "$@" --add-capsule "$capsule"
   done < "$RESOLVED_AOS_CAPSULES"
   "$@" >/dev/null
+
+  while read -r capsule expected_hash capsule_extra; do
+    [ -n "$capsule" ] || continue
+    [ -z "${capsule_extra:-}" ] || die "invalid resolved AOS capsule identity"
+    expected_source="$AOS_HOME_DIR/releases/$ACTIVE_AOS_VERSION/capsules/$capsule.capsule"
+    load_capsule_record "$principal" "$capsule" \
+      || die "AOS capsule grant '$capsule' has no readable identity for $principal"
+    [ "$CAPSULE_SOURCE" = "$expected_source" ] \
+      && [ "$CAPSULE_HASH" = "$expected_hash" ] \
+      || die "AOS capsule grant '$capsule' for $principal differs from the signed operator distribution"
+  done < "$RESOLVED_AOS_IDENTITIES"
 
   while read -r previous_name previous_hash previous_extra; do
     [ -n "$previous_name" ] || continue
@@ -1204,7 +1245,6 @@ if [ "$PLUGINS_ONLY" -eq 1 ]; then
 fi
 enter_product_workspace
 repair_runtime_workspace_selection
-ensure_base
 for host in $hosts; do
   install_pack "$host"
   prepare_plugin_snapshot

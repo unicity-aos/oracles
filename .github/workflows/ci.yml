@@ -120,7 +120,8 @@ jobs:
           set -euo pipefail
           jq -e '
             .mcpServers.aos.command == "/bin/sh" and
-            .mcpServers.aos.cwd == "." and
+            (.mcpServers.aos | has("cwd") | not) and
+            .mcpServers.aos.args[0] == "-c" and
             .mcpServers.aos.startup_timeout_sec == 20
           ' plugins/unicity-aos/.mcp.json
           python3 scripts/test_codex_mcp_startup.py
@@ -172,13 +173,6 @@ jobs:
 
           resolved="$(AOS_PLUGIN_ROOT="$PWD/plugins/unicity-aos" AOS_BIN="$bin_root/aos" sh -c '. "$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"; aos_resolve_cli')"
           test "$resolved" = "direct|$bin_root/aos"
-
-          mkdir -p "$bin_root/home/extensions/oracles/codex"
-          printf 'version = "%s"\n' "$(cat release/oracle-version)" \
-            > "$bin_root/home/extensions/oracles/codex/Pack.lock"
-          forwarded="$(AOS_HOME="$bin_root/home" AOS_BIN=/bin/echo plugins/unicity-aos/bin/aos-up --principal codex-code)"
-          runtime_root="$(CDPATH= cd -P -- "$bin_root/home/runtime" && pwd -P)"
-          test "$forwarded" = "--principal codex-code mcp attach --workspace $runtime_root"
 
       - name: Verify Claude/Grok plugins are self-contained (synced from common)
         run: |

@@ -3,13 +3,13 @@ schema-version = 1
 [pack]
 id = "codex-oracle"
 name = "Unicity AOS for Codex"
-version = "0.2.6"
+version = "0.3.0"
 host = "codex"
 principal = "codex-code"
 description = "Codex integration for Unicity AOS."
 repository = "https://github.com/unicity-aos/oracles"
 license = "MIT OR Apache-2.0"
-aos-version = ">=2026.1.3"
+aos-version = ">=2026.9.0"
 
 [[aos-capsule]]
 name = "aos-mcp"

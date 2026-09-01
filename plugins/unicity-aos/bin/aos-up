@@ -48,7 +48,7 @@ printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
 codex_ready() {
   [ -r "$PACK_RECEIPT" ] \
     && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
-    && aos_resolve_apply 2>/dev/null \
+    && aos_resolve_active_runtime 2>/dev/null \
     && "$AOS" capsule show aos-mcp --agent codex-code >/dev/null 2>&1
 }
 
@@ -352,29 +352,46 @@ launch_codex_exec() {
 }
 
 mcp_cli() {
-  runtime="${ASTRID_HOME:-${AOS_HOME:-$HOME/.aos}/runtime}"
-  if [ -x "$runtime/bin/astrid" ]; then
-    printf '%s\n' "$runtime/bin/astrid"
-    return 0
-  fi
-  aos_resolve_apply || return 1
-  printf '%s\n' "$AOS"
+  aos_resolve_active_runtime || return $?
+  printf '%s\n' "$ASTRID"
 }
 
 host_project() {
   runtime="${ASTRID_HOME:-${AOS_HOME:-$HOME/.aos}/runtime}"
-  for var in ASTRID_WORKSPACE AOS_HOST_WORKSPACE CODEX_WORKSPACE; do
-    eval "val=\${$var:-}"
-    if [ -n "$val" ] && [ -d "$val" ]; then
-      (CDPATH= cd -P -- "$val" && pwd -P) 2>/dev/null && return 0
+  selected=""
+  for val in \
+    "${ASTRID_WORKSPACE:-}" \
+    "${AOS_HOST_WORKSPACE:-}" \
+    "${CODEX_WORKSPACE:-}"
+  do
+    [ -n "$val" ] || continue
+    case "$val" in
+      /*) ;;
+      *) echo "aos-up: project workspace must be an absolute path" >&2; return 1 ;;
+    esac
+    [ -d "$val" ] && [ ! -L "$val" ] || {
+      echo "aos-up: project workspace is not a regular directory: $val" >&2
+      return 1
+    }
+    canonical=$(CDPATH= cd -P -- "$val" 2>/dev/null && pwd -P) || return 1
+    if [ -n "$selected" ] && [ "$selected" != "$canonical" ]; then
+      echo "aos-up: conflicting project workspace identities" >&2
+      return 1
     fi
+    selected=$canonical
   done
-  plugin=$(CDPATH= cd -P -- "$HERE/.." >/dev/null 2>&1 && pwd -P) || plugin="$HERE/.."
-  cwd=$(pwd -P 2>/dev/null || pwd)
-  if [ "$cwd" = "$plugin" ] || [ "$cwd" = "$HERE" ]; then
-    (CDPATH= cd -P -- "$runtime" && pwd -P) 2>/dev/null && return 0
+  if [ -z "$selected" ]; then
+    selected=$HOST_WORKSPACE
   fi
-  printf '%s\n' "$cwd"
+  plugin=$(CDPATH= cd -P -- "$HERE/.." >/dev/null 2>&1 && pwd -P) || plugin="$HERE/.."
+  canonical_runtime=$(CDPATH= cd -P -- "$runtime" 2>/dev/null && pwd -P) || canonical_runtime=$runtime
+  case "$selected" in
+    "$plugin"|"$HERE"|"$canonical_runtime")
+      echo "aos-up: Codex did not supply an exact project workspace" >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "$selected"
 }
 
 mcp_serve() {
@@ -411,7 +428,7 @@ mcp_attach() {
     echo "aos-up: could not resolve the AOS/Astrid CLI for MCP attach" >&2
     exit 127
   }
-  workspace=$(host_project)
+  workspace=$(host_project) || exit $?
   CDPATH= cd -P -- "$runtime" 2>/dev/null || true
   "$cli" --principal "$principal" mcp ready --format json >/dev/null
   frame="$HERE/aos-mcp-frame"

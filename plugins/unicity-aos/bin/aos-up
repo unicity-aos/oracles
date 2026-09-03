@@ -6,6 +6,11 @@
 # turns Codex hooks into engine events, and launches Codex profiles.
 set -eu
 
+if [ -n "${AOS_PRINCIPAL_ID:-}" ] && [ "$AOS_PRINCIPAL_ID" != codex-code ]; then
+  echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
+  exit 1
+fi
+
 HOST_WORKSPACE=$(pwd -P 2>/dev/null || pwd)
 HERE=$(CDPATH= cd -- "$(dirname "$0")" 2>/dev/null && pwd -P) || HERE=$(dirname "$0")
 export ASTRID_HOST=codex

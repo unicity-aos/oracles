@@ -970,8 +970,19 @@ grok_pack_lock="$multi_host_home/extensions/oracles/grok/Pack.lock"
 test -f "$grok_pack_lock"
 test ! -L "$grok_pack_lock"
 cmp -s "$grok_pack_lock" "$work/multi-host-grok-Pack.lock"
-test "$(/usr/bin/stat -f '%Lp' "$grok_pack_lock" 2>/dev/null \
-  || /usr/bin/stat -c '%a' "$grok_pack_lock")" = 604
+pack_lock_mode=$(stat -c '%a' "$grok_pack_lock" 2>/dev/null \
+  || stat -f '%Lp' "$grok_pack_lock" 2>/dev/null \
+  || true)
+case "$pack_lock_mode" in
+  ''|*[!0-7]*)
+    echo "could not read an octal Pack.lock mode for $grok_pack_lock" >&2
+    exit 1
+    ;;
+esac
+if [ "$pack_lock_mode" != 604 ]; then
+  echo "Pack.lock mode is $pack_lock_mode, expected 604" >&2
+  exit 1
+fi
 test "$(readlink "$multi_host_home/extensions/oracles/grok/current")" = releases/0.2.8
 test ! -e "$multi_host_home/extensions/oracles/grok/releases/0.3.0"
 test ! -e "$multi_host_home/extensions/oracles/.install.lock"

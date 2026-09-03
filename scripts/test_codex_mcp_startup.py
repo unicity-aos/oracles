@@ -339,7 +339,7 @@ def exercise_hook_adapter(root: Path) -> None:
     assert json.loads(payload_log.read_text()) == json.loads(payload)
 
 
-def exercise_prebootstrap_foreign_principal(root: Path) -> None:
+def exercise_prebootstrap_principal_gate(root: Path) -> None:
     test_root = root / "codex-prebootstrap-principal"
     home = test_root / "home" / ".aos"
     workspace = test_root / "workspace"
@@ -365,7 +365,6 @@ def exercise_prebootstrap_foreign_principal(root: Path) -> None:
         "AOS_BIN": str(fake_aos),
         "AOS_HOME": str(home),
         "AOS_ORACLES_INSTALLER": str(fake_installer),
-        "ASTRID_PRINCIPAL_ID": "foreign-principal",
         "CODEX_PLUGIN_ROOT": str(PLUGIN),
         "PLUGIN_ROOT": str(PLUGIN),
         "PATH": python_path(),
@@ -373,19 +372,75 @@ def exercise_prebootstrap_foreign_principal(root: Path) -> None:
         "TEST_INSTALL_LOG": str(installer_log),
         "TMPDIR": str(test_root),
     }
-    result = subprocess.run(
-        [str(PLUGIN / "bin/aos-up"), "--help"],
-        cwd=workspace,
-        env=environment,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=5,
-        check=False,
-    )
-    assert result.returncode != 0, (result.stdout, result.stderr)
-    assert "refusing non-codex-code principal" in result.stderr
+    for foreign_environment in (
+        {**environment, "ASTRID_PRINCIPAL_ID": "foreign-principal"},
+        {**environment, "AOS_PRINCIPAL_ID": "foreign-principal"},
+    ):
+        launcher = subprocess.run(
+            [str(PLUGIN / "bin/aos-up"), "--help"],
+            cwd=workspace,
+            env=foreign_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert launcher.returncode != 0, (launcher.stdout, launcher.stderr)
+        assert "refusing non-codex-code principal" in launcher.stderr
+
+        doctor = subprocess.run(
+            [str(PLUGIN / "bin/aos-doctor"), "--format", "hook"],
+            cwd=workspace,
+            env=foreign_environment,
+            input="",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert doctor.returncode != 0, (doctor.stdout, doctor.stderr)
+        assert "refusing non-codex-code principal" in doctor.stderr
+
     assert not aos_log.exists()
+    assert not installer_log.exists()
+    assert not home.exists()
+
+    for allowed_environment in (
+        {**environment, "AOS_PRINCIPAL_ID": ""},
+        {**environment, "AOS_PRINCIPAL_ID": "codex-code"},
+    ):
+        launcher = subprocess.run(
+            [str(PLUGIN / "bin/aos-up"), "--help"],
+            cwd=workspace,
+            env=allowed_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert launcher.returncode == 0, (launcher.stdout, launcher.stderr)
+        assert "--principal codex-code --help" in aos_log.read_text().splitlines(), (
+            aos_log.read_text(),
+            launcher.stdout,
+            launcher.stderr,
+        )
+
+        doctor = subprocess.run(
+            [str(PLUGIN / "bin/aos-doctor"), "--format", "human"],
+            cwd=workspace,
+            env=allowed_environment,
+            input="",
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert doctor.returncode == 0, (doctor.stdout, doctor.stderr)
+        assert "is not provisioned for the oracle pack" in doctor.stdout
     assert not installer_log.exists()
     assert not home.exists()
 
@@ -474,7 +529,7 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory(prefix="aos-codex-mcp-") as raw:
         root = Path(raw).resolve()
-        exercise_prebootstrap_foreign_principal(root)
+        exercise_prebootstrap_principal_gate(root)
         exercise_transport_failure(root)
         home = root / "home" / ".aos"
         fake_bin = root / "bin"

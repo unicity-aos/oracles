@@ -2,6 +2,11 @@
 # SessionStart bootstrap and health check for the Unicity AOS Codex plugin.
 set -eu
 
+if [ -n "${AOS_PRINCIPAL_ID:-}" ] && [ "$AOS_PRINCIPAL_ID" != codex-code ]; then
+  printf '%s\n' "aos-doctor: refusing non-codex-code principal on the Codex plugin path" >&2
+  exit 2
+fi
+
 MODE=human
 while [ "$#" -gt 0 ]; do
   case "$1" in

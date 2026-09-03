@@ -205,6 +205,25 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
     assert 32 <= len(tokens[0]) <= 128 and tokens[0].isalnum(), tokens[0]
     assert json.loads(payload_log.read_text()) == json.loads(payload)
 
+    wrong_principal = "wrong-code"
+    principal_environment = dict(environment)
+    principal_environment["ASTRID_PRINCIPAL_ID"] = wrong_principal
+    principal_environment["TEST_HOOK_ARGS"] = str(args_log) + ".principal"
+    result = subprocess.run(
+        command,
+        cwd=workspace,
+        env=principal_environment,
+        input=payload,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert f"refusing non-{spec['principal']} principal" in result.stderr
+    assert not Path(str(args_log) + ".principal").exists()
+
 
 def exercise_host(host: str, root: Path) -> None:
     spec = HOSTS[host]
@@ -273,6 +292,26 @@ def exercise_host(host: str, root: Path) -> None:
     assert args_log.read_text().strip() == (
         f"--principal {spec['principal']} mcp serve"
     )
+
+    args_before = args_log.read_text()
+    for bad_environment, bad_arguments in (
+        ({**environment, "ASTRID_PRINCIPAL_ID": "wrong-code"}, []),
+        (environment, ["--principal", "wrong-code"]),
+    ):
+        rejected = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), *bad_arguments],
+            cwd=workspace,
+            env=bad_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert f"refusing a non-host principal for the {host} plugin" in rejected.stderr
+    added_arguments = args_log.read_text()[len(args_before):].splitlines()
+    assert not any(argument.endswith(" mcp serve") for argument in added_arguments)
 
     # A receipt alone is not ready until the product command is executable.
     (home / "bin/aos").unlink()

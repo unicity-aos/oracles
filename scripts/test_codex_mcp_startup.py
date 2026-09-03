@@ -113,6 +113,26 @@ def ready_compatibility(release_ready: bool = True) -> str:
     )
 
 
+def executable_statement(
+    *,
+    schema_version: int = 2,
+    target: str = "aarch64-apple-darwin",
+    path: str = "runtime/bin/astrid",
+    blake3: str = "0" * 64,
+    sha256: str = "0" * 64,
+) -> str:
+    return (
+        f"schema-version = {schema_version}\n"
+        'product = "unicity-aos-ce"\n'
+        'version = "2026.9.0"\n\n'
+        "[[executables]]\n"
+        f'target = "{target}"\n'
+        f'path = "{path}"\n'
+        f'blake3 = "{blake3}"\n'
+        f'sha256 = "{sha256}"\n'
+    )
+
+
 def plant_fake_runtime(home: Path, installer: Path) -> None:
     write_executable(
         installer,
@@ -174,6 +194,18 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         "exit 95\n"
         "LEGACY\n"
         'chmod 700 "$AOS_HOME/bin/aos" "$release/runtime/bin/astrid" "$AOS_HOME/runtime/bin/astrid"\n'
+        'runtime_blake3=$(b3sum "$release/runtime/bin/astrid" | awk \'{print $1}\')\n'
+        'runtime_sha256=$(shasum -a 256 "$release/runtime/bin/astrid" | awk \'{print $1}\')\n'
+        'cat > "$release/unicity-aos-2026.9.0-release.toml" <<STATEMENT\n'
+        "schema-version = 2\n"
+        'product = "unicity-aos-ce"\n'
+        'version = "2026.9.0"\n\n'
+        "[[executables]]\n"
+        'target = "aarch64-apple-darwin"\n'
+        'path = "runtime/bin/astrid"\n'
+        'blake3 = "$runtime_blake3"\n'
+        'sha256 = "$runtime_sha256"\n'
+        "STATEMENT\n"
         'ln -s "releases/0.3.0" "$receipt_root/current"\n'
         'ln -s "current/Pack.lock" "$receipt_root/Pack.lock"\n',
     )
@@ -262,6 +294,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="aos-codex-mcp-") as raw:
         root = Path(raw)
         home = root / "home" / ".aos"
+        fake_bin = root / "bin"
+        write_executable(
+            fake_bin / "b3sum",
+            "#!/bin/sh\nshasum -a 256 \"$1\" | awk '{print $1}'\n",
+        )
         installer = root / "oracle-installer"
         install_log = root / "installer-args"
         aos_log = root / "aos-args"
@@ -279,7 +316,7 @@ def main() -> None:
             "HOME": str(root / "home"),
             "AOS_HOME": str(home),
             "AOS_ORACLES_INSTALLER": str(installer),
-            "PATH": python_path(),
+            "PATH": f"{fake_bin}:{python_path()}",
             "TEST_INSTALL_LOG": str(install_log),
             "TEST_AOS_LOG": str(aos_log),
             "TEST_AOS_CWD_LOG": str(aos_cwd_log),
@@ -331,14 +368,128 @@ def main() -> None:
         assert plugin_cwd.returncode != 0, (plugin_cwd.stdout, plugin_cwd.stderr)
         assert "did not supply an exact project workspace" in plugin_cwd.stderr
 
+        # ASTRID_HOME is Astrid state configuration, never an executable-root
+        # override. A malicious or stale value cannot redirect active release
+        # resolution away from the AOS-owned product runtime.
+        astrid_state_home = root / "astrid-state-home"
+        astrid_state_home.mkdir()
+        state_env = dict(environment)
+        state_env["ASTRID_HOME"] = str(astrid_state_home)
+        astrid_log.write_text("")
+        state_launch = launch(state_env, host_workspace)
+        assert state_launch.returncode == 0, (
+            state_launch.returncode,
+            state_launch.stdout,
+            state_launch.stderr,
+        )
+        state_attach = [
+            line for line in astrid_log.read_text().splitlines() if "mcp attach" in line
+        ]
+        assert state_attach == [
+            f"--principal codex-code mcp attach --workspace {host_workspace.resolve()}"
+        ], state_attach
+
+        # Both the explicit argv boundary and ambient principal configuration
+        # fail closed before selecting or executing the runtime.
+        astrid_log_before = astrid_log.read_text()
+        for foreign_environment, foreign_args in (
+            ({**environment, "ASTRID_PRINCIPAL_ID": "foreign-principal"}, []),
+            (environment, ["--principal", "foreign-principal"]),
+        ):
+            foreign = subprocess.run(
+                [str(PLUGIN / "bin/aos-up"), *foreign_args],
+                cwd=host_workspace,
+                env=foreign_environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            assert foreign.returncode != 0, (foreign.stdout, foreign.stderr)
+            assert "refusing non-codex-code principal" in foreign.stderr
+        assert astrid_log.read_text() == astrid_log_before, (
+            astrid_log_before,
+            astrid_log.read_text(),
+        )
+
         resolved = resolve_active(environment)
         expected_runtime = home / "releases/2026.9.0/runtime/bin/astrid"
         assert resolved.returncode == 0, (resolved.stdout, resolved.stderr)
         assert resolved.stdout.strip() == str(expected_runtime)
 
+        # The schema-v2 executable table is the only accepted byte authority.
+        # Its absence, v1 predecessor form, and archive-only manifest digest
+        # all fail closed.
+        statement = home / "releases/2026.9.0/unicity-aos-2026.9.0-release.toml"
+        statement_text = statement.read_text()
+        statement.unlink()
+        rejected = resolve_active(environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "no regular signed executable statement" in rejected.stderr
+        statement.write_text(executable_statement(schema_version=1))
+        rejected = resolve_active(environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "must use schema-version 2" in rejected.stderr
+        statement.write_text(
+            'schema-version = 2\nproduct = "unicity-aos-ce"\nversion = "2026.9.0"\n'
+        )
+        rejected = resolve_active(environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "does not authorize this Astrid path" in rejected.stderr
+        statement.write_text(executable_statement(path="runtime/bin/astrid-daemon"))
+        rejected = resolve_active(environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "authorizes the wrong path" in rejected.stderr
+        statement.write_text(statement_text)
+
+        substituted = expected_runtime.read_text() + "# substituted bytes\n"
+        expected_runtime.write_text(substituted)
+        rejected = resolve_active(environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "BLAKE3 digest does not match" in rejected.stderr
+        expected_runtime.write_text(expected_runtime.read_text().replace(substituted, ""))
+
+        preserved_bytes = expected_runtime.read_bytes()
+        expected_runtime.unlink()
+        expected_runtime.symlink_to(root / "outside-runtime")
+        (root / "outside-runtime").write_text("#!/bin/sh\nexit 0\n")
+        rejected = resolve_active(environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "missing its bundled Astrid CLI" in rejected.stderr
+        expected_runtime.unlink()
+        expected_runtime.write_bytes(preserved_bytes)
+        expected_runtime.chmod(0o700)
+
         wrong_runtime = dict(environment)
         wrong_runtime["TEST_RUNTIME_VERSION"] = "0.10.4"
         rejected = resolve_active(wrong_runtime)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "BLAKE3 digest does not match" in rejected.stderr
+        expected_runtime.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            '[ "${1:-}" = --version ] && printf "astrid 0.10.4\\n"\n'
+        )
+        expected_runtime.chmod(0o700)
+        wrong_report_digests = subprocess.run(
+            ["/bin/sh", "-c", (
+                f'printf "%s %s" "$(b3sum {expected_runtime} | awk \'{{print $1}}\')" '
+                f'"$(shasum -a 256 {expected_runtime} | awk \'{{print $1}}\')"'
+            )],
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        ).stdout.split()
+        statement.write_text(executable_statement())
+        statement.write_text(
+            executable_statement(
+                blake3=wrong_report_digests[0], sha256=wrong_report_digests[1]
+            )
+        )
+        rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
         assert "expected 0.11.0" in rejected.stderr
 

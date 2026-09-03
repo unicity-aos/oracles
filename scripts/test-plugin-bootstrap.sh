@@ -6,7 +6,13 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 home="$work/home"
 log="$work/install.log"
-mkdir -p "$home"
+fake_bin="$work/bin"
+mkdir -p "$home" "$fake_bin"
+cat > "$fake_bin/b3sum" <<'EOF'
+#!/usr/bin/env sh
+shasum -a 256 "$1" | awk '{print $1}'
+EOF
+chmod 700 "$fake_bin/b3sum"
 
 fake_installer="$work/fake-oracle-installer.sh"
 cat > "$fake_installer" <<'EOF'
@@ -81,6 +87,22 @@ cat > "$release/runtime/bin/astrid" <<'ASTRID'
 set -eu
 [ "${1:-}" = --version ] && printf 'astrid 0.11.0\n'
 ASTRID
+runtime_blake3=$(b3sum "$release/runtime/bin/astrid" 2>/dev/null | awk '{print $1}') || runtime_blake3=
+runtime_sha256=$(shasum -a 256 "$release/runtime/bin/astrid" 2>/dev/null | awk '{print $1}')
+if [ "${#runtime_blake3}" -ne 64 ] || [ "${#runtime_sha256}" -ne 64 ]; then
+  exit 90
+fi
+cat > "$release/unicity-aos-2026.9.0-release.toml" <<STATEMENT
+schema-version = 2
+product = "unicity-aos-ce"
+version = "2026.9.0"
+
+[[executables]]
+target = "aarch64-apple-darwin"
+path = "runtime/bin/astrid"
+blake3 = "$runtime_blake3"
+sha256 = "$runtime_sha256"
+STATEMENT
 cat > "$AOS_HOME/bin/aos" <<'AOS'
 #!/usr/bin/env sh
 set -eu
@@ -111,7 +133,7 @@ EOF
 chmod 700 "$fake_installer"
 
 output=$(env -i \
-  PATH=/usr/bin:/bin \
+  PATH="$fake_bin:/usr/bin:/bin" \
   HOME="$home" \
   AOS_HOME="$home/.aos" \
   AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
@@ -139,7 +161,7 @@ test "$(wc -l < "$log" | tr -d ' ')" = 1
 
 rm -rf "$home/.aos/update/host-update-check"
 update_output=$(env -i \
-  PATH=/usr/bin:/bin \
+  PATH="$fake_bin:/usr/bin:/bin" \
   HOME="$home" \
   AOS_HOME="$home/.aos" \
   AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
@@ -167,7 +189,7 @@ fi
 # adapter to start on demand. Another startup is read-only and never re-enters
 # the installer.
 stopped_output=$(env -i \
-  PATH=/usr/bin:/bin \
+  PATH="$fake_bin:/usr/bin:/bin" \
   HOME="$home" \
   AOS_HOME="$home/.aos" \
   AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
@@ -208,7 +230,7 @@ hook_aos_cwd="$work/hook-aos-cwd"
 hook_args="$work/hook-args"
 mkdir -p "$project"
 (cd "$project" && printf '%s\n' '{"session_id":"release-smoke"}' | env -i \
-  PATH=/usr/bin:/bin \
+  PATH="$fake_bin:/usr/bin:/bin" \
   HOME="$home" \
   AOS_HOME="$home/.aos" \
   AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
@@ -238,7 +260,7 @@ PY
 route_token="$home/.aos/cache/oracles/hooks/codex/codex-release-smoke.token"
 test -f "$route_token"
 (cd "$project" && printf '%s\n' '{"session_id":"release-smoke","last_assistant_message":"done"}' | env -i \
-  PATH=/usr/bin:/bin \
+  PATH="$fake_bin:/usr/bin:/bin" \
   HOME="$home" \
   AOS_HOME="$home/.aos" \
   AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
@@ -249,7 +271,7 @@ test -f "$route_token"
   "$repo_root/plugins/unicity-aos/bin/aos-up" codex hook stop)
 test -f "$route_token"
 (cd "$project" && printf '%s\n' '{"session_id":"release-smoke"}' | env -i \
-  PATH=/usr/bin:/bin \
+  PATH="$fake_bin:/usr/bin:/bin" \
   HOME="$home" \
   AOS_HOME="$home/.aos" \
   AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \

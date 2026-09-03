@@ -71,6 +71,12 @@ trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 
+# Reject the trust bypass before argument-specific parsing can consume it as a
+# value for --aos-channel, --aos-version, --oracle-version, or --aos-installer.
+for sentinel_argument in "$@"; do
+  [ "$sentinel_argument" != "--approve-untrusted" ] || die "--approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution"
+done
+
 usage() {
   cat <<'EOF'
 Usage: install.sh [options]
@@ -247,6 +253,59 @@ acquire_install_lock() {
     release_install_lock
     die "could not secure oracle install lock owner"
   fi
+}
+
+ensure_contained_directory() {
+  ensure_root=$1
+  ensure_label=$2
+  case "$ensure_root" in
+    /*) ;;
+    *) die "$ensure_label must be an absolute path" ;;
+  esac
+  case "$ensure_root" in
+    /|*[/]|*//*|*/./*|*/../*|*/.|*/..) die "$ensure_label is not a canonical directory path" ;;
+  esac
+
+  [ ! -L "$ensure_root" ] || die "$ensure_label is a symlink: $ensure_root"
+  if [ -e "$ensure_root" ]; then
+    [ -d "$ensure_root" ] || die "$ensure_label is not a directory: $ensure_root"
+  else
+    mkdir "$ensure_root" || die "could not create $ensure_label: $ensure_root"
+  fi
+}
+
+reject_destination_link() {
+  reject_path=$1
+  reject_label=$2
+  [ ! -L "$reject_path" ] || die "$reject_label is a symlink: $reject_path"
+  if [ -e "$reject_path" ]; then
+    [ -d "$reject_path" ] || die "$reject_label is not a directory: $reject_path"
+  fi
+}
+
+ensure_install_destinations() {
+  ensure_hosts=$1
+  mkdir -p "$AOS_HOME_DIR" || die "could not create AOS home: $AOS_HOME_DIR"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions" "AOS extensions root"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions/oracles" "oracle extension root"
+
+  plugins_root="$AOS_HOME_DIR/extensions/oracles/plugins"
+  plugin_destination="$plugins_root/$ORACLES_VERSION"
+  plugin_stage="$plugins_root/.$ORACLES_VERSION.tmp.$$"
+  ensure_contained_directory "$plugins_root" "plugin snapshot root"
+  reject_destination_link "$plugin_destination" "plugin snapshot destination"
+  [ ! -e "$plugin_stage" ] || die "stale plugin transaction state exists: $plugin_stage"
+
+  for ensure_host in $ensure_hosts; do
+    receipt_root="$AOS_HOME_DIR/extensions/oracles/$ensure_host"
+    receipt_releases="$receipt_root/releases"
+    receipt_destination="$receipt_releases/$ORACLES_VERSION"
+    receipt_stage="$receipt_root/.receipt-$ORACLES_VERSION.$$"
+    ensure_contained_directory "$receipt_root" "$ensure_host receipt root"
+    ensure_contained_directory "$receipt_releases" "$ensure_host receipt release root"
+    reject_destination_link "$receipt_destination" "$ensure_host receipt destination"
+    [ ! -e "$receipt_stage" ] || die "stale receipt transaction state exists: $receipt_stage"
+  done
 }
 
 atomic_symlink() {
@@ -817,7 +876,6 @@ prepare_plugin_snapshot() {
   stage="$plugins_root/.${ORACLES_VERSION}.tmp.$$"
   PLUGIN_STAGE=$stage
   mkdir -p "$plugins_root"
-  rm -rf "$stage"
   mkdir -p "$stage"
   tar -xzf "$archive" -C "$stage" || die "could not extract the plugin snapshot"
   if find "$stage" ! -type f ! -type d -print -quit | grep . >/dev/null; then
@@ -1185,7 +1243,6 @@ write_receipt() {
   stage="$receipt_root/.receipt-${ORACLES_VERSION}.$$"
   RECEIPT_STAGE=$stage
   mkdir -p "$releases"
-  rm -rf "$stage"
   mkdir -p "$stage"
   cp "$pack_stage/Pack.toml" "$stage/Pack.lock"
   write_managed_capsules "$CURRENT_PACK_BINDINGS" "$stage/ManagedCapsules.toml"
@@ -1237,6 +1294,7 @@ write_receipt() {
 
 ensure_b3sum
 hosts=$(select_hosts)
+ensure_install_destinations "$hosts"
 acquire_install_lock
 ensure_aos
 stage_release_metadata

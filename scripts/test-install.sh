@@ -326,6 +326,71 @@ test ! -e "$approval_root_home/runtime"
 test ! -e "$approval_root_home/extensions/oracles/codex/Pack.lock"
 test ! -s "$TEST_LOG"
 
+# A value-taking option must not consume the rejected sentinel. Exercise the
+# complete parser boundary before either surface can resolve installer bytes.
+for sentinel_case in \
+  '--aos-channel --approve-untrusted' \
+  '--aos-version --approve-untrusted' \
+  '--oracle-version --approve-untrusted' \
+  '--aos-installer --approve-untrusted'
+do
+  # shellcheck disable=SC2086
+  set -- $sentinel_case
+  case_home="$home/parser-plugin-$1/.aos"
+  if AOS_HOME="$case_home" AOS_ORACLES_INSTALLER="$approval_canary" \
+    "$repo_root/plugins/unicity-aos/bin/aos-install" \
+    --host codex --yes "$@" >"$work/parser-plugin.out" 2>&1
+  then
+    echo "plugin parser consumed sentinel in: $sentinel_case" >&2
+    exit 1
+  fi
+  grep -Fq -- "--approve-untrusted is rejected" "$work/parser-plugin.out"
+  test ! -s "$approval_canary"
+  test ! -e "$case_home"
+
+  root_case_home="$home/parser-root-$1/.aos"
+  if AOS_HOME="$root_case_home" AOS_ORACLE_ASSETS="$assets" \
+    "$repo_root/install.sh" --host codex --yes --no-install-aos "$@" \
+    >"$work/parser-root.out" 2>&1
+  then
+    echo "root parser consumed sentinel in: $sentinel_case" >&2
+    exit 1
+  fi
+  grep -Fq -- "--approve-untrusted is rejected" "$work/parser-root.out"
+  test ! -e "$root_case_home"
+  test ! -e "$root_case_home/runtime"
+  test ! -e "$root_case_home/extensions/oracles/codex/Pack.lock"
+  test ! -s "$TEST_LOG"
+done
+
+# A truncated option fails without shifting an unrelated later argument into
+# its value or beginning provisioning.
+for missing_option in --host --oracle-version --aos-channel --aos-version --local-assets --aos-installer; do
+  missing_plugin_home="$home/missing-plugin-${missing_option#--}/.aos"
+  if AOS_HOME="$missing_plugin_home" AOS_ORACLES_INSTALLER="$approval_canary" \
+    "$repo_root/plugins/unicity-aos/bin/aos-install" \
+    "$missing_option" >"$work/missing-plugin.out" 2>&1
+  then
+    echo "plugin parser accepted missing value for $missing_option" >&2
+    exit 1
+  fi
+  test ! -s "$approval_canary"
+  test ! -e "$missing_plugin_home"
+
+  missing_root_home="$home/missing-root-${missing_option#--}/.aos"
+  if AOS_HOME="$missing_root_home" AOS_ORACLE_ASSETS="$assets" \
+    "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    "$missing_option" >"$work/missing-root.out" 2>&1
+  then
+    echo "root parser accepted missing value for $missing_option" >&2
+    exit 1
+  fi
+  test ! -e "$missing_root_home"
+  test ! -e "$missing_root_home/runtime"
+  test ! -e "$missing_root_home/extensions/oracles/codex/Pack.lock"
+  test ! -s "$TEST_LOG"
+done
+
 # The public one-command path installs only marketplace plugins. Host startup
 # owns principal and capsule provisioning, so this path must not initialize or
 # start AOS and must not create a pack receipt.
@@ -786,6 +851,49 @@ then
   echo "special-entry plugin archive unexpectedly installed" >&2
   exit 1
 fi
+
+# Destination containment is checked before release staging or AOS mutation. A
+# symlinked plugin ancestor cannot turn extraction or rename into an escape.
+plugin_link_home="$home/destination-plugin-link/.aos"
+plugin_escape="$home/destination-plugin-escape"
+mkdir -p "$plugin_link_home/extensions/oracles" "$plugin_escape"
+ln -s "$plugin_escape/plugins" "$plugin_link_home/extensions/oracles/plugins"
+destination_state="$work/destination-link-state"
+mkdir -p "$destination_state"
+plugin_destination_log_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$destination_state" AOS_HOME="$plugin_link_home" \
+  AOS_ORACLE_ASSETS="$assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/destination-plugin.out" 2>&1
+then
+  echo "symlinked plugin ancestor was accepted" >&2
+  exit 1
+fi
+grep -Fq "plugin snapshot root is a symlink" \
+  "$work/destination-plugin.out"
+test ! -e "$plugin_escape/plugins"
+test "$(wc -l < "$TEST_LOG")" -eq "$plugin_destination_log_start"
+
+# The immutable receipt destination is held with the same rule, even when the
+# intermediate releases directory is real but the version leaf is a link.
+receipt_link_home="$home/destination-receipt-link/.aos"
+receipt_escape="$home/destination-receipt-escape"
+mkdir -p "$receipt_link_home/extensions/oracles/codex/releases" "$receipt_escape"
+ln -s "$receipt_escape/0.3.0" "$receipt_link_home/extensions/oracles/codex/releases/0.3.0"
+destination_state="$work/destination-receipt-state"
+mkdir -p "$destination_state"
+receipt_destination_log_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$destination_state" AOS_HOME="$receipt_link_home" \
+  AOS_ORACLE_ASSETS="$assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/destination-receipt.out" 2>&1
+then
+  echo "symlinked receipt destination was accepted" >&2
+  exit 1
+fi
+grep -Fq "codex receipt destination is a symlink" "$work/destination-receipt.out"
+test ! -e "$receipt_escape/0.3.0"
+test "$(wc -l < "$TEST_LOG")" -eq "$receipt_destination_log_start"
 
 # A released version directory is immutable. Reruns may reuse identical bytes,
 # but must not replace a snapshot or receipt that differs.

@@ -13,6 +13,28 @@ export AOS_PLUGIN_ROOT="${AOS_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${PLUGIN_ROOT:-$
 export CODEX_PLUGIN_ROOT="${CODEX_PLUGIN_ROOT:-$AOS_PLUGIN_ROOT}"
 export PLUGIN_ROOT="${PLUGIN_ROOT:-$AOS_PLUGIN_ROOT}"
 
+# Every Codex plugin command is principal-scoped before dispatch, including the
+# fallback CLI path. Do not sanitize or infer another principal from this value.
+if [ "${ASTRID_PRINCIPAL_ID:-codex-code}" != codex-code ]; then
+  echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
+  exit 1
+fi
+principal_arg_seen=0
+for codex_argument in "$@"; do
+  if [ "$principal_arg_seen" -eq 1 ]; then
+    [ "$codex_argument" = codex-code ] || {
+      echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
+      exit 1
+    }
+    principal_arg_seen=0
+  fi
+  [ "$codex_argument" != --principal ] || principal_arg_seen=1
+done
+[ "$principal_arg_seen" -eq 0 ] || {
+  echo "aos-up: --principal needs codex-code" >&2
+  exit 2
+}
+
 RESOLVE="$HERE/lib-aos-resolve.sh"
 # shellcheck source=lib-aos-resolve.sh
 . "$RESOLVE"
@@ -131,8 +153,10 @@ topic_segment() {
 
 principal_id() {
   candidate="${1:-${ASTRID_PRINCIPAL_ID:-codex-code}}"
-  candidate="$(topic_segment "$candidate")"
-  [ -n "$candidate" ] || candidate=codex-code
+  [ "$candidate" = codex-code ] || {
+    echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
+    return 1
+  }
   printf '%s\n' "$candidate"
 }
 
@@ -357,7 +381,7 @@ mcp_cli() {
 }
 
 host_project() {
-  runtime="${ASTRID_HOME:-${AOS_HOME:-$HOME/.aos}/runtime}"
+  runtime="${AOS_HOME:-$HOME/.aos}/runtime"
   selected=""
   for val in \
     "${ASTRID_WORKSPACE:-}" \
@@ -417,7 +441,7 @@ mcp_attach() {
     [ "$#" -eq 0 ] || shift
   fi
   principal="$(principal_id "$principal")"
-  runtime="${ASTRID_HOME:-${AOS_HOME:-$HOME/.aos}/runtime}"
+  runtime="${AOS_HOME:-$HOME/.aos}/runtime"
   export ASTRID_HOME="$runtime"
   export ASTRID_HOST="${ASTRID_HOST:-codex}"
   if [ -z "${ASTRID_SESSION_ID:-}" ]; then

@@ -42,13 +42,16 @@ Usage: aos-install [--host claude|codex|grok] [installer options]
   --aos-version V      install an exact AOS calendar-semver release
   --oracle-version V   install an exact signed oracle-pack release
   --yes, -y            non-interactive provisioning
-  --approve-untrusted
-                       rejected: AOS dependencies require the signed OperatorDistribution
 
 It installs the signed AOS base when needed and reconciles only the selected
 host pack to this plugin snapshot's exact Oracle release.
 USAGE
 }
+
+# Reject the trust bypass before value-taking options can consume it.
+for sentinel_argument in "$@"; do
+  [ "$sentinel_argument" != "--approve-untrusted" ] || die "--approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution"
+done
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -72,9 +75,6 @@ while [ "$#" -gt 0 ]; do
       shift
       ORACLE_VERSION="${1:-}"
       [ -n "$ORACLE_VERSION" ] || die "--oracle-version needs a semantic version"
-      ;;
-    --approve-untrusted)
-      die "--approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution"
       ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1" ;;

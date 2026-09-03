@@ -119,12 +119,24 @@ aos_resolve_apply() {
   return 0
 }
 
+aos_runtime_target() {
+  _art_os=$(uname -s 2>/dev/null) || return 1
+  _art_arch=$(uname -m 2>/dev/null) || return 1
+  case "$_art_os/$_art_arch" in
+    Darwin/arm64|Darwin/aarch64) printf 'aarch64-apple-darwin' ;;
+    Darwin/x86_64) printf 'x86_64-apple-darwin' ;;
+    Linux/aarch64|Linux/arm64) printf 'aarch64-unknown-linux-gnu' ;;
+    Linux/x86_64|Linux/amd64) printf 'x86_64-unknown-linux-gnu' ;;
+    *) return 1 ;;
+  esac
+}
+
 # Resolve the Astrid CLI bundled in the authenticated active AOS release.
 #
 # The mutable runtime home is never an executable search path. The signed
 # Oracle snapshot fixes the expected Astrid release, while AOS fixes the active
-# product release. Both release receipts must agree before an MCP process may
-# execute any runtime byte.
+# product release. Both release receipts must agree, and the exact selected
+# file must match its signed executable record immediately before execution.
 aos_resolve_active_runtime() {
   aos_resolve_apply || return $?
   _aos_home="${AOS_HOME:-$HOME/.aos}"
@@ -149,6 +161,7 @@ aos_resolve_active_runtime() {
 
   _aos_release="$_aos_home/releases/$_aos_version"
   _aos_runtime="$_aos_release/runtime/bin/astrid"
+  _aos_release_statement="$_aos_release/unicity-aos-$_aos_version-release.toml"
   _aos_distro="$_aos_release/Distro.toml"
   _aos_manifest="$_aos_release/release-manifest.json"
   _aos_oracle_root="$_aos_home/extensions/oracles/codex"
@@ -191,6 +204,10 @@ aos_resolve_active_runtime() {
     echo "aos-resolve: active AOS release is missing its bundled Astrid CLI" >&2
     return 1
   }
+  [ -f "$_aos_release_statement" ] && [ ! -L "$_aos_release_statement" ] || {
+    echo "aos-resolve: active AOS release has no regular signed executable statement" >&2
+    return 1
+  }
   grep -Fqx 'id = "unicity-ce"' "$_aos_distro" \
     && grep -Fqx "version = \"$_aos_version\"" "$_aos_distro" || {
       echo "aos-resolve: active AOS distribution identity does not match its release" >&2
@@ -220,6 +237,101 @@ aos_resolve_active_runtime() {
     echo "aos-resolve: python3 is required to verify the active AOS release manifest" >&2
     return 127
   }
+
+  _aos_runtime_target=$(aos_runtime_target) || {
+    echo "aos-resolve: unsupported host platform for runtime authentication" >&2
+    return 1
+  }
+  _aos_executable_digests=$(awk \
+    -v product_version="$_aos_version" -v target="$_aos_runtime_target" '
+    function valid_digest(value) {
+      if (length(value) != 64) return 0
+      return value ~ /^[0-9a-f]+$/
+    }
+    function finish_record() {
+      if (!inside_record) return
+      if (record_target == "" || record_path == "" || !valid_digest(record_blake3) || !valid_digest(record_sha256) || fields != 4)
+        fail("signed executable record has invalid fields or digests")
+      if (record_target == target && record_path != "runtime/bin/astrid")
+        fail("signed executable statement authorizes the wrong path")
+      if (record_target == target && record_path == "runtime/bin/astrid") {
+        if (matched++) fail("duplicate executable record for this host and path")
+        match_blake3 = record_blake3
+        match_sha256 = record_sha256
+      }
+      inside_record = 0; fields = 0
+      split("", seen)
+      record_target = record_path = record_blake3 = record_sha256 = ""
+    }
+    function fail(message) {
+      print "aos-resolve: " message > "/dev/stderr"
+      exit 1
+    }
+    /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+    /^\[\[executables\]\]$/ {
+      finish_record(); inside_record = 1; next
+    }
+    /^\[/ { finish_record(); next }
+    inside_record {
+      if ($0 !~ /^(target|path|blake3|sha256) = "[^"]*"$/) fail("invalid executable record field")
+      key = $1; value = $0
+      sub(/^[^"]*"/, "", value); sub(/"$/, "", value)
+      if (seen[key SUBSEP inside_record]++) fail("duplicate executable record field")
+      if (key == "target") record_target = value
+      else if (key == "path") record_path = value
+      else if (key == "blake3") record_blake3 = value
+      else record_sha256 = value
+      fields++; next
+    }
+    /^schema-version = 2$/ { schema = 1; next }
+    /^product = "unicity-aos-ce"$/ { product = 1; next }
+    {
+      if ($0 ~ /^version = "[^"]*"$/) {
+        value = $0; sub(/^version = "/, "", value); sub(/"$/, "", value)
+        version = value
+      }
+      next
+    }
+    END {
+      finish_record()
+      if (!schema) fail("signed executable statement must use schema-version 2")
+      if (!product || version != product_version) fail("signed executable statement product identity mismatch")
+      if (!matched) fail("signed executable statement does not authorize this Astrid path")
+      print match_blake3, match_sha256
+    }
+    ' "$_aos_release_statement") || return 1
+  read -r _aos_expected_blake3 _aos_expected_sha256 <<EOF
+$_aos_executable_digests
+EOF
+  case "$_aos_executable_digests" in
+    [0-9a-f]*' '[0-9a-f]*) ;;
+    *) echo "aos-resolve: active AOS release lacks a unique signed Astrid executable record" >&2; return 1 ;;
+  esac
+
+  command -v b3sum >/dev/null 2>&1 || {
+    echo "aos-resolve: b3sum is required to authenticate the selected Astrid bytes" >&2
+    return 127
+  }
+  if command -v sha256sum >/dev/null 2>&1; then
+    _aos_actual_sha256=$(sha256sum "$_aos_runtime" 2>/dev/null | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    _aos_actual_sha256=$(shasum -a 256 "$_aos_runtime" 2>/dev/null | awk '{print $1}')
+  else
+    echo "aos-resolve: sha256sum or shasum is required to authenticate Astrid" >&2
+    return 127
+  fi
+  _aos_actual_blake3=$(b3sum "$_aos_runtime" 2>/dev/null | awk '{print $1}')
+  printf '%s\n' "$_aos_actual_blake3" | grep -Eq '^[0-9a-f]{64}$' \
+    && [ "$_aos_actual_blake3" = "$_aos_expected_blake3" ] || {
+      echo "aos-resolve: active Astrid BLAKE3 digest does not match its signed executable record" >&2
+      return 1
+    }
+  printf '%s\n' "$_aos_actual_sha256" | grep -Eq '^[0-9a-f]{64}$' \
+    && [ "$_aos_actual_sha256" = "$_aos_expected_sha256" ] || {
+      echo "aos-resolve: active Astrid SHA-256 digest does not match its signed executable record" >&2
+      return 1
+    }
+
   python3 - "$_aos_manifest" "$_aos_version" "$_aos_expected_runtime" <<'PY' || return 1
 import json
 import pathlib

@@ -14,6 +14,8 @@ produced macOS "Python quit unexpectedly" dialogs under Codex.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -87,14 +89,10 @@ def verify_runtime_before_popen() -> None:
     if len(sys.argv) < 2:
         raise SystemExit("aos-mcp-frame: missing attach command")
     executable = sys.argv[1]
-    expected_path = os.environ.get("AOS_RUNTIME_PATH", "")
+    aos_home_value = os.environ.get("AOS_HOME", "")
     expected_blake3 = os.environ.get("AOS_RUNTIME_BLAKE3", "")
     expected_sha256 = os.environ.get("AOS_RUNTIME_SHA256", "")
-    if (
-        not expected_path
-        or not os.path.isabs(expected_path)
-        or os.path.islink(expected_path)
-    ):
+    if not aos_home_value or not os.path.isabs(aos_home_value):
         raise SystemExit("aos-mcp-frame: missing canonical release runtime path")
     if (
         len(expected_blake3) != 64
@@ -103,12 +101,40 @@ def verify_runtime_before_popen() -> None:
         or any(character not in "0123456789abcdef" for character in expected_sha256)
     ):
         raise SystemExit("aos-mcp-frame: missing signed runtime digests")
+    executable_path = Path(executable)
+    aos_home = Path(aos_home_value)
+    releases = aos_home / "releases"
+    if aos_home.is_symlink() or not aos_home.is_dir() or releases.is_symlink() or not releases.is_dir():
+        raise SystemExit("aos-mcp-frame: active AOS release home is not canonical")
+    try:
+        relative = executable_path.relative_to(releases)
+    except (ValueError, OSError):
+        raise SystemExit(
+            "aos-mcp-frame: runtime is not the canonical release executable"
+        ) from None
+    if len(relative.parts) != 4 or relative.parts[1:] != ("runtime", "bin", "astrid"):
+        raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
+    release_version = relative.parts[0]
+    if not re.fullmatch(
+        r"20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", release_version
+    ):
+        raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
+    checked_directories = (
+        releases,
+        releases / release_version,
+        releases / release_version / "runtime",
+        releases / release_version / "runtime" / "bin",
+    )
+    try:
+        unsafe_path = any(path.is_symlink() or not path.is_dir() for path in checked_directories)
+    except OSError:
+        unsafe_path = True
+    if unsafe_path:
+        raise SystemExit("aos-mcp-frame: active AOS release path is not canonical")
     if (
-        not os.path.isfile(executable)
-        or os.path.islink(executable)
-        or not os.access(executable, os.X_OK)
-        or os.path.abspath(executable) != expected_path
-        or os.path.realpath(executable) != os.path.realpath(expected_path)
+        executable_path.is_symlink()
+        or not executable_path.is_file()
+        or not os.access(executable_path, os.X_OK)
     ):
         raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
     try:

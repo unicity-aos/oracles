@@ -144,6 +144,10 @@ case " $* " in
     : > "$TEST_STATE/agent-$principal"
     ;;
   *" capsule show "*)
+    if [ "${TEST_CAPSULE_SHOW_FAILURE:-0}" -ne 0 ]; then
+      printf '%s\n' 'error: daemon transport failed while reading capsule metadata' >&2
+      exit 93
+    fi
     capsule=""
     principal=""
     previous=""
@@ -153,7 +157,11 @@ case " $* " in
       previous=$argument
     done
     record="$TEST_STATE/installed-$principal-$capsule"
-    test -f "$record"
+    if [ ! -f "$record" ]; then
+      printf "capsule '%s' is not installed for agent '%s'\n" \
+        "$capsule" "$principal" >&2
+      exit 1
+    fi
     if printf ' %s ' "$*" | grep -Fq ' --format toml '; then
       hash=$(sed -n '1p' "$record")
       source=$(sed -n '2p' "$record")
@@ -275,7 +283,10 @@ set -euo pipefail
 printf 'grok' >> "$TEST_LOG"
 printf ' %q' "$@" >> "$TEST_LOG"
 printf '\n' >> "$TEST_LOG"
-[ "${TEST_FAIL_PLUGIN:-0}" -eq 0 ] || exit 70
+if [ "${TEST_FAIL_PLUGIN:-0}" -ne 0 ] \
+  || [ "${TEST_FAIL_PLUGIN_HOST:-}" = grok ]; then
+  exit 70
+fi
 EOF
 chmod +x \
   "$fake_bin/aos" "$fake_bin/b3sum" "$fake_bin/codex" "$fake_bin/claude" "$fake_bin/grok"
@@ -613,6 +624,37 @@ test ! -e "$malformed_identity_home/runtime"
 test ! -e "$malformed_identity_home/extensions/oracles/plugins/0.3.0"
 test ! -e "$malformed_identity_home/extensions/oracles/codex/current"
 
+# A failed read is not proof of absence. Even with no prior capsule record,
+# a daemon/transport failure must stop before AOS workspace selection, first
+# boot, principal creation, grants, snapshot activation, or any receipt state.
+unreadable_show_state="$work/unreadable-show-state"
+unreadable_show_home="$home/unreadable-show/.aos"
+unreadable_show_start=$(wc -l < "$TEST_LOG")
+mkdir -p "$unreadable_show_state"
+if TEST_CAPSULE_SHOW_FAILURE=1 TEST_STATE="$unreadable_show_state" \
+  AOS_HOME="$unreadable_show_home" "$repo_root/install.sh" \
+  --host codex --yes --no-install-aos \
+  >"$work/unreadable-show.out" 2>&1
+then
+  echo "failed capsule-show read was treated as an absent capsule" >&2
+  exit 1
+fi
+grep -Fq "could not read AOS capsule 'aos-mcp' for codex-code" \
+  "$work/unreadable-show.out"
+tail -n "+$((unreadable_show_start + 1))" "$TEST_LOG" \
+  > "$work/unreadable-show.log"
+if grep -Fq 'aos --principal default init --yes' "$work/unreadable-show.log"; then
+  echo "failed capsule-show read triggered first-boot mutation" >&2
+  exit 1
+fi
+test ! -e "$unreadable_show_state/default-initialized"
+test ! -e "$unreadable_show_state/agent-codex-code"
+test ! -e "$unreadable_show_state/granted-codex-code-aos-mcp"
+test ! -e "$unreadable_show_home/runtime"
+test ! -e "$unreadable_show_home/extensions/oracles/plugins/0.3.0"
+test ! -e "$unreadable_show_home/extensions/oracles/codex/current"
+test ! -e "$unreadable_show_home/extensions/oracles/codex/Pack.lock"
+
 # A source can look correct while its recorded byte identity disagrees with the
 # authenticated default. That disagreement stops the transaction before init,
 # principal creation, grants, snapshot activation, or any receipt state.
@@ -858,6 +900,62 @@ test ! -e "$prior_plugin_home/extensions/oracles/codex/releases/0.3.0"
 test "$(shasum -a 256 "$prior_receipt/Receipt.toml" | awk '{print $1}')" \
   = "$prior_receipt_hash"
 grep -Fxq 'authenticated prior generation' "$prior_receipt/prior-marker"
+
+# A multi-host transaction cannot delete one shared plugin snapshot that an
+# already committed host selects. When the next host fails, its own regular
+# Pack.lock must also return byte-for-byte, not merely the prior symlink case.
+multi_host_home="$home/multi-host-partial/.aos"
+multi_host_state="$work/multi-host-state"
+multi_host_grok_receipt="$multi_host_home/extensions/oracles/grok/releases/0.2.8"
+mkdir -p "$multi_host_state" "$multi_host_grok_receipt"
+cat > "$multi_host_grok_receipt/Pack.lock" <<'EOF'
+schema-version = 1
+
+[pack]
+version = "0.2.8"
+host = "grok"
+principal = "grok-code"
+EOF
+cat > "$work/multi-host-grok-Pack.lock" <<'EOF'
+schema-version = 1
+
+[pack]
+version = "0.2.8"
+host = "grok"
+principal = "grok-code"
+# byte-for-byte prior regular lock
+EOF
+cp -p "$work/multi-host-grok-Pack.lock" \
+  "$multi_host_home/extensions/oracles/grok/Pack.lock"
+cat > "$multi_host_grok_receipt/Receipt.toml" <<'EOF'
+schema-version = 1
+oracle-version = "0.2.8"
+host = "grok"
+principal = "grok-code"
+EOF
+chmod 604 "$multi_host_home/extensions/oracles/grok/Pack.lock"
+ln -s releases/0.2.8 "$multi_host_home/extensions/oracles/grok/current"
+if TEST_FAIL_PLUGIN_HOST=grok TEST_STATE="$multi_host_state" \
+  AOS_HOME="$multi_host_home" "$repo_root/install.sh" \
+  --host codex --host grok --yes --no-install-aos
+then
+  echo "second host failure unexpectedly completed the multi-host install" >&2
+  exit 1
+fi
+shared_snapshot="$multi_host_home/extensions/oracles/plugins/0.3.0"
+test -f "$shared_snapshot/plugins/claude/bin/aos-up"
+test -f "$shared_snapshot/plugins/unicity-aos/.aos-oracle-version"
+codex_receipt="$multi_host_home/extensions/oracles/codex/releases/0.3.0"
+test -f "$codex_receipt/Pack.lock"
+test "$(readlink "$multi_host_home/extensions/oracles/codex/current")" = releases/0.3.0
+grok_pack_lock="$multi_host_home/extensions/oracles/grok/Pack.lock"
+test -f "$grok_pack_lock"
+test ! -L "$grok_pack_lock"
+cmp -s "$grok_pack_lock" "$work/multi-host-grok-Pack.lock"
+test "$(stat -f '%Lp' "$grok_pack_lock" 2>/dev/null || stat -c '%a' "$grok_pack_lock")" = 604
+test "$(readlink "$multi_host_home/extensions/oracles/grok/current")" = releases/0.2.8
+test ! -e "$multi_host_home/extensions/oracles/grok/releases/0.3.0"
+test ! -e "$multi_host_home/extensions/oracles/.install.lock"
 
 # Local development assets cannot inherit a Sigstore bundle from an older
 # remote receipt.

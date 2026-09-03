@@ -41,6 +41,11 @@ ROLLBACK_RECEIPT_HOST="codex"
 PRIOR_CURRENT_EXISTS=0
 PRIOR_CURRENT_TARGET=""
 PRIOR_PACK_LOCK_EXISTS=0
+PRIOR_PACK_LOCK_KIND=""
+PRIOR_PACK_LOCK_TARGET=""
+PRIOR_PACK_LOCK_BACKUP=""
+PRIOR_PACK_LOCK_MODE=""
+COMMITTED_HOSTS=""
 CAPSULE_RECORD_FOUND=0
 
 say() { printf '%s\n' "$*"; }
@@ -69,6 +74,13 @@ mark_transaction_failure() {
   [ "$AOS_HOME_EXISTED" -eq 0 ] && ROLLBACK_AOS_HOME=1 || return 0
 }
 
+mark_host_committed() {
+  case " $COMMITTED_HOSTS " in
+    *" $1 "*) ;;
+    *) COMMITTED_HOSTS="$COMMITTED_HOSTS $1" ;;
+  esac
+}
+
 cleanup() {
   cleanup_status=$?
   if [ "$cleanup_status" -ne 0 ]; then
@@ -79,8 +91,14 @@ cleanup() {
     rm -rf "$AOS_HOME_DIR"
     ROLLBACK_AOS_HOME=0
   elif [ "$TRANSACTION_FAILED" -eq 1 ] && [ "$AOS_HOME_EXISTED" -eq 1 ]; then
-    [ -z "$NEW_RECEIPT" ] || rm -rf "$NEW_RECEIPT"
-    [ -z "$NEW_PLUGIN_SNAPSHOT" ] || rm -rf "$NEW_PLUGIN_SNAPSHOT"
+    case " $COMMITTED_HOSTS " in
+      *" $ROLLBACK_RECEIPT_HOST "*)
+        NEW_RECEIPT=""
+        ;;
+      *) [ -z "$NEW_RECEIPT" ] || rm -rf "$NEW_RECEIPT" ;;
+    esac
+    [ -z "$NEW_PLUGIN_SNAPSHOT" ] || [ -n "$COMMITTED_HOSTS" ] \
+      || rm -rf "$NEW_PLUGIN_SNAPSHOT"
     receipt_host_root="$AOS_HOME_DIR/extensions/oracles/$ROLLBACK_RECEIPT_HOST"
     if [ "$PRIOR_CURRENT_EXISTS" -eq 1 ]; then
       if [ -n "$PRIOR_CURRENT_TARGET" ]; then
@@ -89,10 +107,34 @@ cleanup() {
     elif [ -L "$receipt_host_root/current" ]; then
       rm -f "$receipt_host_root/current"
     fi
-    if [ "$PRIOR_PACK_LOCK_EXISTS" -eq 0 ] && [ -L "$receipt_host_root/Pack.lock" ]; then
-      rm -f "$receipt_host_root/Pack.lock"
+    case "$PRIOR_PACK_LOCK_KIND" in
+      absent)
+        [ ! -L "$receipt_host_root/Pack.lock" ] || rm -f "$receipt_host_root/Pack.lock"
+        [ ! -e "$receipt_host_root/Pack.lock" ] \
+          || die "cannot restore an absent Pack.lock over existing state"
+        ;;
+      symlink)
+        [ -n "$PRIOR_PACK_LOCK_TARGET" ] || die "lost prior Pack.lock link target during rollback"
+        atomic_symlink "$PRIOR_PACK_LOCK_TARGET" "$receipt_host_root/Pack.lock"
+        ;;
+      regular)
+        [ -n "$PRIOR_PACK_LOCK_BACKUP" ] || die "lost prior Pack.lock backup during rollback"
+        restore_parent="${receipt_host_root%/*}"
+        ensure_contained_directory "$restore_parent" "receipt rollback parent"
+        [ ! -L "$receipt_host_root/Pack.lock" ] || rm -f "$receipt_host_root/Pack.lock"
+        if [ -e "$receipt_host_root/Pack.lock" ]; then
+          [ -f "$receipt_host_root/Pack.lock" ] \
+            && [ ! -L "$receipt_host_root/Pack.lock" ] \
+            || die "cannot restore a regular Pack.lock over a non-regular path"
+          rm -f "$receipt_host_root/Pack.lock"
+        fi
+        mv "$PRIOR_PACK_LOCK_BACKUP" "$receipt_host_root/Pack.lock" \
+          || die "could not restore the prior regular Pack.lock"
+        chmod "$PRIOR_PACK_LOCK_MODE" "$receipt_host_root/Pack.lock" \
+          || die "could not restore the prior Pack.lock mode"
+        ;;
+    esac
     fi
-  fi
   [ -z "$PLUGIN_STAGE" ] || rm -rf "$PLUGIN_STAGE"
   [ -z "$RECEIPT_STAGE" ] || rm -rf "$RECEIPT_STAGE"
   [ -z "$WORK" ] || rm -rf "$WORK"
@@ -674,8 +716,25 @@ load_capsule_record() {
   CAPSULE_SOURCE=""
   CAPSULE_INSTALLED_AT=""
   CAPSULE_UPDATED_AT=""
+  cr_error="$WORK/capsule-show-$cr_principal-$cr_capsule.err"
+  cr_status=0
   cr_record=$(aos capsule show "$cr_capsule" --agent "$cr_principal" \
-    --format toml 2>/dev/null) || return 1
+    --format toml 2>"$cr_error") || cr_status=$?
+  if [ "$cr_status" -ne 0 ]; then
+    # AOS marks an absent capsule with status 1 and this documented
+    # diagnostic. Any other failure can mean unreadable or truncated state,
+    # and must stop before workspace selection or default first-boot mutation.
+    if [ "$cr_status" -eq 1 ] \
+      && grep -Fqx "capsule '$cr_capsule' is not installed for agent '$cr_principal'" "$cr_error"
+    then
+      rm -f "$cr_error"
+      return 1
+    fi
+    cr_detail=$(tail -n 1 "$cr_error" 2>/dev/null || true)
+    rm -f "$cr_error"
+    die "could not read AOS capsule '$cr_capsule' for $cr_principal${cr_detail:+: $cr_detail}"
+  fi
+  rm -f "$cr_error"
   CAPSULE_RECORD_FOUND=1
   CAPSULE_HASH=$(printf '%s\n' "$cr_record" \
     | sed -n 's/^wasm_hash = "\([0-9a-f]*\)"$/\1/p')
@@ -982,14 +1041,28 @@ capture_receipt_rollback_state() {
   PRIOR_CURRENT_EXISTS=0
   PRIOR_CURRENT_TARGET=""
   PRIOR_PACK_LOCK_EXISTS=0
+  PRIOR_PACK_LOCK_KIND="absent"
+  PRIOR_PACK_LOCK_BACKUP=""
+  PRIOR_PACK_LOCK_MODE=""
   if [ -L "$capture_root/current" ]; then
     PRIOR_CURRENT_EXISTS=1
     PRIOR_CURRENT_TARGET=$(readlink "$capture_root/current")
   fi
   if [ -L "$capture_root/Pack.lock" ]; then
     PRIOR_PACK_LOCK_EXISTS=1
+    PRIOR_PACK_LOCK_KIND=symlink
+    PRIOR_PACK_LOCK_TARGET=$(readlink "$capture_root/Pack.lock")
+  elif [ -f "$capture_root/Pack.lock" ] && [ ! -L "$capture_root/Pack.lock" ]; then
+    PRIOR_PACK_LOCK_EXISTS=1
+    PRIOR_PACK_LOCK_KIND=regular
+    PRIOR_PACK_LOCK_BACKUP="$WORK/rollback-$capture_host-Pack.lock"
+    cp -p "$capture_root/Pack.lock" "$PRIOR_PACK_LOCK_BACKUP" \
+      || die "could not preserve the prior regular Pack.lock"
+    PRIOR_PACK_LOCK_MODE=$(stat -f '%Lp' "$capture_root/Pack.lock" 2>/dev/null \
+      || stat -c '%a' "$capture_root/Pack.lock")
   elif [ -e "$capture_root/Pack.lock" ]; then
     PRIOR_PACK_LOCK_EXISTS=1
+    die "$capture_host Pack.lock is neither a regular file nor a symlink"
   fi
 }
 
@@ -1333,6 +1406,14 @@ reconcile_obsolete_bindings() {
   done < "$OBSOLETE_BINDINGS"
 
   [ -s "$ro_removals" ] || return 0
+  while IFS= read -r ro_name; do
+    [ -n "$ro_name" ] || continue
+    if ! load_capsule_record "$ro_principal" "$ro_name" \
+      && [ "$CAPSULE_RECORD_FOUND" -eq 1 ]
+    then
+      die "obsolete AOS capsule '$ro_name' for $ro_principal has a malformed identity"
+    fi
+  done < "$ro_removals"
   set -- aos --principal default agent modify "$ro_principal"
   while IFS= read -r ro_name; do
     set -- "$@" --remove-capsule "$ro_name"
@@ -1431,6 +1512,7 @@ write_receipt() {
     rm -f "$receipt_root/Pack.lock.sigstore.json"
   fi
   say "✓ $host oracle pack $ORACLES_VERSION committed"
+  mark_host_committed "$host"
   NEW_RECEIPT=""
 }
 
@@ -1449,6 +1531,7 @@ if [ "$PLUGINS_ONLY" -eq 1 ]; then
   for host in $hosts; do
     install_plugin "$host"
     activate_plugin_snapshot
+    mark_host_committed "$host"
   done
   say "Unicity AOS plugin installation complete. Start a new host session to provision its oracle pack."
   exit 0

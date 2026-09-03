@@ -225,6 +225,69 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
     assert not Path(str(args_log) + ".principal").exists()
 
 
+def exercise_prebootstrap_invalid_principal(host: str, root: Path) -> None:
+    spec = HOSTS[host]
+    test_root = root / f"{host}-prebootstrap-principal"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    fake_aos = test_root / "bin" / "aos"
+    fake_installer = test_root / "fake-installer"
+    aos_args = test_root / "aos-args"
+    installer_args = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        "exit 0\n",
+    )
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALLER_ARGS"\n'
+        "exit 1\n",
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_BIN": str(fake_aos),
+        "AOS_HOME": str(home),
+        "AOS_HOST": host,
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "AOS_PLUGIN_ROOT": str(ROOT / f"plugins/{host}"),
+        str(HOSTS[host]["root_var"]): str(ROOT / f"plugins/{host}"),
+        "PATH": "/usr/bin:/bin",
+        "TMPDIR": str(test_root),
+        "TEST_AOS_ARGS": str(aos_args),
+        "TEST_INSTALLER_ARGS": str(installer_args),
+    }
+    cases = (
+        (["--first", "--principal", "foreign"], "principal foreign"),
+        (["--help", "--principal=foreign"], "principal=foreign"),
+    )
+    for arguments, needle in cases:
+        result = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), *arguments],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode != 0, (arguments, result.stdout, result.stderr)
+        assert f"refusing non-{spec['principal']} principal" in result.stderr, (
+            arguments,
+            result.stderr,
+        )
+        assert needle in " ".join(arguments)
+        assert not aos_args.exists(), arguments
+        assert not installer_args.exists(), arguments
+        assert not home.exists(), arguments
+        assert not (home / "runtime").exists(), arguments
+        assert not (home / "cache").exists(), arguments
+
+
 def exercise_default_host_without_injection(host: str, root: Path) -> None:
     test_root = root / f"{host}-default-host"
     test_root.mkdir()
@@ -338,8 +401,11 @@ def exercise_host(host: str, root: Path) -> None:
             check=False,
         )
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        if bad_arguments and bad_arguments[-1].startswith("--principal="):
-            assert "refusing an equals-form principal" in rejected.stderr
+        if bad_arguments:
+            assert (
+                f"refusing non-{spec['principal']} principal on the {host} plugin path"
+                in rejected.stderr
+            )
         else:
             assert (
                 f"refusing a non-host principal for the {host} plugin"
@@ -789,6 +855,7 @@ def main() -> None:
         root = Path(raw)
         for host in HOSTS:
             exercise_hook_adapter(host, root)
+            exercise_prebootstrap_invalid_principal(host, root)
             exercise_default_host_without_injection(host, root)
             exercise_host(host, root)
             exercise_blank_slate_bootstrap(host, root)

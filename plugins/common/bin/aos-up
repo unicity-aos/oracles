@@ -8,6 +8,74 @@
 # belongs exclusively to the MCP JSON-RPC transport.
 set -eu
 
+if [ -z "${AOS_HOST:-}" ]; then
+  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
+    AOS_HOST=grok
+  else
+    AOS_HOST=claude
+  fi
+fi
+case "$AOS_HOST" in
+  claude) expected_principal=claude-code ;;
+  grok) expected_principal=grok-code ;;
+  *)
+    printf 'aos-up: unsupported host '"'"'%s'"'"'; want claude or grok\n' "$AOS_HOST" >&2
+    exit 2
+    ;;
+esac
+
+principal_declared=0
+principal_value=""
+set -- "$@" --
+while [ "$1" != -- ]; do
+  case "$1" in
+    --principal)
+      [ "$principal_declared" -eq 0 ] || {
+        printf 'aos-up: multiple principal arguments are not supported\n' >&2
+        exit 2
+      }
+      shift
+      [ "$#" -gt 0 ] || {
+        printf 'aos-up: --principal requires %s\n' "$expected_principal" >&2
+        exit 2
+      }
+      principal_declared=1
+      principal_value=$1
+      case "$principal_value" in
+        "$expected_principal"|'${user_config.principal}') ;;
+        *)
+          printf 'aos-up: refusing non-%s principal on the %s plugin path\n' \
+            "$expected_principal" "$AOS_HOST" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
+    --principal=*)
+      [ "$principal_declared" -eq 0 ] || {
+        printf 'aos-up: multiple principal arguments are not supported\n' >&2
+        exit 2
+      }
+      principal_declared=1
+      principal_value=${1#--principal=}
+      case "$principal_value" in
+        "$expected_principal"|'${user_config.principal}') ;;
+        *)
+          printf 'aos-up: refusing non-%s principal on the %s plugin path\n' \
+            "$expected_principal" "$AOS_HOST" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      ;;
+    *)
+      set -- "$@" "$1"
+      shift
+      ;;
+  esac
+done
+shift
+
 HOST_WORKSPACE=$(pwd -P 2>/dev/null || pwd)
 
 log() { printf 'aos-up: %s\n' "$*" >&2; }
@@ -21,13 +89,6 @@ if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
 fi
 export AOS_PLUGIN_ROOT
 
-if [ -z "${AOS_HOST:-}" ]; then
-  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
-    AOS_HOST=grok
-  else
-    AOS_HOST=claude
-  fi
-fi
 export AOS_HOST
 
 if [ -f "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ]; then
@@ -41,11 +102,6 @@ if [ -n "$packaged_host" ] && [ "$AOS_HOST" != "$packaged_host" ]; then
   log "plugin identity is $packaged_host but host was $AOS_HOST"
   exit 2
 fi
-
-case "$AOS_HOST" in
-  claude|grok) ;;
-  *) log "unsupported host '$AOS_HOST'; want claude or grok"; exit 2 ;;
-esac
 
 RESOLVE="$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"
 if [ ! -f "$RESOLVE" ]; then
@@ -194,10 +250,6 @@ emit_host_hook() {
     log "could not enter the AOS runtime workspace for the $host hook"
     return 1
   fi
-  case "$host" in
-    claude) expected_principal=claude-code ;;
-    grok) expected_principal=grok-code ;;
-  esac
   principal="${ASTRID_PRINCIPAL_ID:-$expected_principal}"
   [ "$principal" = "$expected_principal" ] || {
     log "refusing non-$expected_principal principal for the $host plugin"
@@ -345,20 +397,9 @@ fi
 [ -z "$BOOTSTRAP_LOG" ] || rm -f "$BOOTSTRAP_LOG"
 
 PRINCIPAL=""
-if [ "${1:-}" = "--principal" ]; then
-  shift
-  PRINCIPAL="${1:-}"
-  [ "$#" -gt 0 ] && shift
-fi
-for principal_argument in "$@"; do
-  case "$principal_argument" in
-    --principal=*)
-      log "refusing an equals-form principal on the $AOS_HOST plugin path"
-      exit 2
-      ;;
-  esac
-done
-if [ -z "$PRINCIPAL" ]; then
+if [ "$principal_declared" -eq 1 ]; then
+  PRINCIPAL=$principal_value
+else
   PRINCIPAL="${ASTRID_PRINCIPAL_ID:-}"
 fi
 case "$PRINCIPAL" in

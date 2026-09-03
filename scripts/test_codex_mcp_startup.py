@@ -332,6 +332,57 @@ def exercise_hook_adapter(root: Path) -> None:
     assert json.loads(payload_log.read_text()) == json.loads(payload)
 
 
+def exercise_prebootstrap_foreign_principal(root: Path) -> None:
+    test_root = root / "codex-prebootstrap-principal"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    fake_aos = test_root / "bin" / "aos"
+    fake_installer = test_root / "installer"
+    aos_log = test_root / "aos-args"
+    installer_log = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
+        "exit 0\n",
+    )
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
+        "exit 1\n",
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_BIN": str(fake_aos),
+        "AOS_HOME": str(home),
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "ASTRID_PRINCIPAL_ID": "foreign-principal",
+        "CODEX_PLUGIN_ROOT": str(PLUGIN),
+        "PLUGIN_ROOT": str(PLUGIN),
+        "PATH": python_path(),
+        "TEST_AOS_LOG": str(aos_log),
+        "TEST_INSTALL_LOG": str(installer_log),
+        "TMPDIR": str(test_root),
+    }
+    result = subprocess.run(
+        [str(PLUGIN / "bin/aos-up"), "--help"],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert "refusing non-codex-code principal" in result.stderr
+    assert not aos_log.exists()
+    assert not installer_log.exists()
+    assert not home.exists()
+
+
 def main() -> None:
     assert SERVER["command"] == "/bin/sh"
     assert SERVER["args"][0] == "-c"
@@ -349,7 +400,8 @@ def main() -> None:
     ]
 
     with tempfile.TemporaryDirectory(prefix="aos-codex-mcp-") as raw:
-        root = Path(raw)
+        root = Path(raw).resolve()
+        exercise_prebootstrap_foreign_principal(root)
         home = root / "home" / ".aos"
         fake_bin = root / "bin"
         write_executable(
@@ -396,13 +448,59 @@ def main() -> None:
         ], attach
         assert not legacy_used.exists(), "mutable runtime/bin Astrid was executed"
         runtime_home = (home / "runtime").resolve()
-        assert all(Path(line) == runtime_home for line in astrid_cwd_log.read_text().splitlines())
+        cwd_lines = astrid_cwd_log.read_text().splitlines()
+        assert all(Path(line) == runtime_home for line in cwd_lines), (
+            runtime_home,
+            cwd_lines,
+            home,
+        )
 
         second = launch(environment, host_workspace)
         assert second.returncode == 0, (second.returncode, second.stdout, second.stderr)
         assert install_log.read_text().splitlines() == [
             "--host codex --skip-host-plugin --yes --oracle-version 0.3.0"
         ], "ready startup unexpectedly re-entered provisioning"
+
+        # A provisioned default home must survive a relaunch whose environment
+        # has no AOS_HOME; the adapter exports the already-resolved home.
+        default_home_environment = {
+            key: value for key, value in environment.items() if key != "AOS_HOME"
+        }
+        default_home = launch(default_home_environment, host_workspace)
+        assert default_home.returncode == 0, (
+            default_home.returncode,
+            default_home.stdout,
+            default_home.stderr,
+        )
+        assert install_log.read_text().splitlines() == [
+            "--host codex --skip-host-plugin --yes --oracle-version 0.3.0"
+        ], "default-home relaunch unexpectedly re-entered provisioning"
+
+        # The equals form is dispatch, not a raw-AOS escape hatch. It must use
+        # the same byte-gated frame path as the separated value form.
+        astrid_log.write_text("")
+        equals_form = subprocess.run(
+            [str(PLUGIN / "bin/aos-up"), "--principal=codex-code"],
+            cwd=host_workspace,
+            env=default_home_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+        assert equals_form.returncode == 0, (
+            equals_form.returncode,
+            equals_form.stdout,
+            equals_form.stderr,
+        )
+        equals_attach = [
+            line for line in astrid_log.read_text().splitlines() if "mcp attach" in line
+        ]
+        assert equals_attach == [
+            f"--principal codex-code mcp attach --workspace {host_workspace.resolve()}"
+        ], equals_attach
+        assert not any("mcp serve" in line for line in astrid_log.read_text().splitlines())
 
         override_env = dict(environment)
         override_env["ASTRID_WORKSPACE"] = str(other_workspace.resolve())
@@ -605,6 +703,18 @@ def main() -> None:
         expected_runtime.unlink()
         expected_runtime.write_bytes(preserved_bytes)
         expected_runtime.chmod(0o700)
+
+        # The same matching bytes reached through a symlinked home ancestor are
+        # not a canonical release path, even when every named component looks
+        # regular under the alias.
+        home_alias = root / "alias-home-parent"
+        home_alias.symlink_to(home.parent, target_is_directory=True)
+        alias_environment = dict(environment)
+        alias_environment["AOS_HOME"] = str(home_alias / ".aos")
+        rejected = resolve_active(alias_environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "symlinked home ancestor" in rejected.stderr
+        home_alias.unlink()
 
         wrong_runtime = dict(environment)
         wrong_runtime["TEST_RUNTIME_VERSION"] = "0.10.4"

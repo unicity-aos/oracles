@@ -51,10 +51,11 @@ if [ ! -f "$RESOLVE" ]; then
 fi
 # shellcheck source=lib-aos-resolve.sh
 . "$RESOLVE"
-aos_enter_product_workspace || {
-  emit "Unicity AOS could not enter its product runtime workspace."
-  exit 0
-}
+
+if [ "${ASTRID_PRINCIPAL_ID:-codex-code}" != codex-code ]; then
+  printf 'aos-doctor: refusing non-codex-code principal on the Codex plugin path\n' >&2
+  exit 2
+fi
 
 json_escape() {
   printf '%s' "$1" \
@@ -105,6 +106,21 @@ resolve_initial() {
   fi
 }
 
+capsule_ready() {
+  capsule_output=""
+  capsule_status=0
+  capsule_output=$("$AOS" capsule show aos-mcp --agent codex-code 2>&1) ||
+    capsule_status=$?
+  [ "$capsule_status" -eq 0 ] && return 0
+  if [ "$capsule_status" -eq 1 ] \
+    && [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent 'codex-code'" ]
+  then
+    return 1
+  fi
+  printf 'aos-doctor: AOS capsule transport failed: %s\n' "$capsule_output" >&2
+  exit 93
+}
+
 bootstrap_codex() {
   [ "$MODE" = hook ] || return 1
   launcher="$AOS_PLUGIN_ROOT/bin/aos-up"
@@ -135,10 +151,11 @@ fi
 VERSION="$("$AOS" --version 2>/dev/null | head -n1 || true)"
 
 if ! pack_is_current \
-  || ! "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1
+  || ! capsule_ready
 then
   if bootstrap_codex \
-    && "$AOS" capsule show aos-mcp --agent "$PRINCIPAL" >/dev/null 2>&1
+    && pack_is_current \
+    && capsule_ready
   then
     :
   else
@@ -153,6 +170,11 @@ Then start a new Codex session."
     exit 0
   fi
 fi
+
+aos_enter_product_workspace || {
+  emit "Unicity AOS could not enter its product runtime workspace."
+  exit 0
+}
 
 STATUS="$("$AOS" status --json 2>/dev/null || true)"
 

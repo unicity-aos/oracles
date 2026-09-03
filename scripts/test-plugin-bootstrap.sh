@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d)
+work=$(cd "$work" && pwd -P)
 trap 'rm -rf "$work"' EXIT
 home="$work/home"
 log="$work/install.log"
@@ -277,7 +278,10 @@ assert "--session codex-release-smoke" in args, args
 assert "--event user_prompt_submit" in args, args
 assert f"--workspace {sys.argv[3]}" in args, args
 assert " emit " not in f" {args} ", args
-assert Path(sys.argv[4]).read_text().strip() == str(Path(sys.argv[5]).resolve())
+assert Path(sys.argv[4]).read_text().strip() == str(Path(sys.argv[5]).resolve()), (
+    Path(sys.argv[4]).read_text().strip(),
+    str(Path(sys.argv[5]).resolve()),
+)
 PY
 
 route_token="$home/.aos/cache/oracles/hooks/codex/codex-release-smoke.token"
@@ -340,3 +344,56 @@ failure=$(AOS_HOME="$failure_home" TEST_CHECK_LOG="$failure_log" \
   "$repo_root/plugins/common/bin/aos-update-check" "$failure_home/bin/aos")
 test -z "$failure"
 grep -Fxq 'update --check' "$failure_log"
+
+# A daemon transport failure is not pack absence. The launcher and doctor must
+# exit before automatic provisioning, even when the pack receipt is present.
+cat > "$home/.aos/bin/aos" <<'AOS'
+#!/usr/bin/env sh
+case " ${*:-} " in
+  *" --version "*) printf '%s\n' "Unicity AOS 2026.9.0" ;;
+  *" capsule show aos-mcp "*)
+    printf '%s\n' "error: daemon transport failed while reading capsule metadata" >&2
+    exit 93
+    ;;
+  *) exit 0 ;;
+esac
+AOS
+chmod 700 "$home/.aos/bin/aos"
+transport_project="$work/transport-project"
+transport_error="$work/transport-error"
+mkdir -p "$transport_project"
+install_count_before=$(wc -l < "$log" | tr -d ' ')
+
+set +e
+transport_output=$(env -i \
+  PATH="$fake_bin:/usr/bin:/bin" \
+  HOME="$home" \
+  AOS_HOME="$home/.aos" \
+  AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
+  AOS_ORACLES_INSTALLER="$fake_installer" \
+  TEST_INSTALL_LOG="$log" \
+  "$repo_root/plugins/unicity-aos/bin/aos-doctor" --format hook \
+  </dev/null 2>"$transport_error")
+doctor_transport_rc=$?
+set -e
+test "$doctor_transport_rc" -eq 93
+test -z "$transport_output"
+grep -Fq "daemon transport failed while reading capsule metadata" "$transport_error"
+
+set +e
+transport_output=$(cd "$transport_project" && env -i \
+  PATH="$fake_bin:/usr/bin:/bin" \
+  HOME="$home" \
+  AOS_HOME="$home/.aos" \
+  AOS_PLUGIN_ROOT="$repo_root/plugins/unicity-aos" \
+  AOS_ORACLES_INSTALLER="$fake_installer" \
+  TEST_INSTALL_LOG="$log" \
+  "$repo_root/plugins/unicity-aos/bin/aos-up" --principal=codex-code \
+  </dev/null 2>"$transport_error")
+launcher_transport_rc=$?
+set -e
+test "$launcher_transport_rc" -eq 93
+test -z "$transport_output"
+grep -Fq "daemon transport failed while reading capsule metadata" "$transport_error"
+test "$(wc -l < "$log" | tr -d ' ')" = "$install_count_before"
+test -z "$(find "$home/.aos/cache/oracles" -type f -print -quit 2>/dev/null)"

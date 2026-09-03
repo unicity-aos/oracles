@@ -61,7 +61,7 @@ def assert_rejected(
         proc.stdin.close()
     stdout, stderr = proc.communicate(timeout=2)
     assert proc.returncode != 0
-    assert expected_error in stderr
+    assert expected_error in stderr, stderr
     assert stdout == b""
 
 
@@ -162,12 +162,31 @@ def test_symlinked_release_ancestor_rejected() -> None:
         assert_rejected(executable, environment, b"release path is not canonical")
 
 
+def test_symlinked_home_ancestor_rejected() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir).resolve()
+        real_home = root / "real-home/.aos"
+        release_root = real_home / "releases/2026.9.0/runtime"
+        release_root.mkdir(parents=True)
+        (release_root / "bin").mkdir()
+        executable_file = release_root / "bin/astrid"
+        shutil.copyfile("/bin/sh", executable_file)
+        executable_file.chmod(0o700)
+        alias_parent = root / "alias-home"
+        alias_parent.symlink_to(real_home.parent, target_is_directory=True)
+        executable = str(alias_parent / ".aos/releases/2026.9.0/runtime/bin/astrid")
+        environment = runtime_env(executable)
+        environment["AOS_RUNTIME_PATH"] = executable
+        assert_rejected(executable, environment, b"release path is not canonical")
+
+
 def main() -> None:
     assert FRAME.is_file()
     test_child_exit_with_open_stdin()
     test_content_length_roundtrip()
     test_matching_bytes_outside_release_path_rejected()
     test_symlinked_release_ancestor_rejected()
+    test_symlinked_home_ancestor_rejected()
 
 
 if __name__ == "__main__":

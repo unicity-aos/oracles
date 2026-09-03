@@ -148,6 +148,24 @@ _aos_verify_active_runtime_bytes() {
         return 1
       }
   done
+  if ! python3 - "${_aos_home:-}" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(os.path.abspath(sys.argv[1]))
+if not path.is_absolute():
+    raise SystemExit(1)
+current = pathlib.Path(path.anchor)
+for component in path.parts[1:]:
+    current /= component
+    if current.is_symlink() or not current.is_dir():
+        raise SystemExit(1)
+PY
+  then
+    echo "aos-resolve: AOS home has a symlinked ancestor" >&2
+    return 1
+  fi
   [ -f "$ASTRID" ] && [ ! -L "$ASTRID" ] && [ -x "$ASTRID" ] || {
     echo "aos-resolve: active AOS release is missing its bundled Astrid CLI" >&2
     return 1
@@ -233,6 +251,22 @@ aos_resolve_active_runtime() {
       return 1
     }
   done
+  if ! python3 - "$_aos_home" <<'PY'
+import os
+import pathlib
+import sys
+
+path = pathlib.Path(os.path.abspath(sys.argv[1]))
+current = pathlib.Path(path.anchor)
+for component in path.parts[1:]:
+    current /= component
+    if current.is_symlink() or not current.is_dir():
+        raise SystemExit(1)
+PY
+  then
+    echo "aos-resolve: active AOS release has a symlinked home ancestor" >&2
+    return 1
+  fi
   [ -d "$_aos_oracle_root" ] && [ ! -L "$_aos_oracle_root" ] \
     && [ -d "$_aos_oracle_root/releases" ] \
     && [ ! -L "$_aos_oracle_root/releases" ] \

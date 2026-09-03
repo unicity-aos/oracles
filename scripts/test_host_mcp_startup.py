@@ -263,6 +263,8 @@ def exercise_prebootstrap_invalid_principal(host: str, root: Path) -> None:
     cases = (
         (["--first", "--principal", "foreign"], "principal foreign"),
         (["--help", "--principal=foreign"], "principal=foreign"),
+        (["--", "--principal", "foreign"], "principal foreign"),
+        (["--", "--principal=foreign"], "principal=foreign"),
     )
     for arguments, needle in cases:
         result = subprocess.run(
@@ -283,9 +285,30 @@ def exercise_prebootstrap_invalid_principal(host: str, root: Path) -> None:
         assert needle in " ".join(arguments)
         assert not aos_args.exists(), arguments
         assert not installer_args.exists(), arguments
-        assert not home.exists(), arguments
-        assert not (home / "runtime").exists(), arguments
-        assert not (home / "cache").exists(), arguments
+    assert not home.exists(), arguments
+    assert not (home / "runtime").exists(), arguments
+    assert not (home / "cache").exists(), arguments
+
+    # The doctor honors the same ambient principal boundary before it can touch
+    # the product workspace or provisioning path.
+    for principal_variable in ("ASTRID_PRINCIPAL_ID", "AOS_PRINCIPAL_ID"):
+        doctor_environment = dict(environment)
+        doctor_environment[principal_variable] = "foreign-principal"
+        doctor = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+            cwd=workspace,
+            env=doctor_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert doctor.returncode != 0, (principal_variable, doctor.stderr)
+        assert f"refusing non-{spec['principal']} principal" in doctor.stderr
+        assert not aos_args.exists(), principal_variable
+        assert not installer_args.exists(), principal_variable
+        assert not home.exists(), principal_variable
 
 
 def exercise_default_host_without_injection(host: str, root: Path) -> None:
@@ -314,6 +337,77 @@ def exercise_default_host_without_injection(host: str, root: Path) -> None:
     assert "automatic claude provisioning failed" in result.stderr or (
         "automatic grok provisioning failed" in result.stderr
     )
+
+
+def exercise_transport_failure(host: str, root: Path) -> None:
+    spec = HOSTS[host]
+    test_root = root / f"{host}-capsule-transport"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "user-project"
+    fake_installer = test_root / "fake-installer"
+    aos_args = test_root / "aos-args"
+    installer_args = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    receipt = home / "extensions/oracles" / host / "Pack.lock"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text('version = "0.3.0"\n')
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALLER_ARGS"\n'
+        "exit 1\n",
+    )
+    write_executable(
+        home / "bin/aos",
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        'case " ${*:-} " in\n'
+        '  *" capsule show aos-mcp "*)\n'
+        '    printf "%s\\n" '
+        '"error: daemon transport failed while reading capsule metadata" >&2\n'
+        "    exit 93\n"
+        "    ;;\n"
+        "esac\n",
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_BIN": str(home / "bin/aos"),
+        "AOS_HOME": str(home),
+        "AOS_HOST": host,
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "AOS_PLUGIN_ROOT": str(ROOT / f"plugins/{host}"),
+        str(spec["root_var"]): str(ROOT / f"plugins/{host}"),
+        "PATH": "/usr/bin:/bin",
+        "TEST_AOS_ARGS": str(aos_args),
+        "TEST_INSTALLER_ARGS": str(installer_args),
+    }
+    launcher = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-up")],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert launcher.returncode == 93, (launcher.returncode, launcher.stderr)
+    assert "daemon transport failed while reading capsule metadata" in launcher.stderr
+    doctor = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert doctor.returncode == 93, (doctor.returncode, doctor.stderr)
+    assert "daemon transport failed while reading capsule metadata" in doctor.stderr
+    assert not installer_args.exists()
+    assert not (home / "runtime").exists()
+    assert not (home / "cache").exists()
 
 
 def exercise_host(host: str, root: Path) -> None:
@@ -401,18 +495,28 @@ def exercise_host(host: str, root: Path) -> None:
             check=False,
         )
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        if bad_arguments:
-            assert (
-                f"refusing non-{spec['principal']} principal on the {host} plugin path"
-                in rejected.stderr
-            )
-        else:
-            assert (
-                f"refusing a non-host principal for the {host} plugin"
-                in rejected.stderr
-            )
+        assert (
+            f"refusing non-{spec['principal']} principal on the {host} plugin path"
+            in rejected.stderr
+        )
     added_arguments = args_log.read_text()[len(args_before):].splitlines()
     assert not any(argument.endswith(" mcp serve") for argument in added_arguments)
+
+    # A user end-of-options marker is parsed out and never reaches AOS argv.
+    user_marker = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-up"), "--", "--help"],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert user_marker.returncode == 0, (user_marker.stdout, user_marker.stderr)
+    assert args_log.read_text().splitlines()[-1] == (
+        f"--principal {spec['principal']} mcp serve --help"
+    )
 
     # A receipt alone is not ready until the product command is executable.
     (home / "bin/aos").unlink()
@@ -857,6 +961,7 @@ def main() -> None:
             exercise_hook_adapter(host, root)
             exercise_prebootstrap_invalid_principal(host, root)
             exercise_default_host_without_injection(host, root)
+            exercise_transport_failure(host, root)
             exercise_host(host, root)
             exercise_blank_slate_bootstrap(host, root)
             exercise_doctor_waits_for_concurrent_bootstrap(host, root)

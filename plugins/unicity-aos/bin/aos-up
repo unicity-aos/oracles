@@ -19,31 +19,84 @@ if [ "${ASTRID_PRINCIPAL_ID:-codex-code}" != codex-code ]; then
   echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
   exit 1
 fi
-principal_arg_seen=0
-for codex_argument in "$@"; do
-  if [ "$principal_arg_seen" -eq 1 ]; then
-    [ "$codex_argument" = codex-code ] || {
-      echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
-      exit 1
-    }
-    principal_arg_seen=0
-  fi
-  case "$codex_argument" in
+principal_declared=0
+principal_value=""
+first_argument_present=$#
+first_argument=""
+if [ "$first_argument_present" -gt 0 ]; then
+  first_argument=$1
+fi
+_aos_quote() {
+  _aos_quoted=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+  printf "'%s'" "$_aos_quoted"
+}
+pass_through_arguments=""
+remaining_arguments=$#
+if [ "${1:-}" = -- ]; then
+  shift
+  remaining_arguments=$((remaining_arguments - 1))
+fi
+while [ "$remaining_arguments" -gt 0 ]; do
+  case "$1" in
     --principal)
-      principal_arg_seen=1
-      ;;
-    --principal=*)
-      [ "${codex_argument#--principal=}" = codex-code ] || {
+      [ "$principal_declared" -eq 0 ] || {
+        echo "aos-up: multiple principal arguments are not supported" >&2
+        exit 2
+      }
+      shift
+      remaining_arguments=$((remaining_arguments - 1))
+      [ "$remaining_arguments" -gt 0 ] || {
+        echo "aos-up: --principal needs codex-code" >&2
+        exit 2
+      }
+      principal_declared=1
+      principal_value=$1
+      [ "$principal_value" = codex-code ] || {
         echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
         exit 1
       }
+      shift
+      remaining_arguments=$((remaining_arguments - 1))
+      ;;
+    --principal=*)
+      [ "$principal_declared" -eq 0 ] || {
+        echo "aos-up: multiple principal arguments are not supported" >&2
+        exit 2
+      }
+      principal_declared=1
+      principal_value=${1#--principal=}
+      [ "$principal_value" = codex-code ] || {
+        echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
+        exit 1
+      }
+      shift
+      remaining_arguments=$((remaining_arguments - 1))
+      ;;
+    *)
+      pass_through_arguments="$pass_through_arguments $(_aos_quote "$1")"
+      shift
+      remaining_arguments=$((remaining_arguments - 1))
       ;;
   esac
 done
-[ "$principal_arg_seen" -eq 0 ] || {
-  echo "aos-up: --principal needs codex-code" >&2
-  exit 2
-}
+
+ASTRID_PRINCIPAL_ID=codex-code
+export ASTRID_PRINCIPAL_ID
+if [ -n "$pass_through_arguments" ]; then
+  eval "set --$pass_through_arguments"
+else
+  while [ "$#" -gt 0 ]; do
+    shift
+  done
+fi
+
+if [ "$principal_declared" -eq 1 ] && [ "$first_argument_present" -gt 0 ]; then
+  case "$first_argument" in
+    --principal|--principal=*)
+      set -- --principal codex-code "$@"
+      ;;
+  esac
+fi
 
 RESOLVE="$HERE/lib-aos-resolve.sh"
 _aos_expected_blake3=""
@@ -52,10 +105,6 @@ _aos_expected_sha256=""
 . "$RESOLVE"
 
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
-aos_enter_product_workspace || {
-  echo "aos-up: could not enter the AOS product runtime workspace" >&2
-  exit 1
-}
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/codex/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$HERE/aos-install"
@@ -79,11 +128,26 @@ printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
   exit 1
 }
 
+capsule_ready() {
+  capsule_output=""
+  capsule_status=0
+  capsule_output=$("$AOS" capsule show aos-mcp --agent codex-code 2>&1) ||
+    capsule_status=$?
+  [ "$capsule_status" -eq 0 ] && return 0
+  if [ "$capsule_status" -eq 1 ] \
+    && [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent 'codex-code'" ]
+  then
+    return 1
+  fi
+  echo "aos-up: AOS capsule transport failed: $capsule_output" >&2
+  exit 93
+}
+
 codex_ready() {
   [ -r "$PACK_RECEIPT" ] \
     && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
     && aos_resolve_active_runtime 2>/dev/null \
-    && "$AOS" capsule show aos-mcp --agent codex-code >/dev/null 2>&1
+    && capsule_ready
 }
 
 install_lock_reclaimable() {
@@ -157,6 +221,21 @@ ensure_codex() {
       return 1
     fi
   done
+}
+
+codex_prepare() {
+  if ! codex_ready; then
+    aos_enter_product_workspace || {
+      echo "aos-up: could not enter the AOS product runtime workspace" >&2
+      return 1
+    }
+    ensure_codex || return $?
+  else
+    aos_enter_product_workspace || {
+      echo "aos-up: could not enter the AOS product runtime workspace" >&2
+      return 1
+    }
+  fi
 }
 
 topic_segment() {
@@ -448,12 +527,19 @@ mcp_serve() {
 
 mcp_attach() {
   principal=""
-  if [ "${1:-}" = "--principal" ]; then
-    shift
-    principal="${1:-}"
-    [ "$#" -eq 0 ] || shift
-  fi
+  case "${1:-}" in
+    --principal)
+      shift
+      principal="${1:-}"
+      [ "$#" -eq 0 ] || shift
+      ;;
+    --principal=*)
+      principal=${1#--principal=}
+      shift
+      ;;
+  esac
   principal="$(principal_id "$principal")"
+  export AOS_HOME="$AOS_HOME_DIR"
   runtime="${AOS_HOME:-$HOME/.aos}/runtime"
   export ASTRID_HOME="$runtime"
   export ASTRID_HOST="${ASTRID_HOST:-codex}"
@@ -483,6 +569,10 @@ mcp_attach() {
 
 if [ "${1:-}" = codex ]; then
   shift
+  aos_enter_product_workspace || {
+    echo "aos-up: could not enter the AOS product runtime workspace" >&2
+    exit 1
+  }
   case "${1:-}" in
     ensure-principal)
       ensure_codex
@@ -511,14 +601,16 @@ if [ "${1:-}" = codex ]; then
   esac
 fi
 
-if [ "${1:-}" = "--principal" ]; then
-  codex_ready || ensure_codex
-  trap - EXIT HUP INT TERM
-  mcp_attach "$@"
-fi
+case "${1:-}" in
+  --principal|--principal=*)
+    codex_prepare || exit $?
+    trap - EXIT HUP INT TERM
+    mcp_attach "$@"
+    ;;
+esac
 
 if [ "${1:-}" = mcp ] && [ "${2:-}" = attach ]; then
-  codex_ready || ensure_codex
+  codex_prepare || exit $?
   trap - EXIT HUP INT TERM
   shift 2
   set -- --principal "${ASTRID_PRINCIPAL_ID:-codex-code}" "$@"
@@ -527,7 +619,7 @@ fi
 
 if [ "${1:-}" = mcp ] && [ "${2:-}" = serve ]; then
   # Explicit escape hatch. Default Codex stdio uses attach+gateway.
-  codex_ready || ensure_codex
+  codex_prepare || exit $?
   trap - EXIT HUP INT TERM
   shift 2
   set -- --principal "${ASTRID_PRINCIPAL_ID:-codex-code}" "$@"
@@ -540,8 +632,5 @@ if ! aos_resolve_apply; then
   exit 127
 fi
 
-case "${1:-}" in
-  --principal|--principal=*) exec "$AOS" "$@" ;;
-esac
 set -- --principal codex-code "$@"
 exec "$AOS" "$@"

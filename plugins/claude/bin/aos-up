@@ -24,17 +24,29 @@ case "$AOS_HOST" in
     ;;
 esac
 
-principal_declared=0
-principal_value=""
-ambient_principal="${ASTRID_PRINCIPAL_ID:-${AOS_PRINCIPAL_ID:-}}"
-case "$ambient_principal" in
-  ''|'${user_config.principal}') ambient_principal="" ;;
-esac
-if [ -n "$ambient_principal" ] && [ "$ambient_principal" != "$expected_principal" ]; then
+ambient_conflict=""
+for ambient_name in ASTRID_PRINCIPAL_ID AOS_PRINCIPAL_ID; do
+  case "$ambient_name" in
+    ASTRID_PRINCIPAL_ID) ambient_value=${ASTRID_PRINCIPAL_ID:-} ;;
+    AOS_PRINCIPAL_ID) ambient_value=${AOS_PRINCIPAL_ID:-} ;;
+  esac
+  case "$ambient_value" in
+    ''|'${user_config.principal}') ;;
+    "$expected_principal") ;;
+    *)
+      ambient_conflict=$ambient_value
+      break
+      ;;
+  esac
+done
+if [ -n "$ambient_conflict" ]; then
   printf 'aos-up: refusing non-%s principal on the %s plugin path\n' \
     "$expected_principal" "$AOS_HOST" >&2
   exit 2
 fi
+
+principal_declared=0
+principal_value=""
 _aos_quote() {
   _aos_quoted=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
   printf "'%s'" "$_aos_quoted"
@@ -148,6 +160,13 @@ elif [ -f "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ]; then
 else
   packaged_host=""
 fi
+case "$AOS_HOST" in
+  claude|grok) ;;
+  *)
+    log "unsupported host '$AOS_HOST'; want claude or grok"
+    exit 2
+    ;;
+esac
 if [ -n "$packaged_host" ] && [ "$AOS_HOST" != "$packaged_host" ]; then
   log "plugin identity is $packaged_host but host was $AOS_HOST"
   exit 2
@@ -164,6 +183,21 @@ AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 
 hook_segment() {
   printf '%s' "$1" | sed 's/[^A-Za-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//'
+}
+
+capsule_ready() {
+  capsule_output=""
+  capsule_status=0
+  capsule_output=$("$AOS" capsule show aos-mcp --agent "${AOS_HOST}-code" 2>&1) ||
+    capsule_status=$?
+  [ "$capsule_status" -eq 0 ] && return 0
+  if [ "$capsule_status" -eq 1 ] \
+    && [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent '${AOS_HOST}-code'" ]
+  then
+    return 1
+  fi
+  printf 'aos-up: AOS capsule transport failed: %s\n' "$capsule_output" >&2
+  exit 93
 }
 
 hook_json_escape() {
@@ -285,15 +319,16 @@ emit_host_hook() {
   trap 'rm -f "$tmp"' EXIT HUP INT TERM
   cat > "$tmp" || true
   session_id=$(host_session_id "$host" "$tmp")
-  if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
-    token="$ASTRID_HOOK_TOKEN"
-  else
-    token=$(host_hook_token "$host" "$session_id") || return 1
-  fi
   if ! aos_resolve_apply 2>/dev/null; then
     [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
     log "could not resolve the AOS command for the $host hook"
     return 127
+  fi
+  capsule_ready
+  if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
+    token="$ASTRID_HOOK_TOKEN"
+  else
+    token=$(host_hook_token "$host" "$session_id") || return 1
   fi
   if ! aos_enter_product_workspace; then
     [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
@@ -345,21 +380,6 @@ esac
 ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
 printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || { log "plugin snapshot has an invalid Oracle release identity"; exit 1; }
-
-capsule_ready() {
-  capsule_output=""
-  capsule_status=0
-  capsule_output=$("$AOS" capsule show aos-mcp --agent "${AOS_HOST}-code" 2>&1) ||
-    capsule_status=$?
-  [ "$capsule_status" -eq 0 ] && return 0
-  if [ "$capsule_status" -eq 1 ] \
-    && [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent '${AOS_HOST}-code'" ]
-  then
-    return 1
-  fi
-  printf 'aos-up: AOS capsule transport failed: %s\n' "$capsule_output" >&2
-  exit 93
-}
 
 host_ready() {
   if ! aos_resolve_apply 2>/dev/null; then

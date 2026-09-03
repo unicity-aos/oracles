@@ -1054,8 +1054,13 @@ capture_receipt_rollback_state() {
     PRIOR_PACK_LOCK_BACKUP="$WORK/rollback-$capture_host-Pack.lock"
     cp -p "$capture_root/Pack.lock" "$PRIOR_PACK_LOCK_BACKUP" \
       || die "could not preserve the prior regular Pack.lock"
-    PRIOR_PACK_LOCK_MODE=$(stat -f '%Lp' "$capture_root/Pack.lock" 2>/dev/null \
-      || stat -c '%a' "$capture_root/Pack.lock")
+    PRIOR_PACK_LOCK_MODE=$(stat -c '%a' "$capture_root/Pack.lock" 2>/dev/null \
+      || stat -f '%Lp' "$capture_root/Pack.lock" 2>/dev/null)
+    case "$PRIOR_PACK_LOCK_MODE" in
+      ''|*[!0-7]*)
+        die "could not capture the prior $capture_host Pack.lock mode"
+        ;;
+    esac
   elif [ -e "$capture_root/Pack.lock" ]; then
     die "$capture_host Pack.lock is neither a regular file nor a symlink"
   fi

@@ -901,6 +901,24 @@ test "$(shasum -a 256 "$prior_receipt/Receipt.toml" | awk '{print $1}')" \
   = "$prior_receipt_hash"
 grep -Fxq 'authenticated prior generation' "$prior_receipt/prior-marker"
 
+cat > "$fake_bin/stat" <<'STAT'
+#!/usr/bin/env bash
+if [ "$1" = -c ]; then
+  printf '%s\n' 604
+elif [ "$1" = -f ]; then
+  cat <<'GNU'
+  File: "/fixture/Pack.lock"
+  Size: 0          Blocks: 0          IO Block: 4096   regular file
+Device: 8,2   Inode: 1   Links: 1
+Access: (0604/-rw----r--)  Uid: ( 1000/    user)   Gid: ( 1000/ group)
+GNU
+else
+  exec /usr/bin/stat "$@"
+fi
+STAT
+chmod 755 "$fake_bin/stat"
+grep -Fq 'Device: 8,2' "$fake_bin/stat"
+
 # A multi-host transaction cannot delete one shared plugin snapshot that an
 # already committed host selects. When the next host fails, its own regular
 # Pack.lock must also return byte-for-byte, not merely the prior symlink case.
@@ -935,9 +953,9 @@ principal = "grok-code"
 EOF
 chmod 604 "$multi_host_home/extensions/oracles/grok/Pack.lock"
 ln -s releases/0.2.8 "$multi_host_home/extensions/oracles/grok/current"
-if TEST_FAIL_PLUGIN_HOST=grok TEST_STATE="$multi_host_state" \
-  AOS_HOME="$multi_host_home" "$repo_root/install.sh" \
-  --host codex --host grok --yes --no-install-aos
+if env PATH="$fake_bin:$PATH" TEST_FAIL_PLUGIN_HOST=grok \
+  TEST_STATE="$multi_host_state" AOS_HOME="$multi_host_home" \
+  "$repo_root/install.sh" --host codex --host grok --yes --no-install-aos
 then
   echo "second host failure unexpectedly completed the multi-host install" >&2
   exit 1
@@ -952,7 +970,8 @@ grok_pack_lock="$multi_host_home/extensions/oracles/grok/Pack.lock"
 test -f "$grok_pack_lock"
 test ! -L "$grok_pack_lock"
 cmp -s "$grok_pack_lock" "$work/multi-host-grok-Pack.lock"
-test "$(stat -f '%Lp' "$grok_pack_lock" 2>/dev/null || stat -c '%a' "$grok_pack_lock")" = 604
+test "$(/usr/bin/stat -f '%Lp' "$grok_pack_lock" 2>/dev/null \
+  || /usr/bin/stat -c '%a' "$grok_pack_lock")" = 604
 test "$(readlink "$multi_host_home/extensions/oracles/grok/current")" = releases/0.2.8
 test ! -e "$multi_host_home/extensions/oracles/grok/releases/0.3.0"
 test ! -e "$multi_host_home/extensions/oracles/.install.lock"

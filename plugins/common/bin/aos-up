@@ -138,8 +138,6 @@ else
   done
 fi
 
-HOST_WORKSPACE=$(pwd -P 2>/dev/null || pwd)
-
 log() { printf 'aos-up: %s\n' "$*" >&2; }
 
 if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
@@ -151,26 +149,24 @@ if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
 fi
 export AOS_PLUGIN_ROOT
 
-export AOS_HOST
-
-if [ -f "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ]; then
+packaged_host=""
+if [ ! -L "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ] \
+  && [ -f "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ]
+then
   packaged_host=claude
-elif [ -f "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ]; then
+elif [ ! -L "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ] \
+  && [ -f "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ]
+then
   packaged_host=grok
-else
-  packaged_host=""
 fi
-case "$AOS_HOST" in
-  claude|grok) ;;
-  *)
-    log "unsupported host '$AOS_HOST'; want claude or grok"
-    exit 2
-    ;;
-esac
-if [ -n "$packaged_host" ] && [ "$AOS_HOST" != "$packaged_host" ]; then
-  log "plugin identity is $packaged_host but host was $AOS_HOST"
+if [ "$packaged_host" != "$AOS_HOST" ]; then
+  log "plugin identity is not $AOS_HOST"
   exit 2
 fi
+
+export AOS_HOST
+
+HOST_WORKSPACE=$(pwd -P 2>/dev/null || pwd)
 
 RESOLVE="$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"
 if [ ! -f "$RESOLVE" ]; then

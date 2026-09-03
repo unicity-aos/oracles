@@ -425,6 +425,90 @@ def exercise_prebootstrap_invalid_principal(host: str, root: Path) -> None:
         assert not home.exists(), masked_conflict
 
 
+def exercise_host_plugin_identity(host: str, root: Path) -> None:
+    test_root = root / f"{host}-plugin-identity"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    fake_aos = test_root / "bin" / "aos"
+    fake_installer = test_root / "fake-installer"
+    aos_args = test_root / "aos-args"
+    installer_args = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        "exit 0\n",
+    )
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALLER_ARGS"\n'
+        "exit 1\n",
+    )
+
+    other_host = "grok" if host == "claude" else "claude"
+    mismatched_root = test_root / f"regular-{other_host}-root"
+    mismatched_marker = mismatched_root / f".{other_host}-plugin/plugin.json"
+    mismatched_marker.parent.mkdir(parents=True)
+    mismatched_marker.write_text("{}\n")
+
+    symlinked_root = test_root / "symlinked-root"
+    actual_marker = test_root / "actual-plugin.json"
+    symlinked_marker = symlinked_root / f".{host}-plugin/plugin.json"
+    symlinked_marker.parent.mkdir(parents=True)
+    actual_marker.write_text("{}\n")
+    symlinked_marker.symlink_to(actual_marker)
+
+    nonregular_root = test_root / "nonregular-root"
+    nonregular_marker = nonregular_root / f".{host}-plugin/plugin.json"
+    nonregular_marker.parent.mkdir(parents=True)
+    os.mkfifo(nonregular_marker)
+
+    missing_root = test_root / "missing-root"
+    missing_root.mkdir()
+    common_launcher = ROOT / "plugins/common/bin/aos-up"
+    vendored_launcher = ROOT / f"plugins/{host}/bin/aos-up"
+    cases = (
+        ("missing common", missing_root, common_launcher),
+        ("missing vendored", missing_root, vendored_launcher),
+        ("mismatched", mismatched_root, common_launcher),
+        ("symlinked", symlinked_root, common_launcher),
+        ("non-regular", nonregular_root, vendored_launcher),
+    )
+    for label, plugin_root, launcher in cases:
+        environment = {
+            "HOME": str(test_root / "home"),
+            "AOS_BIN": str(fake_aos),
+            "AOS_HOME": str(home),
+            "AOS_HOST": host,
+            "AOS_ORACLES_INSTALLER": str(fake_installer),
+            "AOS_PLUGIN_ROOT": str(plugin_root),
+            str(HOSTS[host]["root_var"]): str(plugin_root),
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": str(test_root),
+            "TEST_AOS_ARGS": str(aos_args),
+            "TEST_INSTALLER_ARGS": str(installer_args),
+        }
+        result = subprocess.run(
+            [str(launcher), "--help"],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 2, (label, result.stdout, result.stderr)
+        assert f"plugin identity is not {host}" in result.stderr, (label, result.stderr)
+        assert result.stdout == "", (label, result.stdout)
+        assert not aos_args.exists(), label
+        assert not installer_args.exists(), label
+        assert not home.exists(), label
+        assert not (home / "extensions/oracles").exists(), label
+
+
 def exercise_doctor_rejects_unknown_host(host: str, root: Path) -> None:
     test_root = root / f"{host}-doctor-unknown-host"
     home = test_root / "home" / ".aos"
@@ -1162,6 +1246,7 @@ def main() -> None:
         for host in HOSTS:
             exercise_hook_adapter(host, root)
             exercise_prebootstrap_invalid_principal(host, root)
+            exercise_host_plugin_identity(host, root)
             exercise_doctor_rejects_unknown_host(host, root)
             exercise_default_host_without_injection(host, root)
             exercise_transport_failure(host, root)

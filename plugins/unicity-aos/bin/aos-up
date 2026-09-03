@@ -21,11 +21,7 @@ if [ "${ASTRID_PRINCIPAL_ID:-codex-code}" != codex-code ]; then
 fi
 principal_declared=0
 principal_value=""
-first_argument_present=$#
-first_argument=""
-if [ "$first_argument_present" -gt 0 ]; then
-  first_argument=$1
-fi
+principal_dispatch_position=0
 _aos_quote() {
   _aos_quoted=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
   printf "'%s'" "$_aos_quoted"
@@ -36,8 +32,17 @@ if [ "${1:-}" = -- ]; then
   shift
   remaining_arguments=$((remaining_arguments - 1))
 fi
+if [ "$remaining_arguments" -gt 0 ]; then
+  case "$1" in
+    --principal|--principal=*) principal_dispatch_position=1 ;;
+  esac
+fi
 while [ "$remaining_arguments" -gt 0 ]; do
   case "$1" in
+    --)
+      echo "aos-up: user end-of-options markers are not supported after the first argument" >&2
+      exit 2
+      ;;
     --principal)
       [ "$principal_declared" -eq 0 ] || {
         echo "aos-up: multiple principal arguments are not supported" >&2
@@ -90,12 +95,13 @@ else
   done
 fi
 
-if [ "$principal_declared" -eq 1 ] && [ "$first_argument_present" -gt 0 ]; then
-  case "$first_argument" in
-    --principal|--principal=*)
-      set -- --principal codex-code "$@"
-      ;;
-  esac
+if [ "$principal_declared" -eq 1 ]; then
+  if [ "$principal_dispatch_position" -eq 1 ]; then
+    set -- --principal codex-code "$@"
+  else
+    echo "aos-up: principal must be the first argument or immediately after --" >&2
+    exit 2
+  fi
 fi
 
 RESOLVE="$HERE/lib-aos-resolve.sh"
@@ -144,10 +150,14 @@ capsule_ready() {
 }
 
 codex_ready() {
+  if ! aos_resolve_active_runtime 2>/dev/null; then
+    return 1
+  fi
+  if ! capsule_ready; then
+    return 1
+  fi
   [ -r "$PACK_RECEIPT" ] \
-    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
-    && aos_resolve_active_runtime 2>/dev/null \
-    && capsule_ready
+    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT"
 }
 
 install_lock_reclaimable() {
@@ -566,6 +576,15 @@ mcp_attach() {
   set -- --principal "$principal" mcp attach --workspace "$workspace"
   _aos_execute_active_runtime "$@"
 }
+
+# Pack.lock can be absent, unreadable, or mid-swap. Probe the capsule transport
+# before entering or creating the product workspace; only the product's exact
+# documented absence result permits provisioning to continue.
+if aos_resolve_apply 2>/dev/null; then
+  if ! capsule_ready; then
+    :
+  fi
+fi
 
 if [ "${1:-}" = codex ]; then
   shift

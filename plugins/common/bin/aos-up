@@ -26,6 +26,15 @@ esac
 
 principal_declared=0
 principal_value=""
+ambient_principal="${ASTRID_PRINCIPAL_ID:-${AOS_PRINCIPAL_ID:-}}"
+case "$ambient_principal" in
+  ''|'${user_config.principal}') ambient_principal="" ;;
+esac
+if [ -n "$ambient_principal" ] && [ "$ambient_principal" != "$expected_principal" ]; then
+  printf 'aos-up: refusing non-%s principal on the %s plugin path\n' \
+    "$expected_principal" "$AOS_HOST" >&2
+  exit 2
+fi
 _aos_quote() {
   _aos_quoted=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
   printf "'%s'" "$_aos_quoted"
@@ -38,6 +47,10 @@ if [ "${1:-}" = -- ]; then
 fi
 while [ "$remaining_arguments" -gt 0 ]; do
   case "$1" in
+    --)
+      printf 'aos-up: user end-of-options markers are not supported after the first argument\n' >&2
+      exit 2
+      ;;
     --principal)
       [ "$principal_declared" -eq 0 ] || {
         printf 'aos-up: multiple principal arguments are not supported\n' >&2
@@ -89,6 +102,9 @@ while [ "$remaining_arguments" -gt 0 ]; do
 done
 
 principal="${ASTRID_PRINCIPAL_ID:-}"
+if [ -z "$principal" ]; then
+  principal="${AOS_PRINCIPAL_ID:-}"
+fi
 if [ "$principal_declared" -eq 1 ]; then
   principal=$principal_value
 fi
@@ -346,11 +362,23 @@ capsule_ready() {
 }
 
 host_ready() {
+  if ! aos_resolve_apply 2>/dev/null; then
+    return 1
+  fi
+  if ! capsule_ready; then
+    return 1
+  fi
   [ -r "$PACK_RECEIPT" ] \
-    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
-    && aos_resolve_apply 2>/dev/null \
-    && capsule_ready
+    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT"
 }
+
+# An unreadable or stale Pack.lock never suppresses the transport probe. Only
+# capsule_ready's documented exact absence result may continue to bootstrap.
+if aos_resolve_apply 2>/dev/null; then
+  if ! capsule_ready; then
+    :
+  fi
+fi
 
 install_lock_reclaimable() {
   owner=""

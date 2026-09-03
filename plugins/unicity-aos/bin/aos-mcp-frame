@@ -115,7 +115,7 @@ def verify_runtime_before_popen() -> None:
     if len(relative.parts) != 4 or relative.parts[1:] != ("runtime", "bin", "astrid"):
         raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
     current = Path(aos_home.anchor)
-    for component in aos_home.absolute().parts[1:]:
+    for component in aos_home.parts[1:]:
         current /= component
         if current.is_symlink() or not current.is_dir():
             raise SystemExit("aos-mcp-frame: active AOS release path is not canonical")

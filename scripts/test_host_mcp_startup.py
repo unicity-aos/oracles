@@ -261,6 +261,8 @@ def exercise_prebootstrap_invalid_principal(host: str, root: Path) -> None:
         "TEST_INSTALLER_ARGS": str(installer_args),
     }
     cases = (
+        (["--help", "--", "--foo"], "-- --foo"),
+        (["--", "--", "--help"], "-- --help"),
         (["--first", "--principal", "foreign"], "principal foreign"),
         (["--help", "--principal=foreign"], "principal=foreign"),
         (["--", "--principal", "foreign"], "principal foreign"),
@@ -278,16 +280,43 @@ def exercise_prebootstrap_invalid_principal(host: str, root: Path) -> None:
             check=False,
         )
         assert result.returncode != 0, (arguments, result.stdout, result.stderr)
-        assert f"refusing non-{spec['principal']} principal" in result.stderr, (
-            arguments,
-            result.stderr,
-        )
-        assert needle in " ".join(arguments)
+        if "--principal" in arguments or "--principal=foreign" in arguments:
+            assert f"refusing non-{spec['principal']} principal" in result.stderr, (
+                arguments,
+                result.stderr,
+            )
+        else:
+            assert (
+                "user end-of-options markers are not supported after the first argument"
+                in result.stderr
+            ), (arguments, result.stderr)
+            assert needle in " ".join(arguments)
         assert not aos_args.exists(), arguments
         assert not installer_args.exists(), arguments
     assert not home.exists(), arguments
     assert not (home / "runtime").exists(), arguments
     assert not (home / "cache").exists(), arguments
+
+    for principal_variable, expected_ambient in (
+        ("ASTRID_PRINCIPAL_ID", "foreign-principal"),
+        ("AOS_PRINCIPAL_ID", "foreign-principal"),
+    ):
+        conflict_environment = dict(environment)
+        conflict_environment[principal_variable] = expected_ambient
+        conflict = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), "--principal", spec["principal"]],
+            cwd=workspace,
+            env=conflict_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert conflict.returncode != 0, (principal_variable, conflict.stdout, conflict.stderr)
+        assert f"refusing non-{spec['principal']} principal" in conflict.stderr
+        assert not aos_args.exists(), principal_variable
+        assert not installer_args.exists(), principal_variable
 
     # The doctor honors the same ambient principal boundary before it can touch
     # the product workspace or provisioning path.
@@ -348,9 +377,7 @@ def exercise_transport_failure(host: str, root: Path) -> None:
     aos_args = test_root / "aos-args"
     installer_args = test_root / "installer-args"
     workspace.mkdir(parents=True)
-    receipt = home / "extensions/oracles" / host / "Pack.lock"
-    receipt.parent.mkdir(parents=True)
-    receipt.write_text('version = "0.3.0"\n')
+    (home / "bin").mkdir(parents=True)
     write_executable(
         fake_installer,
         "#!/bin/sh\n"
@@ -406,6 +433,7 @@ def exercise_transport_failure(host: str, root: Path) -> None:
     assert doctor.returncode == 93, (doctor.returncode, doctor.stderr)
     assert "daemon transport failed while reading capsule metadata" in doctor.stderr
     assert not installer_args.exists()
+    assert not (home / f"extensions/oracles/{host}/Pack.lock").exists()
     assert not (home / "runtime").exists()
     assert not (home / "cache").exists()
 
@@ -517,6 +545,28 @@ def exercise_host(host: str, root: Path) -> None:
     assert args_log.read_text().splitlines()[-1] == (
         f"--principal {spec['principal']} mcp serve --help"
     )
+
+    args_before_markers = args_log.read_text()
+    for marker_arguments in (
+        ["--", "--", "--help"],
+        ["--help", "--", "--foo"],
+    ):
+        marker = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), *marker_arguments],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert marker.returncode != 0, (marker_arguments, marker.stdout, marker.stderr)
+        assert (
+            "user end-of-options markers are not supported after the first argument"
+            in marker.stderr
+        )
+    assert args_log.read_text() == args_before_markers
 
     # A receipt alone is not ready until the product command is executable.
     (home / "bin/aos").unlink()

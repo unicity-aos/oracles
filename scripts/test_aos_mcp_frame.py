@@ -180,6 +180,32 @@ def test_symlinked_home_ancestor_rejected() -> None:
         assert_rejected(executable, environment, b"release path is not canonical")
 
 
+def test_lexically_canceled_symlink_home_rejected() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir).resolve()
+        real_home = root / "real-home/.aos"
+        release_root = real_home / "releases/2026.9.0/runtime"
+        release_root.mkdir(parents=True)
+        (release_root / "bin").mkdir()
+        executable_file = release_root / "bin/astrid"
+        shutil.copyfile("/bin/sh", executable_file)
+        executable_file.chmod(0o700)
+        alias_parent = root / "alias-home"
+        alias_parent.symlink_to(root, target_is_directory=True)
+        canonical_executable = str(
+            real_home / "releases/2026.9.0/runtime/bin/astrid"
+        )
+        executable = str(
+            alias_parent / "../real-home/.aos/releases/2026.9.0/runtime/bin/astrid"
+        )
+        environment = runtime_env(canonical_executable)
+        environment["AOS_HOME"] = str(alias_parent / "../real-home/.aos")
+        environment["AOS_RUNTIME_PATH"] = executable
+        assert_rejected(
+            executable, environment, b"active AOS release home is not canonical"
+        )
+
+
 def main() -> None:
     assert FRAME.is_file()
     test_child_exit_with_open_stdin()
@@ -187,6 +213,7 @@ def main() -> None:
     test_matching_bytes_outside_release_path_rejected()
     test_symlinked_release_ancestor_rejected()
     test_symlinked_home_ancestor_rejected()
+    test_lexically_canceled_symlink_home_rejected()
 
 
 if __name__ == "__main__":

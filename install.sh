@@ -40,7 +40,6 @@ NEW_RECEIPT=""
 ROLLBACK_RECEIPT_HOST="codex"
 PRIOR_CURRENT_EXISTS=0
 PRIOR_CURRENT_TARGET=""
-PRIOR_PACK_LOCK_EXISTS=0
 PRIOR_PACK_LOCK_KIND=""
 PRIOR_PACK_LOCK_TARGET=""
 PRIOR_PACK_LOCK_BACKUP=""
@@ -1040,7 +1039,6 @@ capture_receipt_rollback_state() {
   ROLLBACK_RECEIPT_HOST=$capture_host
   PRIOR_CURRENT_EXISTS=0
   PRIOR_CURRENT_TARGET=""
-  PRIOR_PACK_LOCK_EXISTS=0
   PRIOR_PACK_LOCK_KIND="absent"
   PRIOR_PACK_LOCK_BACKUP=""
   PRIOR_PACK_LOCK_MODE=""
@@ -1049,11 +1047,9 @@ capture_receipt_rollback_state() {
     PRIOR_CURRENT_TARGET=$(readlink "$capture_root/current")
   fi
   if [ -L "$capture_root/Pack.lock" ]; then
-    PRIOR_PACK_LOCK_EXISTS=1
     PRIOR_PACK_LOCK_KIND=symlink
     PRIOR_PACK_LOCK_TARGET=$(readlink "$capture_root/Pack.lock")
   elif [ -f "$capture_root/Pack.lock" ] && [ ! -L "$capture_root/Pack.lock" ]; then
-    PRIOR_PACK_LOCK_EXISTS=1
     PRIOR_PACK_LOCK_KIND=regular
     PRIOR_PACK_LOCK_BACKUP="$WORK/rollback-$capture_host-Pack.lock"
     cp -p "$capture_root/Pack.lock" "$PRIOR_PACK_LOCK_BACKUP" \
@@ -1061,7 +1057,6 @@ capture_receipt_rollback_state() {
     PRIOR_PACK_LOCK_MODE=$(stat -f '%Lp' "$capture_root/Pack.lock" 2>/dev/null \
       || stat -c '%a' "$capture_root/Pack.lock")
   elif [ -e "$capture_root/Pack.lock" ]; then
-    PRIOR_PACK_LOCK_EXISTS=1
     die "$capture_host Pack.lock is neither a regular file nor a symlink"
   fi
 }

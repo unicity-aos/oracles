@@ -276,11 +276,18 @@ def exercise_hook_adapter(root: Path) -> None:
     args_log = root / "hook-args"
     token_log = root / "hook-tokens"
     payload_log = root / "hook-payload"
-    workspace.mkdir()
+    workspace.mkdir(parents=True)
     write_executable(
         fake_aos,
         "#!/bin/sh\n"
         "set -eu\n"
+        'case " $* " in\n'
+        '  *" capsule show aos-mcp --agent codex-code "*)\n'
+        '    printf "%s\\n" '
+        '"capsule \'aos-mcp\' is not installed for agent \'codex-code\'" >&2\n'
+        "    exit 1\n"
+        "    ;;\n"
+        "esac\n"
         'printf "%s\\n" "$*" >> "$TEST_HOOK_ARGS"\n'
         'printf "%s\\n" "$ASTRID_HOOK_TOKEN" >> "$TEST_HOOK_TOKENS"\n'
         'cat > "$TEST_HOOK_PAYLOAD"\n'
@@ -383,6 +390,72 @@ def exercise_prebootstrap_foreign_principal(root: Path) -> None:
     assert not home.exists()
 
 
+def exercise_transport_failure(root: Path) -> None:
+    test_root = root / "codex-capsule-transport"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    fake_aos = test_root / "bin" / "aos"
+    fake_installer = test_root / "installer"
+    aos_log = test_root / "aos-args"
+    installer_log = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
+        'printf "%s\\n" "daemon transport failed while reading capsule metadata" >&2\n'
+        "exit 93\n",
+    )
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
+        "exit 1\n",
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_BIN": str(fake_aos),
+        "AOS_HOME": str(home),
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "CODEX_PLUGIN_ROOT": str(PLUGIN),
+        "PLUGIN_ROOT": str(PLUGIN),
+        "PATH": python_path(),
+        "TEST_AOS_LOG": str(aos_log),
+        "TEST_INSTALL_LOG": str(installer_log),
+        "TMPDIR": str(test_root),
+    }
+    for arguments in ([], ["codex", "ensure-principal"]):
+        result = subprocess.run(
+            [str(PLUGIN / "bin/aos-up"), *arguments],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 93, (arguments, result.stdout, result.stderr)
+        assert "daemon transport failed while reading capsule metadata" in result.stderr
+        doctor = subprocess.run(
+            [str(PLUGIN / "bin/aos-doctor"), "--format", "hook"],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert doctor.returncode == 93, (doctor.stdout, doctor.stderr)
+        assert "daemon transport failed while reading capsule metadata" in doctor.stderr
+    assert aos_log.exists()
+    assert not installer_log.exists()
+    assert not (home / "runtime").exists()
+    assert not (home / "cache").exists()
+    assert not (home / "extensions/oracles/codex/Pack.lock").exists()
+
+
 def main() -> None:
     assert SERVER["command"] == "/bin/sh"
     assert SERVER["args"][0] == "-c"
@@ -402,6 +475,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="aos-codex-mcp-") as raw:
         root = Path(raw).resolve()
         exercise_prebootstrap_foreign_principal(root)
+        exercise_transport_failure(root)
         home = root / "home" / ".aos"
         fake_bin = root / "bin"
         write_executable(
@@ -501,6 +575,70 @@ def main() -> None:
             f"--principal codex-code mcp attach --workspace {host_workspace.resolve()}"
         ], equals_attach
         assert not any("mcp serve" in line for line in astrid_log.read_text().splitlines())
+
+        # Every accepted spelling and dispatch position takes the same byte
+        # gated attach path. A principal in a command tail is rejected rather
+        # than silently promoted to a raw product-CLI invocation.
+        astrid_log.write_text("")
+        for principal_arguments in (
+            ["--principal=codex-code"],
+            ["--principal", "codex-code"],
+            ["--", "--principal=codex-code"],
+            ["--", "--principal", "codex-code"],
+        ):
+            astrid_log.write_text("")
+            dispatch = subprocess.run(
+                [str(PLUGIN / "bin/aos-up"), *principal_arguments],
+                cwd=host_workspace,
+                env=default_home_environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=10,
+                check=False,
+            )
+            assert dispatch.returncode == 0, (
+                principal_arguments,
+                dispatch.stdout,
+                dispatch.stderr,
+            )
+            expected = (
+                f"--principal codex-code mcp attach --workspace {host_workspace.resolve()}"
+            )
+            dispatch_entries = [
+                line for line in astrid_log.read_text().splitlines() if "mcp attach" in line
+            ]
+            assert dispatch_entries == [expected], (
+                principal_arguments,
+                astrid_log.read_text(),
+            )
+            assert not any(
+                "mcp serve" in line for line in astrid_log.read_text().splitlines()
+            )
+
+        astrid_log_before = astrid_log.read_text()
+        for misplaced_arguments in (
+            ["foo", "--principal=codex-code"],
+            ["foo", "--principal", "codex-code"],
+            ["--help", "--", "--foo"],
+            ["--", "--", "--help"],
+        ):
+            rejected_position = subprocess.run(
+                [str(PLUGIN / "bin/aos-up"), *misplaced_arguments],
+                cwd=host_workspace,
+                env=default_home_environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+                check=False,
+            )
+            assert rejected_position.returncode != 0, (
+                misplaced_arguments,
+                rejected_position.stdout,
+                rejected_position.stderr,
+            )
+        assert astrid_log.read_text() == astrid_log_before
 
         override_env = dict(environment)
         override_env["ASTRID_WORKSPACE"] = str(other_workspace.resolve())
@@ -714,6 +852,21 @@ def main() -> None:
         rejected = resolve_active(alias_environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
         assert "symlinked home ancestor" in rejected.stderr
+        canceled_alias_environment = dict(environment)
+        canceled_alias_environment["AOS_HOME"] = str(
+            home_alias / ".." / "home" / ".aos"
+        )
+        rejected = resolve_active(canceled_alias_environment)
+        assert rejected.returncode != 0, (
+            canceled_alias_environment["AOS_HOME"],
+            rejected.stdout,
+            rejected.stderr,
+        )
+        assert "symlinked home ancestor" in rejected.stderr, (
+            canceled_alias_environment["AOS_HOME"],
+            rejected.stdout,
+            rejected.stderr,
+        )
         home_alias.unlink()
 
         wrong_runtime = dict(environment)

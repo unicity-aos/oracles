@@ -149,13 +149,12 @@ _aos_verify_active_runtime_bytes() {
       }
   done
   if ! python3 - "${_aos_home:-}" <<'PY'
-import os
 import pathlib
 import sys
 
-path = pathlib.Path(os.path.abspath(sys.argv[1]))
-if not path.is_absolute():
-    raise SystemExit(1)
+path = pathlib.Path(sys.argv[1])
+if not path.is_absolute() or ".." in path.parts:
+    raise SystemExit("aos-resolve: AOS home must be an absolute canonical path")
 current = pathlib.Path(path.anchor)
 for component in path.parts[1:]:
     current /= component
@@ -252,11 +251,12 @@ aos_resolve_active_runtime() {
     }
   done
   if ! python3 - "$_aos_home" <<'PY'
-import os
 import pathlib
 import sys
 
-path = pathlib.Path(os.path.abspath(sys.argv[1]))
+path = pathlib.Path(sys.argv[1])
+if not path.is_absolute() or ".." in path.parts:
+    raise SystemExit("aos-resolve: AOS home must be an absolute canonical path")
 current = pathlib.Path(path.anchor)
 for component in path.parts[1:]:
     current /= component

@@ -149,6 +149,12 @@ capsule_ready() {
   exit 93
 }
 
+if aos_resolve_apply 2>/dev/null; then
+  if ! capsule_ready; then
+    :
+  fi
+fi
+
 bootstrap_host() {
   [ "$FORMAT" = hook ] || return 1
   installer="$AOS_PLUGIN_ROOT/bin/aos-install"
@@ -223,13 +229,16 @@ VERSION="$("$AOS" --version 2>/dev/null | head -n1 || true)"
 
 # `capsule show` is an on-disk, read-only query. It verifies both that the host
 # principal was provisioned and that the internal broker capsule is present.
-if ! pack_is_current \
-  || ! capsule_ready
-then
+transport_not_ready=0
+if [ -n "${AOS:-}" ] && ! capsule_ready; then
+  transport_not_ready=1
+fi
+if [ "$transport_not_ready" -eq 1 ] || ! pack_is_current; then
   if bootstrap_host \
-    && pack_is_current \
     && capsule_ready
   then
+    :
+  elif pack_is_current && capsule_ready; then
     :
   else
   emit "Unicity AOS — principal '$PRINCIPAL' is not provisioned for this oracle host.

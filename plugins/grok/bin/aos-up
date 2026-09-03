@@ -21,6 +21,15 @@ if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
 fi
 export AOS_PLUGIN_ROOT
 
+if [ -z "${AOS_HOST:-}" ]; then
+  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
+    AOS_HOST=grok
+  else
+    AOS_HOST=claude
+  fi
+fi
+export AOS_HOST
+
 if [ -f "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ]; then
   packaged_host=claude
 elif [ -f "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ]; then
@@ -33,14 +42,6 @@ if [ -n "$packaged_host" ] && [ "$AOS_HOST" != "$packaged_host" ]; then
   exit 2
 fi
 
-if [ -z "${AOS_HOST:-}" ]; then
-  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
-    AOS_HOST=grok
-  else
-    AOS_HOST=claude
-  fi
-fi
-export AOS_HOST
 case "$AOS_HOST" in
   claude|grok) ;;
   *) log "unsupported host '$AOS_HOST'; want claude or grok"; exit 2 ;;
@@ -349,6 +350,14 @@ if [ "${1:-}" = "--principal" ]; then
   PRINCIPAL="${1:-}"
   [ "$#" -gt 0 ] && shift
 fi
+for principal_argument in "$@"; do
+  case "$principal_argument" in
+    --principal=*)
+      log "refusing an equals-form principal on the $AOS_HOST plugin path"
+      exit 2
+      ;;
+  esac
+done
 if [ -z "$PRINCIPAL" ]; then
   PRINCIPAL="${ASTRID_PRINCIPAL_ID:-}"
 fi

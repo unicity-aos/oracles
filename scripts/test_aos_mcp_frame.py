@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import signal
 import subprocess
@@ -15,12 +16,28 @@ ROOT = Path(__file__).resolve().parent.parent
 FRAME = ROOT / "plugins/unicity-aos/bin/aos-mcp-frame"
 
 
+def runtime_env(executable: str) -> dict[str, str]:
+    blake3 = subprocess.run(
+        ["b3sum", executable], check=True, stdout=subprocess.PIPE, text=True
+    ).stdout.split()[0]
+    sha256 = subprocess.run(
+        ["shasum", "-a", "256", executable], check=True, stdout=subprocess.PIPE, text=True
+    ).stdout.split()[0]
+    return {
+        **os.environ,
+        "AOS_RUNTIME_BLAKE3": blake3,
+        "AOS_RUNTIME_SHA256": sha256,
+    }
+
+
 def test_child_exit_with_open_stdin() -> None:
+    executable = "/bin/sh"
     proc = subprocess.Popen(
-        [sys.executable, "-u", str(FRAME), "/bin/sh", "-c", "printf '%s\\n' mcp-ready"],
+        [sys.executable, "-u", str(FRAME), executable, "-c", "printf '%s\\n' mcp-ready"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=runtime_env(executable),
     )
     try:
         deadline = time.time() + 2
@@ -38,6 +55,7 @@ def test_child_exit_with_open_stdin() -> None:
 
 
 def test_content_length_roundtrip() -> None:
+    executable = str(Path(sys.executable).resolve())
     child = (
         "import sys\n"
         "line = sys.stdin.readline()\n"
@@ -45,10 +63,11 @@ def test_content_length_roundtrip() -> None:
         "sys.stdout.flush()\n"
     )
     proc = subprocess.Popen(
-        [sys.executable, "-u", str(FRAME), sys.executable, "-u", "-c", child],
+        [sys.executable, "-u", str(FRAME), executable, "-u", "-c", child],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=runtime_env(executable),
     )
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
     assert proc.stdin is not None and proc.stdout is not None

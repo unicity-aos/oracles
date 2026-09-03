@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d)
+work=$(cd "$work" && pwd -P)
 trap 'rm -rf "$work"' EXIT
 fake_bin="$work/bin"
 assets="$work/assets"
@@ -82,8 +83,10 @@ cat > "$fake_bin/aos" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = --version ]; then
-  mkdir -p "$AOS_HOME/releases/2026.9.0"
-  cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.9.0/"
+  if [ -z "${TEST_NO_PRODUCT_INSTALL:-}" ]; then
+    mkdir -p "$AOS_HOME/releases/2026.9.0"
+    cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.9.0/"
+  fi
   printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.9.0}"
   exit 0
 fi
@@ -399,8 +402,7 @@ plugin_only_start=$(wc -l < "$TEST_LOG")
 AOS_HOME="$plugin_only_home" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
 tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
-grep -Fq "codex plugin marketplace add $plugin_only_home/extensions/oracles/plugins/0.3.0" \
-  "$work/plugin-only.log"
+grep -Eq '^codex plugin marketplace add /.*/plugin-stage$' "$work/plugin-only.log"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
 if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
   echo "plugin-only installation provisioned AOS or another host" >&2
@@ -472,8 +474,9 @@ fi
 grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-skills' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-forge' "$TEST_LOG"
-grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.3.0" "$TEST_LOG"
+grep -Eq '^codex plugin marketplace add /.*/plugin-stage$' "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
+test -d "$AOS_HOME/extensions/oracles/plugins/0.3.0"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
 test -f "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
@@ -566,8 +569,52 @@ if grep -Fq 'aos --principal default init --yes' "$work/local-skills.log"; then
 fi
 test ! -e "$local_skills_state/granted-codex-code-aos-skills"
 test ! -e "$local_skills_home/extensions/oracles/codex/current"
+test ! -e "$local_skills_state/default-initialized"
+test ! -e "$local_skills_state/agent-codex-code"
+test ! -e "$local_skills_state/installed-codex-code-aos-mcp"
+test ! -e "$local_skills_home/runtime"
+test ! -e "$local_skills_home/runtime/etc/profiles/default.toml"
+test ! -e "$local_skills_home/extensions/oracles/plugins/0.3.0"
 test "$(sed -n '2p' "$local_skills_state/installed-codex-code-aos-skills")" \
   = /tmp/user/aos-skills.capsule
+
+# A source can look correct while its recorded byte identity disagrees with the
+# authenticated default. That disagreement stops the transaction before init,
+# principal creation, grants, snapshot activation, or any receipt state.
+identity_mismatch_home="$home/identity-mismatch/.aos"
+identity_mismatch_state="$work/identity-mismatch-state"
+identity_release="$identity_mismatch_home/releases/2026.9.0"
+identity_artifact="$identity_release/capsules/aos-mcp.capsule"
+mkdir -p "$identity_mismatch_state" "$identity_release/capsules"
+cp -R "$product_assets/." "$identity_release/"
+printf 'release artifact\n' > "$identity_artifact"
+write_test_capsule "$identity_mismatch_state" default aos-mcp \
+  1111111111111111111111111111111111111111111111111111111111111111 \
+  "$identity_artifact" \
+  2026-09-03T00:00:00+00:00 2026-09-03T00:00:00+00:00
+write_test_capsule "$identity_mismatch_state" codex-code aos-mcp \
+  2222222222222222222222222222222222222222222222222222222222222222 \
+  "$identity_artifact" \
+  2026-09-03T00:00:00+00:00 2026-09-03T00:00:00+00:00
+identity_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$identity_mismatch_state" AOS_HOME="$identity_mismatch_home" \
+  TEST_NO_PRODUCT_INSTALL=1 \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+then
+  echo "disagreeing default and host capsule hashes were accepted" >&2
+  exit 1
+fi
+tail -n "+$((identity_start + 1))" "$TEST_LOG" > "$work/identity-mismatch.log"
+if grep -Fq 'aos --principal default init --yes' "$work/identity-mismatch.log"; then
+  echo "identity disagreement triggered first-boot mutation" >&2
+  exit 1
+fi
+test ! -e "$identity_mismatch_state/default-initialized"
+test ! -e "$identity_mismatch_state/agent-codex-code"
+test ! -e "$identity_mismatch_state/granted-codex-code-aos-mcp"
+test ! -e "$identity_mismatch_home/runtime"
+test ! -e "$identity_mismatch_home/extensions/oracles/plugins/0.3.0"
+test ! -e "$identity_mismatch_home/extensions/oracles/codex/current"
 
 # Local development may stage only the selected host, provided every staged
 # byte has a strict checksum entry.
@@ -687,7 +734,7 @@ grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.
 grep -Fq -- '--add-capsule aos-skills' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-grep -Fq "claude plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.3.0" "$TEST_LOG"
+grep -Eq '^claude plugin marketplace add /.*/plugin-stage$' "$TEST_LOG"
 if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
   echo "external Claude plugin installed an AOS-managed workload adapter" >&2
   exit 1
@@ -854,6 +901,28 @@ fi
 
 # Destination containment is checked before release staging or AOS mutation. A
 # symlinked plugin ancestor cannot turn extraction or rename into an escape.
+aos_link_base="$home/destination-aos-base"
+aos_link_real="$home/destination-aos-real"
+plugin_link_home="$aos_link_base/aos"
+plugin_escape="$home/destination-plugin-escape"
+mkdir "$aos_link_real" "$plugin_escape"
+ln -s "$aos_link_real" "$aos_link_base"
+destination_state="$work/destination-aos-link-state"
+mkdir -p "$destination_state"
+aos_destination_log_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$destination_state" AOS_HOME="$plugin_link_home" \
+  AOS_ORACLE_ASSETS="$assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/destination-aos.out" 2>&1
+then
+  echo "symlinked AOS home ancestor was accepted" >&2
+  exit 1
+fi
+grep -Fq "AOS home contains a symlink or non-directory: $aos_link_base" \
+  "$work/destination-aos.out"
+test ! -e "$aos_link_real/aos"
+test "$(wc -l < "$TEST_LOG")" -eq "$aos_destination_log_start"
+
 plugin_link_home="$home/destination-plugin-link/.aos"
 plugin_escape="$home/destination-plugin-escape"
 mkdir -p "$plugin_link_home/extensions/oracles" "$plugin_escape"
@@ -869,7 +938,7 @@ then
   echo "symlinked plugin ancestor was accepted" >&2
   exit 1
 fi
-grep -Fq "plugin snapshot root is a symlink" \
+grep -Fq "plugin snapshot root contains a symlink or non-directory" \
   "$work/destination-plugin.out"
 test ! -e "$plugin_escape/plugins"
 test "$(wc -l < "$TEST_LOG")" -eq "$plugin_destination_log_start"

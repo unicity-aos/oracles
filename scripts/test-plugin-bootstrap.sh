@@ -87,22 +87,44 @@ cat > "$release/runtime/bin/astrid" <<'ASTRID'
 set -eu
 [ "${1:-}" = --version ] && printf 'astrid 0.11.0\n'
 ASTRID
+cat > "$release/runtime/bin/astrid-daemon" <<'ASTRID_DAEMON'
+#!/usr/bin/env sh
+exit 0
+ASTRID_DAEMON
 runtime_blake3=$(b3sum "$release/runtime/bin/astrid" 2>/dev/null | awk '{print $1}') || runtime_blake3=
 runtime_sha256=$(shasum -a 256 "$release/runtime/bin/astrid" 2>/dev/null | awk '{print $1}')
 if [ "${#runtime_blake3}" -ne 64 ] || [ "${#runtime_sha256}" -ne 64 ]; then
   exit 90
 fi
-cat > "$release/unicity-aos-2026.9.0-release.toml" <<STATEMENT
-schema-version = 2
-product = "unicity-aos-ce"
-version = "2026.9.0"
-
-[[executables]]
-target = "aarch64-apple-darwin"
-path = "runtime/bin/astrid"
-blake3 = "$runtime_blake3"
-sha256 = "$runtime_sha256"
-STATEMENT
+daemon_blake3=$(b3sum "$release/runtime/bin/astrid-daemon" 2>/dev/null | awk '{print $1}') || daemon_blake3=
+daemon_sha256=$(shasum -a 256 "$release/runtime/bin/astrid-daemon" 2>/dev/null | awk '{print $1}')
+if [ "${#daemon_blake3}" -ne 64 ] || [ "${#daemon_sha256}" -ne 64 ]; then
+  exit 90
+fi
+{
+  printf '%s\n' \
+    'schema-version = 2' \
+    'product = "unicity-aos-ce"' \
+    'version = "2026.9.0"'
+  for target in aarch64-apple-darwin x86_64-apple-darwin \
+    aarch64-unknown-linux-gnu x86_64-unknown-linux-gnu; do
+    for path in runtime/bin/astrid runtime/bin/astrid-daemon; do
+      if [ "$path" = runtime/bin/astrid ]; then
+        blake3=$runtime_blake3
+        sha256=$runtime_sha256
+      else
+        blake3=$daemon_blake3
+        sha256=$daemon_sha256
+      fi
+      printf '%s\n' \
+        '[[executables]]' \
+        "target = \"$target\"" \
+        "path = \"$path\"" \
+        "blake3 = \"$blake3\"" \
+        "sha256 = \"$sha256\""
+    done
+  done
+} > "$release/unicity-aos-2026.9.0-release.toml"
 cat > "$AOS_HOME/bin/aos" <<'AOS'
 #!/usr/bin/env sh
 set -eu
@@ -126,7 +148,8 @@ case " ${*:-} " in
   *) exit 0 ;;
 esac
 AOS
-chmod 700 "$AOS_HOME/bin/aos" "$release/runtime/bin/astrid"
+chmod 700 "$AOS_HOME/bin/aos" "$release/runtime/bin/astrid" \
+  "$release/runtime/bin/astrid-daemon"
 ln -s "releases/0.3.0" "$receipt_root/current"
 ln -s "current/Pack.lock" "$receipt_root/Pack.lock"
 EOF

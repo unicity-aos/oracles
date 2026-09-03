@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import tempfile
@@ -133,7 +134,65 @@ def executable_statement(
     )
 
 
+def full_executable_statement(
+    *,
+    blake3: str,
+    sha256: str,
+    daemon_blake3: str,
+    daemon_sha256: str,
+) -> str:
+    records = []
+    for target in (
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ):
+        for path in ("runtime/bin/astrid", "runtime/bin/astrid-daemon"):
+            if path == "runtime/bin/astrid":
+                blake = blake3
+                sha = sha256
+            else:
+                blake = daemon_blake3
+                sha = daemon_sha256
+            records.append(
+                "[[executables]]\n"
+                f'target = "{target}"\n'
+                f'path = "{path}"\n'
+                f'blake3 = "{blake}"\n'
+                f'sha256 = "{sha}"\n'
+            )
+    return (
+        "schema-version = 2\n"
+        'product = "unicity-aos-ce"\n'
+        'version = "2026.9.0"\n\n' + "\n".join(records)
+    )
+
+
 def plant_fake_runtime(home: Path, installer: Path) -> None:
+    statement_script = (
+        'cat > "$release/unicity-aos-2026.9.0-release.toml" <<STATEMENT\n'
+        "schema-version = 2\n"
+        'product = "unicity-aos-ce"\n'
+        'version = "2026.9.0"\n'
+        "\n"
+    )
+    for target in (
+        "aarch64-apple-darwin",
+        "x86_64-apple-darwin",
+        "aarch64-unknown-linux-gnu",
+        "x86_64-unknown-linux-gnu",
+    ):
+        for path in ("runtime/bin/astrid", "runtime/bin/astrid-daemon"):
+            digest_prefix = "runtime" if path.endswith("/astrid") else "daemon"
+            statement_script += (
+                "[[executables]]\n"
+                f'target = "{target}"\n'
+                f'path = "{path}"\n'
+                f'blake3 = "${digest_prefix}_blake3"\n'
+                f'sha256 = "${digest_prefix}_sha256"\n'
+            )
+    statement_script += "STATEMENT\n"
     write_executable(
         installer,
         "#!/bin/sh\n"
@@ -188,24 +247,22 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         '  *) exit 94 ;;\n'
         "esac\n"
         "ASTRID\n"
+        'cat > "$release/runtime/bin/astrid-daemon" <<\'DAEMON\'\n'
+        "#!/bin/sh\n"
+        "exit 0\n"
+        "DAEMON\n"
         'cat > "$AOS_HOME/runtime/bin/astrid" <<\'LEGACY\'\n'
         "#!/bin/sh\n"
         ': > "$TEST_LEGACY_RUNTIME_USED"\n'
         "exit 95\n"
         "LEGACY\n"
-        'chmod 700 "$AOS_HOME/bin/aos" "$release/runtime/bin/astrid" "$AOS_HOME/runtime/bin/astrid"\n'
+        'chmod 700 "$AOS_HOME/bin/aos" "$release/runtime/bin/astrid" '
+        '"$release/runtime/bin/astrid-daemon" "$AOS_HOME/runtime/bin/astrid"\n'
         'runtime_blake3=$(b3sum "$release/runtime/bin/astrid" | awk \'{print $1}\')\n'
         'runtime_sha256=$(shasum -a 256 "$release/runtime/bin/astrid" | awk \'{print $1}\')\n'
-        'cat > "$release/unicity-aos-2026.9.0-release.toml" <<STATEMENT\n'
-        "schema-version = 2\n"
-        'product = "unicity-aos-ce"\n'
-        'version = "2026.9.0"\n\n'
-        "[[executables]]\n"
-        'target = "aarch64-apple-darwin"\n'
-        'path = "runtime/bin/astrid"\n'
-        'blake3 = "$runtime_blake3"\n'
-        'sha256 = "$runtime_sha256"\n'
-        "STATEMENT\n"
+        'daemon_blake3=$(b3sum "$release/runtime/bin/astrid-daemon" | awk \'{print $1}\')\n'
+        'daemon_sha256=$(shasum -a 256 "$release/runtime/bin/astrid-daemon" | awk \'{print $1}\')\n'
+        f"{statement_script}"
         'ln -s "releases/0.3.0" "$receipt_root/current"\n'
         'ln -s "current/Pack.lock" "$receipt_root/Pack.lock"\n',
     )
@@ -395,6 +452,7 @@ def main() -> None:
         for foreign_environment, foreign_args in (
             ({**environment, "ASTRID_PRINCIPAL_ID": "foreign-principal"}, []),
             (environment, ["--principal", "foreign-principal"]),
+            (environment, ["--principal=foreign-principal"]),
         ):
             foreign = subprocess.run(
                 [str(PLUGIN / "bin/aos-up"), *foreign_args],
@@ -418,6 +476,47 @@ def main() -> None:
         assert resolved.returncode == 0, (resolved.stdout, resolved.stderr)
         assert resolved.stdout.strip() == str(expected_runtime)
 
+        # Selection alone is not launch authority. The byte gate is callable
+        # immediately before every adapter exec and rejects post-selection
+        # substitution before the runtime can start.
+        executable_bytes = expected_runtime.read_bytes()
+        expected_digests = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                f'printf "%s %s" "$(b3sum {expected_runtime} | awk \'{{print $1}}\')" '
+                f'"$(shasum -a 256 {expected_runtime} | awk \'{{print $1}}\')"',
+            ],
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            check=True,
+        ).stdout.split()
+        expected_runtime.write_bytes(executable_bytes + b"# substituted\n")
+        byte_gate = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                f'. "{PLUGIN}/bin/lib-aos-resolve.sh"; '
+                f'ASTRID="{expected_runtime}"; export ASTRID; '
+                f'_aos_expected_blake3="{expected_digests[0]}"; '
+                f'_aos_expected_sha256="{expected_digests[1]}"; '
+                "export _aos_expected_blake3 _aos_expected_sha256; "
+                "_aos_verify_active_runtime_bytes",
+            ],
+            cwd=PLUGIN,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert byte_gate.returncode != 0, (byte_gate.stdout, byte_gate.stderr)
+        assert "BLAKE3 digest does not match" in byte_gate.stderr
+        expected_runtime.write_bytes(executable_bytes)
+        expected_runtime.chmod(0o700)
+
         # The schema-v2 executable table is the only accepted byte authority.
         # Its absence, v1 predecessor form, and archive-only manifest digest
         # all fail closed.
@@ -436,12 +535,31 @@ def main() -> None:
         )
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "does not authorize this Astrid path" in rejected.stderr
-        statement.write_text(executable_statement(path="runtime/bin/astrid-daemon"))
+        assert "exactly eight executable records" in rejected.stderr
+        wrong_path_statement = statement_text.replace(
+            'path = "runtime/bin/astrid"\n',
+            'path = "runtime/bin/astrid-other"\n',
+            1,
+        )
+        statement.write_text(wrong_path_statement)
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "authorizes the wrong path" in rejected.stderr
+        assert "unsupported executable path" in rejected.stderr
         statement.write_text(statement_text)
+
+        daemon_runtime = home / "releases/2026.9.0/runtime/bin/astrid-daemon"
+        daemon_bytes = daemon_runtime.read_bytes()
+        daemon_runtime.unlink()
+        rejected = resolve_active(environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "signed Astrid sibling executable" in rejected.stderr
+        daemon_runtime.write_text("#!/bin/sh\nexit 3\n")
+        daemon_runtime.chmod(0o700)
+        rejected = resolve_active(environment)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "signed Astrid sibling executable record does not match" in rejected.stderr
+        daemon_runtime.write_bytes(daemon_bytes)
+        daemon_runtime.chmod(0o700)
 
         substituted = expected_runtime.read_text() + "# substituted bytes\n"
         expected_runtime.write_text(substituted)
@@ -483,15 +601,20 @@ def main() -> None:
             stderr=subprocess.PIPE,
             check=True,
         ).stdout.split()
-        statement.write_text(executable_statement())
-        statement.write_text(
-            executable_statement(
-                blake3=wrong_report_digests[0], sha256=wrong_report_digests[1]
-            )
+        current_digests = re.search(
+            r'^blake3 = "([0-9a-f]+)"\nsha256 = "([0-9a-f]+)"$',
+            statement_text,
+            re.MULTILINE,
         )
+        assert current_digests
+        wrong_statement = statement_text.replace(
+            current_digests.group(1), wrong_report_digests[0]
+        ).replace(current_digests.group(2), wrong_report_digests[1])
+        statement.write_text(wrong_statement)
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
         assert "expected 0.11.0" in rejected.stderr
+        statement.write_text(statement_text)
 
         manifest = home / "releases/2026.9.0/release-manifest.json"
         manifest.write_text(runtime_manifest(runtime_version="0.10.4"))

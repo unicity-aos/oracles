@@ -28,7 +28,17 @@ for codex_argument in "$@"; do
     }
     principal_arg_seen=0
   fi
-  [ "$codex_argument" != --principal ] || principal_arg_seen=1
+  case "$codex_argument" in
+    --principal)
+      principal_arg_seen=1
+      ;;
+    --principal=*)
+      [ "${codex_argument#--principal=}" = codex-code ] || {
+        echo "aos-up: refusing non-codex-code principal on the Codex plugin path" >&2
+        exit 1
+      }
+      ;;
+  esac
 done
 [ "$principal_arg_seen" -eq 0 ] || {
   echo "aos-up: --principal needs codex-code" >&2
@@ -430,7 +440,8 @@ mcp_serve() {
     echo "aos-up: could not resolve the AOS/Astrid CLI for MCP" >&2
     exit 127
   }
-  exec "$cli" --principal "$principal" mcp serve "$@"
+  set -- --principal "$principal" mcp serve "$@"
+  _aos_execute_active_runtime "$@"
 }
 
 mcp_attach() {
@@ -452,14 +463,19 @@ mcp_attach() {
     echo "aos-up: could not resolve the AOS/Astrid CLI for MCP attach" >&2
     exit 127
   }
+  _aos_verify_active_runtime_bytes || exit $?
   workspace=$(host_project) || exit $?
   CDPATH= cd -P -- "$runtime" 2>/dev/null || true
-  "$cli" --principal "$principal" mcp ready --format json >/dev/null
+  "$ASTRID" --principal "$principal" mcp ready --format json >/dev/null
   frame="$HERE/aos-mcp-frame"
   if [ -x "$frame" ] && command -v python3 >/dev/null 2>&1; then
+    AOS_RUNTIME_BLAKE3="$_aos_expected_blake3"
+    AOS_RUNTIME_SHA256="$_aos_expected_sha256"
+    export AOS_RUNTIME_BLAKE3 AOS_RUNTIME_SHA256
     exec python3 -u "$frame" "$cli" --principal "$principal" mcp attach --workspace "$workspace"
   fi
-  exec "$cli" --principal "$principal" mcp attach --workspace "$workspace"
+  set -- --principal "$principal" mcp attach --workspace "$workspace"
+  _aos_execute_active_runtime "$@"
 }
 
 if [ "${1:-}" = codex ]; then
@@ -521,4 +537,8 @@ if ! aos_resolve_apply; then
   exit 127
 fi
 
+case "${1:-}" in
+  --principal|--principal=*) exec "$AOS" "$@" ;;
+esac
+set -- --principal codex-code "$@"
 exec "$AOS" "$@"

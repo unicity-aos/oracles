@@ -266,17 +266,36 @@ ensure_contained_directory() {
     /|*[/]|*//*|*/./*|*/../*|*/.|*/..) die "$ensure_label is not a canonical directory path" ;;
   esac
 
-  [ ! -L "$ensure_root" ] || die "$ensure_label is a symlink: $ensure_root"
-  if [ -e "$ensure_root" ]; then
-    [ -d "$ensure_root" ] || die "$ensure_label is not a directory: $ensure_root"
-  else
-    mkdir "$ensure_root" || die "could not create $ensure_label: $ensure_root"
-  fi
+  checked="/"
+  remainder="${ensure_root#/}"
+  while [ -n "$remainder" ]; do
+    segment=${remainder%%/*}
+    case "$remainder" in
+      */*) remainder=${remainder#*/} ;;
+      *) remainder="" ;;
+    esac
+    case "$segment" in
+      ""|.|..) die "$ensure_label is not a canonical directory path" ;;
+    esac
+    checked="$checked$segment"
+    if mkdir "$checked" 2>/dev/null; then
+      :
+    elif [ -d "$checked" ] && [ ! -L "$checked" ]; then
+      :
+    else
+      die "$ensure_label contains a symlink or non-directory: $checked"
+    fi
+    [ -d "$checked" ] && [ ! -L "$checked" ] \
+      || die "$ensure_label contains a symlink or non-directory: $checked"
+    [ -n "$remainder" ] && checked="$checked/"
+  done
+  return 0
 }
 
 reject_destination_link() {
   reject_path=$1
   reject_label=$2
+  ensure_contained_directory "${reject_path%/*}" "$reject_label parent"
   [ ! -L "$reject_path" ] || die "$reject_label is a symlink: $reject_path"
   if [ -e "$reject_path" ]; then
     [ -d "$reject_path" ] || die "$reject_label is not a directory: $reject_path"
@@ -285,7 +304,7 @@ reject_destination_link() {
 
 ensure_install_destinations() {
   ensure_hosts=$1
-  mkdir -p "$AOS_HOME_DIR" || die "could not create AOS home: $AOS_HOME_DIR"
+  ensure_contained_directory "$AOS_HOME_DIR" "AOS home"
   ensure_contained_directory "$AOS_HOME_DIR/extensions" "AOS extensions root"
   ensure_contained_directory "$AOS_HOME_DIR/extensions/oracles" "oracle extension root"
 
@@ -871,12 +890,10 @@ stage_release_metadata() {
 prepare_plugin_snapshot() {
   [ -z "$PLUGIN_SNAPSHOT" ] || return 0
   archive="$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
-  plugins_root="$AOS_HOME_DIR/extensions/oracles/plugins"
-  destination="$plugins_root/$ORACLES_VERSION"
-  stage="$plugins_root/.${ORACLES_VERSION}.tmp.$$"
+  stage="$WORK/plugin-stage"
   PLUGIN_STAGE=$stage
-  mkdir -p "$plugins_root"
-  mkdir -p "$stage"
+  [ ! -e "$stage" ] || die "stale plugin snapshot stage exists"
+  mkdir "$stage"
   tar -xzf "$archive" -C "$stage" || die "could not extract the plugin snapshot"
   if find "$stage" ! -type f ! -type d -print -quit | grep . >/dev/null; then
     die "plugin snapshot extracted a link or special entry"
@@ -892,6 +909,16 @@ prepare_plugin_snapshot() {
     [ -f "$stage/$required" ] && [ ! -L "$stage/$required" ] \
       || die "plugin snapshot is missing a regular $required"
   done
+  PLUGIN_SNAPSHOT="$stage"
+}
+
+activate_plugin_snapshot() {
+  stage="$WORK/plugin-stage"
+  destination="$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION"
+  [ -d "$stage" ] && [ -n "$PLUGIN_SNAPSHOT" ] && [ "$PLUGIN_SNAPSHOT" = "$stage" ] \
+    || die "plugin snapshot was not staged"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions/oracles/plugins" "plugin snapshot root"
+  reject_destination_link "$destination" "plugin snapshot destination"
   if [ -e "$destination" ]; then
     if find "$destination" ! -type f ! -type d -print -quit | grep . >/dev/null; then
       die "installed plugin snapshot $ORACLES_VERSION contains a link or special entry"
@@ -900,10 +927,11 @@ prepare_plugin_snapshot() {
       || die "installed plugin snapshot $ORACLES_VERSION differs from the staged release"
     rm -rf "$stage"
   else
+    reject_destination_link "$destination" "plugin snapshot destination"
     mv "$stage" "$destination" || die "could not activate the plugin snapshot"
   fi
   PLUGIN_STAGE=""
-  PLUGIN_SNAPSHOT="$destination"
+  PLUGIN_SNAPSHOT=""
 }
 
 validate_pack() {
@@ -1003,21 +1031,43 @@ resolve_aos_capsules() {
     fi
   done < "$CURRENT_AOS_CAPSULES"
 
-  # Reject an existing foreign same-name target before first-boot init. The
-  # operator transaction may establish the authenticated default identity,
-  # but it must never be used as a pretext to mutate around an already foreign
-  # host-principal binding.
+  # Preflight every existing identity before AOS can apply a distribution.
+  # A foreign source, malformed hash, or default/host disagreement is a reason
+  # to stop before init; it is not a state for the installer to reconcile by
+  # mutation.
   while read -r rac_name rac_availability rac_extra; do
     [ -n "$rac_name" ] || continue
     [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
     aos_release_has_capsule "$rac_name" "$rac_release" || continue
     rac_artifact="$rac_release/capsules/$rac_name.capsule"
-    if load_capsule_record "$rac_principal" "$rac_name" \
-      && [ "$CAPSULE_SOURCE" != "$rac_artifact" ]
-    then
-      die "AOS capsule dependency '$rac_name' for $rac_principal is outside the signed operator distribution"
+    rac_expected_host_hash=$(binding_hash "$CURRENT_PACK_BINDINGS" "$rac_name" 2>/dev/null || true)
+    rac_host_hash=""
+    if load_capsule_record "$rac_principal" "$rac_name"; then
+      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal is outside the signed operator distribution"
+      printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal has an invalid identity hash"
+      rac_host_hash=$CAPSULE_HASH
+    fi
+    if load_capsule_record default "$rac_name"; then
+      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+        || die "default AOS capsule dependency '$rac_name' is outside the signed operator distribution"
+      printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
+        || die "default AOS capsule dependency '$rac_name' has an invalid identity hash"
+      rac_default_hash=$CAPSULE_HASH
+      if load_capsule_record "$rac_principal" "$rac_name"; then
+        [ "$CAPSULE_HASH" = "$rac_default_hash" ] \
+          || die "default and host identities disagree for AOS capsule '$rac_name'"
+      fi
+    fi
+    if [ -n "$rac_host_hash" ] && [ -n "$rac_expected_host_hash" ]; then
+      [ "$rac_host_hash" = "$rac_expected_host_hash" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal differs from its signed pack identity"
     fi
   done < "$CURRENT_AOS_CAPSULES"
+
+  enter_product_workspace
+  repair_runtime_workspace_selection
 
   # Only bootstrap the distribution after the complete signed subset has been
   # proven present. A release missing a required Oracle dependency must not
@@ -1302,18 +1352,18 @@ if [ "$PLUGINS_ONLY" -eq 1 ]; then
   prepare_plugin_snapshot
   for host in $hosts; do
     install_plugin "$host"
+    activate_plugin_snapshot
   done
   say "Unicity AOS plugin installation complete. Start a new host session to provision its oracle pack."
   exit 0
 fi
-enter_product_workspace
-repair_runtime_workspace_selection
 for host in $hosts; do
   install_pack "$host"
   prepare_plugin_snapshot
   if [ "$SKIP_HOST_PLUGIN" -eq 0 ]; then
     install_plugin "$host"
   fi
+  activate_plugin_snapshot
   reconcile_obsolete_bindings "$(principal_for "$host")"
   write_receipt "$host" "$(principal_for "$host")" "$STAGED_PACK"
 done

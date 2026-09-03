@@ -225,6 +225,34 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
     assert not Path(str(args_log) + ".principal").exists()
 
 
+def exercise_default_host_without_injection(host: str, root: Path) -> None:
+    test_root = root / f"{host}-default-host"
+    test_root.mkdir()
+    installer = test_root / "missing-installer"
+    write_executable(installer, "#!/bin/sh\nexit 77\n")
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_HOME": str(test_root / "home/.aos"),
+        str(HOSTS[host]["root_var"]): str(ROOT / f"plugins/{host}"),
+        "AOS_ORACLES_INSTALLER": str(installer),
+        "PATH": "/usr/bin:/bin",
+    }
+    result = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-up"), "--help"],
+        cwd=test_root,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 1, (result.returncode, result.stdout, result.stderr)
+    assert "automatic claude provisioning failed" in result.stderr or (
+        "automatic grok provisioning failed" in result.stderr
+    )
+
+
 def exercise_host(host: str, root: Path) -> None:
     spec = HOSTS[host]
     server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
@@ -297,6 +325,7 @@ def exercise_host(host: str, root: Path) -> None:
     for bad_environment, bad_arguments in (
         ({**environment, "ASTRID_PRINCIPAL_ID": "wrong-code"}, []),
         (environment, ["--principal", "wrong-code"]),
+        (environment, ["--principal=wrong-code"]),
     ):
         rejected = subprocess.run(
             [str(ROOT / f"plugins/{host}/bin/aos-up"), *bad_arguments],
@@ -309,7 +338,13 @@ def exercise_host(host: str, root: Path) -> None:
             check=False,
         )
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert f"refusing a non-host principal for the {host} plugin" in rejected.stderr
+        if bad_arguments and bad_arguments[-1].startswith("--principal="):
+            assert "refusing an equals-form principal" in rejected.stderr
+        else:
+            assert (
+                f"refusing a non-host principal for the {host} plugin"
+                in rejected.stderr
+            )
     added_arguments = args_log.read_text()[len(args_before):].splitlines()
     assert not any(argument.endswith(" mcp serve") for argument in added_arguments)
 
@@ -754,6 +789,7 @@ def main() -> None:
         root = Path(raw)
         for host in HOSTS:
             exercise_hook_adapter(host, root)
+            exercise_default_host_without_injection(host, root)
             exercise_host(host, root)
             exercise_blank_slate_bootstrap(host, root)
             exercise_doctor_waits_for_concurrent_bootstrap(host, root)

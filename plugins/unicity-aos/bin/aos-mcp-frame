@@ -83,10 +83,48 @@ def write_host(fd: int, mode: str, payload: bytes) -> None:
     os.write(fd, payload)
 
 
+def verify_runtime_before_popen() -> None:
+    if len(sys.argv) < 2:
+        raise SystemExit("aos-mcp-frame: missing attach command")
+    executable = sys.argv[1]
+    expected_blake3 = os.environ.get("AOS_RUNTIME_BLAKE3", "")
+    expected_sha256 = os.environ.get("AOS_RUNTIME_SHA256", "")
+    if (
+        len(expected_blake3) != 64
+        or any(character not in "0123456789abcdef" for character in expected_blake3)
+        or len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise SystemExit("aos-mcp-frame: missing signed runtime digests")
+    if (
+        not os.path.isfile(executable)
+        or os.path.islink(executable)
+        or not os.access(executable, os.X_OK)
+    ):
+        raise SystemExit("aos-mcp-frame: runtime is not a regular executable")
+    try:
+        blake3 = subprocess.run(
+            ["b3sum", executable], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        ).stdout.decode().split()[0]
+        if os.path.exists("/usr/bin/sha256sum"):
+            sha256 = subprocess.run(
+                ["/usr/bin/sha256sum", executable], check=True, stdout=subprocess.PIPE
+            ).stdout.decode().split()[0]
+        else:
+            sha256 = subprocess.run(
+                ["/usr/bin/shasum", "-a", "256", executable], check=True, stdout=subprocess.PIPE
+            ).stdout.decode().split()[0]
+    except (OSError, subprocess.SubprocessError, IndexError) as error:
+        raise SystemExit(f"aos-mcp-frame: could not hash runtime: {error}") from error
+    if blake3 != expected_blake3 or sha256 != expected_sha256:
+        raise SystemExit("aos-mcp-frame: runtime digest does not match its signed record")
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         sys.stderr.write("aos-mcp-frame: missing attach command\n")
         return 2
+    verify_runtime_before_popen()
     proc = subprocess.Popen(
         sys.argv[1:],
         stdin=subprocess.PIPE,

@@ -131,6 +131,43 @@ aos_runtime_target() {
   esac
 }
 
+_aos_verify_active_runtime_bytes() {
+  [ -n "${ASTRID:-}" ] && [ -n "${_aos_expected_blake3:-}" ] \
+    && [ -n "${_aos_expected_sha256:-}" ] || return 1
+  [ -f "$ASTRID" ] && [ ! -L "$ASTRID" ] && [ -x "$ASTRID" ] || {
+    echo "aos-resolve: active AOS release is missing its bundled Astrid CLI" >&2
+    return 1
+  }
+  command -v b3sum >/dev/null 2>&1 || {
+    echo "aos-resolve: b3sum is required to authenticate the selected Astrid bytes" >&2
+    return 127
+  }
+  if command -v sha256sum >/dev/null 2>&1; then
+    _aos_actual_sha256=$(sha256sum "$ASTRID" 2>/dev/null | awk '{print $1}')
+  elif command -v shasum >/dev/null 2>&1; then
+    _aos_actual_sha256=$(shasum -a 256 "$ASTRID" 2>/dev/null | awk '{print $1}')
+  else
+    echo "aos-resolve: sha256sum or shasum is required to authenticate Astrid" >&2
+    return 127
+  fi
+  _aos_actual_blake3=$(b3sum "$ASTRID" 2>/dev/null | awk '{print $1}')
+  printf '%s\n' "$_aos_actual_blake3" | grep -Eq '^[0-9a-f]{64}$' \
+    && [ "$_aos_actual_blake3" = "$_aos_expected_blake3" ] || {
+      echo "aos-resolve: active Astrid BLAKE3 digest does not match its signed executable record" >&2
+      return 1
+    }
+  printf '%s\n' "$_aos_actual_sha256" | grep -Eq '^[0-9a-f]{64}$' \
+    && [ "$_aos_actual_sha256" = "$_aos_expected_sha256" ] || {
+      echo "aos-resolve: active Astrid SHA-256 digest does not match its signed executable record" >&2
+      return 1
+    }
+}
+
+_aos_execute_active_runtime() {
+  _aos_verify_active_runtime_bytes || return $?
+  exec "$ASTRID" "$@"
+}
+
 # Resolve the Astrid CLI bundled in the authenticated active AOS release.
 #
 # The mutable runtime home is never an executable search path. The signed
@@ -248,16 +285,36 @@ aos_resolve_active_runtime() {
       if (length(value) != 64) return 0
       return value ~ /^[0-9a-f]+$/
     }
+    function valid_target(value) {
+      return value == "aarch64-apple-darwin" || \
+             value == "x86_64-apple-darwin" || \
+             value == "aarch64-unknown-linux-gnu" || \
+             value == "x86_64-unknown-linux-gnu"
+    }
+    function valid_path(value) {
+      return value == "runtime/bin/astrid" || \
+             value == "runtime/bin/astrid-daemon"
+    }
     function finish_record() {
       if (!inside_record) return
+      pair_key = record_target SUBSEP record_path
       if (record_target == "" || record_path == "" || !valid_digest(record_blake3) || !valid_digest(record_sha256) || fields != 4)
         fail("signed executable record has invalid fields or digests")
-      if (record_target == target && record_path != "runtime/bin/astrid")
-        fail("signed executable statement authorizes the wrong path")
+      if (!valid_target(record_target))
+        fail("signed executable statement has an unsupported target")
+      if (!valid_path(record_path))
+        fail("signed executable statement has an unsupported executable path")
+      if (pair_seen[pair_key]++)
+        fail("duplicate executable record for target and path")
+      total_records++
       if (record_target == target && record_path == "runtime/bin/astrid") {
         if (matched++) fail("duplicate executable record for this host and path")
         match_blake3 = record_blake3
         match_sha256 = record_sha256
+      }
+      if (record_target == target && record_path == "runtime/bin/astrid-daemon") {
+        daemon_blake3 = record_blake3
+        daemon_sha256 = record_sha256
       }
       inside_record = 0; fields = 0
       split("", seen)
@@ -296,39 +353,53 @@ aos_resolve_active_runtime() {
       finish_record()
       if (!schema) fail("signed executable statement must use schema-version 2")
       if (!product || version != product_version) fail("signed executable statement product identity mismatch")
+      if (total_records != 8) fail("signed executable statement must contain exactly eight executable records")
+      delete unused_pair
+      unused_pair["aarch64-apple-darwin" SUBSEP "runtime/bin/astrid"] = 1
+      unused_pair["aarch64-apple-darwin" SUBSEP "runtime/bin/astrid-daemon"] = 1
+      unused_pair["x86_64-apple-darwin" SUBSEP "runtime/bin/astrid"] = 1
+      unused_pair["x86_64-apple-darwin" SUBSEP "runtime/bin/astrid-daemon"] = 1
+      unused_pair["aarch64-unknown-linux-gnu" SUBSEP "runtime/bin/astrid"] = 1
+      unused_pair["aarch64-unknown-linux-gnu" SUBSEP "runtime/bin/astrid-daemon"] = 1
+      unused_pair["x86_64-unknown-linux-gnu" SUBSEP "runtime/bin/astrid"] = 1
+      unused_pair["x86_64-unknown-linux-gnu" SUBSEP "runtime/bin/astrid-daemon"] = 1
+      for (unused_key in unused_pair) {
+        if (!(unused_key in pair_seen)) fail("signed executable statement is missing a GNU/Darwin executable record")
+      }
       if (!matched) fail("signed executable statement does not authorize this Astrid path")
-      print match_blake3, match_sha256
+      if (daemon_blake3 == "" || daemon_sha256 == "") fail("signed executable statement has no sibling Astrid daemon record")
+      print match_blake3, match_sha256, daemon_blake3, daemon_sha256
     }
     ' "$_aos_release_statement") || return 1
-  read -r _aos_expected_blake3 _aos_expected_sha256 <<EOF
+  read -r _aos_expected_blake3 _aos_expected_sha256 _aos_daemon_blake3 _aos_daemon_sha256 <<EOF
 $_aos_executable_digests
 EOF
   case "$_aos_executable_digests" in
-    [0-9a-f]*' '[0-9a-f]*) ;;
+    [0-9a-f]*' '[0-9a-f]*' '[0-9a-f]*' '[0-9a-f]*) ;;
     *) echo "aos-resolve: active AOS release lacks a unique signed Astrid executable record" >&2; return 1 ;;
   esac
 
+  _aos_daemon="$_aos_release/runtime/bin/astrid-daemon"
+  [ -f "$_aos_daemon" ] && [ ! -L "$_aos_daemon" ] && [ -x "$_aos_daemon" ] || {
+    echo "aos-resolve: active AOS release is missing its signed Astrid sibling executable" >&2
+    return 1
+  }
   command -v b3sum >/dev/null 2>&1 || {
-    echo "aos-resolve: b3sum is required to authenticate the selected Astrid bytes" >&2
+    echo "aos-resolve: b3sum is required to authenticate the signed executable records" >&2
     return 127
   }
   if command -v sha256sum >/dev/null 2>&1; then
-    _aos_actual_sha256=$(sha256sum "$_aos_runtime" 2>/dev/null | awk '{print $1}')
+    _aos_daemon_actual_sha256=$(sha256sum "$_aos_daemon" 2>/dev/null | awk '{print $1}')
   elif command -v shasum >/dev/null 2>&1; then
-    _aos_actual_sha256=$(shasum -a 256 "$_aos_runtime" 2>/dev/null | awk '{print $1}')
+    _aos_daemon_actual_sha256=$(shasum -a 256 "$_aos_daemon" 2>/dev/null | awk '{print $1}')
   else
-    echo "aos-resolve: sha256sum or shasum is required to authenticate Astrid" >&2
+    echo "aos-resolve: sha256sum or shasum is required to authenticate signed executables" >&2
     return 127
   fi
-  _aos_actual_blake3=$(b3sum "$_aos_runtime" 2>/dev/null | awk '{print $1}')
-  printf '%s\n' "$_aos_actual_blake3" | grep -Eq '^[0-9a-f]{64}$' \
-    && [ "$_aos_actual_blake3" = "$_aos_expected_blake3" ] || {
-      echo "aos-resolve: active Astrid BLAKE3 digest does not match its signed executable record" >&2
-      return 1
-    }
-  printf '%s\n' "$_aos_actual_sha256" | grep -Eq '^[0-9a-f]{64}$' \
-    && [ "$_aos_actual_sha256" = "$_aos_expected_sha256" ] || {
-      echo "aos-resolve: active Astrid SHA-256 digest does not match its signed executable record" >&2
+  _aos_daemon_actual_blake3=$(b3sum "$_aos_daemon" 2>/dev/null | awk '{print $1}')
+  [ "$_aos_daemon_actual_blake3" = "$_aos_daemon_blake3" ] \
+    && [ "$_aos_daemon_actual_sha256" = "$_aos_daemon_sha256" ] || {
+      echo "aos-resolve: signed Astrid sibling executable record does not match its bundled bytes" >&2
       return 1
     }
 
@@ -385,13 +456,15 @@ if runtime.get("release_workflow_identity") != expected_identity:
     raise SystemExit("aos-resolve: active AOS manifest runtime signer mismatch")
 PY
 
+  ASTRID="$_aos_runtime"
+  ASTRID_RELEASE="$_aos_release"
+  export ASTRID ASTRID_RELEASE
+  _aos_verify_active_runtime_bytes || return $?
+
   _aos_reported_runtime=$("$_aos_runtime" --version 2>/dev/null \
     | awk 'NF { value = $NF } END { print value }')
   [ "$_aos_reported_runtime" = "$_aos_expected_runtime" ] || {
     echo "aos-resolve: bundled Astrid reports $_aos_reported_runtime, expected $_aos_expected_runtime" >&2
     return 1
   }
-  ASTRID="$_aos_runtime"
-  ASTRID_RELEASE="$_aos_release"
-  export ASTRID ASTRID_RELEASE
 }

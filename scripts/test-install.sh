@@ -191,6 +191,10 @@ case " $* " in
     ;;
   *" agent modify "*)
     principal=${5}
+    if [ "${TEST_SWAP_RELEASES:-0}" -eq 1 ]; then
+      rm -rf "$AOS_HOME/extensions/oracles/codex/releases"
+      ln -s "$TEST_SWAP_TARGET" "$AOS_HOME/extensions/oracles/codex/releases"
+    fi
     previous=""
     for argument in "$@"; do
       case "$previous" in
@@ -251,6 +255,10 @@ set -euo pipefail
 printf 'codex' >> "$TEST_LOG"
 printf ' %q' "$@" >> "$TEST_LOG"
 printf '\n' >> "$TEST_LOG"
+if [ -n "${TEST_PLUGIN_STATE:-}" ]; then
+  mkdir -p "$(dirname "$TEST_PLUGIN_STATE")"
+  : > "$TEST_PLUGIN_STATE"
+fi
 [ "${TEST_FAIL_PLUGIN:-0}" -eq 0 ] || exit 70
 EOF
 cat > "$fake_bin/claude" <<'EOF'
@@ -578,6 +586,33 @@ test ! -e "$local_skills_home/extensions/oracles/plugins/0.3.0"
 test "$(sed -n '2p' "$local_skills_state/installed-codex-code-aos-skills")" \
   = /tmp/user/aos-skills.capsule
 
+# A malformed installed identity is not the same as an absent capsule. It must
+# stop before workspace selection or default first-boot can mutate AOS state.
+malformed_identity_state="$work/malformed-identity-state"
+malformed_identity_home="$home/malformed-identity/.aos"
+malformed_identity_start=$(wc -l < "$TEST_LOG")
+mkdir -p "$malformed_identity_state"
+write_test_capsule "$malformed_identity_state" default aos-skills \
+  zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz \
+  "$product_assets/capsules/aos-skills.capsule" \
+  2026-09-03T00:00:00+00:00 2026-09-03T00:00:00+00:00
+if TEST_STATE="$malformed_identity_state" AOS_HOME="$malformed_identity_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/malformed-identity-direct.out" 2>&1
+then
+  echo "malformed default AOS capsule identity was treated as absent" >&2
+  exit 1
+fi
+grep -Fq 'has a malformed identity' "$work/malformed-identity-direct.out"
+tail -n "+$((malformed_identity_start + 1))" "$TEST_LOG" \
+  > "$work/malformed-identity.log"
+test ! -e "$malformed_identity_state/default-initialized"
+test ! -e "$malformed_identity_state/agent-codex-code"
+test ! -e "$malformed_identity_state/granted-codex-code-aos-skills"
+test ! -e "$malformed_identity_home/runtime"
+test ! -e "$malformed_identity_home/extensions/oracles/plugins/0.3.0"
+test ! -e "$malformed_identity_home/extensions/oracles/codex/current"
+
 # A source can look correct while its recorded byte identity disagrees with the
 # authenticated default. That disagreement stops the transaction before init,
 # principal creation, grants, snapshot activation, or any receipt state.
@@ -746,17 +781,45 @@ fi
 
 # A plugin failure leaves no success receipt for a fresh installation.
 failed_plugin_home="$home/plugin-failure/.aos"
-failed_plugin_state="$work/plugin-failure-state"
-mkdir -p "$failed_plugin_state"
-if TEST_FAIL_PLUGIN=1 TEST_STATE="$failed_plugin_state" AOS_HOME="$failed_plugin_home" \
+failed_plugin_home_state="$failed_plugin_home/test-state"
+failed_plugin_state="$failed_plugin_home_state"
+failed_plugin_marketplace="$failed_plugin_home/fake-host-marketplace"
+if TEST_FAIL_PLUGIN=1 TEST_STATE="$failed_plugin_state" \
+  TEST_PLUGIN_STATE="$failed_plugin_marketplace" AOS_HOME="$failed_plugin_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 then
   echo "oracle install unexpectedly succeeded after plugin failure" >&2
   exit 1
 fi
+test ! -e "$failed_plugin_home"
+test ! -e "$failed_plugin_state/default-initialized"
+test ! -e "$failed_plugin_state/agent-codex-code"
+test ! -e "$failed_plugin_state/granted-codex-code-aos-mcp"
 test ! -e "$failed_plugin_home/extensions/oracles/codex/Pack.lock"
 test ! -e "$failed_plugin_home/extensions/oracles/codex/current"
 test ! -e "$failed_plugin_home/extensions/oracles/.install.lock"
+
+# A release-directory substitution after the early preflight fails receipt
+# commit, writes nothing to the substituted destination, and rolls back the
+# entire fresh AOS transaction.
+swap_home="$home/release-swap/.aos"
+swap_state="$swap_home/test-state"
+swap_outside="$work/release-swap-outside"
+mkdir -p "$swap_outside"
+printf 'not Oracle trust state\n' > "$swap_outside/receipt"
+if TEST_SWAP_RELEASES=1 TEST_SWAP_TARGET="$swap_outside" \
+  TEST_STATE="$swap_state" AOS_HOME="$swap_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+then
+  echo "swapped receipt release root unexpectedly committed" >&2
+  exit 1
+fi
+test ! -e "$swap_home"
+test ! -e "$swap_state/default-initialized"
+test ! -e "$swap_state/agent-codex-code"
+test ! -e "$swap_state/granted-codex-code-aos-mcp"
+test "$(cat "$swap_outside/receipt")" = 'not Oracle trust state'
+test ! -e "$swap_outside/Receipt.toml"
 
 # A failed host-plugin replacement cannot advance an already authenticated
 # Oracle generation. Its immutable receipt and selected current generation

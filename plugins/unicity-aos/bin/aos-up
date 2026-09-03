@@ -46,6 +46,8 @@ done
 }
 
 RESOLVE="$HERE/lib-aos-resolve.sh"
+_aos_expected_blake3=""
+_aos_expected_sha256=""
 # shellcheck source=lib-aos-resolve.sh
 . "$RESOLVE"
 
@@ -463,15 +465,16 @@ mcp_attach() {
     echo "aos-up: could not resolve the AOS/Astrid CLI for MCP attach" >&2
     exit 127
   }
-  _aos_verify_active_runtime_bytes || exit $?
   workspace=$(host_project) || exit $?
   CDPATH= cd -P -- "$runtime" 2>/dev/null || true
+  _aos_verify_active_runtime_bytes || exit $?
   "$ASTRID" --principal "$principal" mcp ready --format json >/dev/null
   frame="$HERE/aos-mcp-frame"
   if [ -x "$frame" ] && command -v python3 >/dev/null 2>&1; then
     AOS_RUNTIME_BLAKE3="$_aos_expected_blake3"
     AOS_RUNTIME_SHA256="$_aos_expected_sha256"
-    export AOS_RUNTIME_BLAKE3 AOS_RUNTIME_SHA256
+    AOS_RUNTIME_PATH="$ASTRID"
+    export AOS_RUNTIME_BLAKE3 AOS_RUNTIME_SHA256 AOS_RUNTIME_PATH
     exec python3 -u "$frame" "$cli" --principal "$principal" mcp attach --workspace "$workspace"
   fi
   set -- --principal "$principal" mcp attach --workspace "$workspace"

@@ -134,6 +134,20 @@ aos_runtime_target() {
 _aos_verify_active_runtime_bytes() {
   [ -n "${ASTRID:-}" ] && [ -n "${_aos_expected_blake3:-}" ] \
     && [ -n "${_aos_expected_sha256:-}" ] || return 1
+  [ -n "${_aos_active_runtime_path:-}" ] && [ "$ASTRID" = "$_aos_active_runtime_path" ] || {
+    echo "aos-resolve: Astrid is not the canonical active release executable" >&2
+    return 1
+  }
+  for _aos_checked_path in \
+    "${_aos_home:-}" "${_aos_home:-}/releases" "${_aos_release:-}" \
+    "${_aos_active_runtime_path%/*}" "${_aos_active_runtime_path%/*/*}"
+  do
+    [ -n "$_aos_checked_path" ] && [ -d "$_aos_checked_path" ] \
+      && [ ! -L "$_aos_checked_path" ] || {
+        echo "aos-resolve: active AOS release path is not a regular directory" >&2
+        return 1
+      }
+  done
   [ -f "$ASTRID" ] && [ ! -L "$ASTRID" ] && [ -x "$ASTRID" ] || {
     echo "aos-resolve: active AOS release is missing its bundled Astrid CLI" >&2
     return 1
@@ -176,6 +190,9 @@ _aos_execute_active_runtime() {
 # file must match its signed executable record immediately before execution.
 aos_resolve_active_runtime() {
   aos_resolve_apply || return $?
+  _aos_active_runtime_path=""
+  _aos_expected_blake3=""
+  _aos_expected_sha256=""
   _aos_home="${AOS_HOME:-$HOME/.aos}"
   _aos_plugin_root="$(_aos_resolve_plugin_root)"
   _aos_oracle_version_file="$_aos_plugin_root/.aos-oracle-version"
@@ -312,10 +329,6 @@ aos_resolve_active_runtime() {
         match_blake3 = record_blake3
         match_sha256 = record_sha256
       }
-      if (record_target == target && record_path == "runtime/bin/astrid-daemon") {
-        daemon_blake3 = record_blake3
-        daemon_sha256 = record_sha256
-      }
       inside_record = 0; fields = 0
       split("", seen)
       record_target = record_path = record_blake3 = record_sha256 = ""
@@ -367,41 +380,16 @@ aos_resolve_active_runtime() {
         if (!(unused_key in pair_seen)) fail("signed executable statement is missing a GNU/Darwin executable record")
       }
       if (!matched) fail("signed executable statement does not authorize this Astrid path")
-      if (daemon_blake3 == "" || daemon_sha256 == "") fail("signed executable statement has no sibling Astrid daemon record")
-      print match_blake3, match_sha256, daemon_blake3, daemon_sha256
+      print match_blake3, match_sha256
     }
     ' "$_aos_release_statement") || return 1
-  read -r _aos_expected_blake3 _aos_expected_sha256 _aos_daemon_blake3 _aos_daemon_sha256 <<EOF
+  read -r _aos_expected_blake3 _aos_expected_sha256 <<EOF
 $_aos_executable_digests
 EOF
   case "$_aos_executable_digests" in
-    [0-9a-f]*' '[0-9a-f]*' '[0-9a-f]*' '[0-9a-f]*) ;;
+    [0-9a-f]*' '[0-9a-f]*) ;;
     *) echo "aos-resolve: active AOS release lacks a unique signed Astrid executable record" >&2; return 1 ;;
   esac
-
-  _aos_daemon="$_aos_release/runtime/bin/astrid-daemon"
-  [ -f "$_aos_daemon" ] && [ ! -L "$_aos_daemon" ] && [ -x "$_aos_daemon" ] || {
-    echo "aos-resolve: active AOS release is missing its signed Astrid sibling executable" >&2
-    return 1
-  }
-  command -v b3sum >/dev/null 2>&1 || {
-    echo "aos-resolve: b3sum is required to authenticate the signed executable records" >&2
-    return 127
-  }
-  if command -v sha256sum >/dev/null 2>&1; then
-    _aos_daemon_actual_sha256=$(sha256sum "$_aos_daemon" 2>/dev/null | awk '{print $1}')
-  elif command -v shasum >/dev/null 2>&1; then
-    _aos_daemon_actual_sha256=$(shasum -a 256 "$_aos_daemon" 2>/dev/null | awk '{print $1}')
-  else
-    echo "aos-resolve: sha256sum or shasum is required to authenticate signed executables" >&2
-    return 127
-  fi
-  _aos_daemon_actual_blake3=$(b3sum "$_aos_daemon" 2>/dev/null | awk '{print $1}')
-  [ "$_aos_daemon_actual_blake3" = "$_aos_daemon_blake3" ] \
-    && [ "$_aos_daemon_actual_sha256" = "$_aos_daemon_sha256" ] || {
-      echo "aos-resolve: signed Astrid sibling executable record does not match its bundled bytes" >&2
-      return 1
-    }
 
   python3 - "$_aos_manifest" "$_aos_version" "$_aos_expected_runtime" <<'PY' || return 1
 import json
@@ -458,6 +446,7 @@ PY
 
   ASTRID="$_aos_runtime"
   ASTRID_RELEASE="$_aos_release"
+  _aos_active_runtime_path="$_aos_runtime"
   export ASTRID ASTRID_RELEASE
   _aos_verify_active_runtime_bytes || return $?
 

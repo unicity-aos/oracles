@@ -87,8 +87,15 @@ def verify_runtime_before_popen() -> None:
     if len(sys.argv) < 2:
         raise SystemExit("aos-mcp-frame: missing attach command")
     executable = sys.argv[1]
+    expected_path = os.environ.get("AOS_RUNTIME_PATH", "")
     expected_blake3 = os.environ.get("AOS_RUNTIME_BLAKE3", "")
     expected_sha256 = os.environ.get("AOS_RUNTIME_SHA256", "")
+    if (
+        not expected_path
+        or not os.path.isabs(expected_path)
+        or os.path.islink(expected_path)
+    ):
+        raise SystemExit("aos-mcp-frame: missing canonical release runtime path")
     if (
         len(expected_blake3) != 64
         or any(character not in "0123456789abcdef" for character in expected_blake3)
@@ -100,8 +107,10 @@ def verify_runtime_before_popen() -> None:
         not os.path.isfile(executable)
         or os.path.islink(executable)
         or not os.access(executable, os.X_OK)
+        or os.path.abspath(executable) != expected_path
+        or os.path.realpath(executable) != os.path.realpath(expected_path)
     ):
-        raise SystemExit("aos-mcp-frame: runtime is not a regular executable")
+        raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
     try:
         blake3 = subprocess.run(
             ["b3sum", executable], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL

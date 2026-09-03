@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 
 
@@ -16,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 FRAME = ROOT / "plugins/unicity-aos/bin/aos-mcp-frame"
 
 
-def runtime_env(executable: str) -> dict[str, str]:
+def runtime_env(executable: str, expected_path: str | None = None) -> dict[str, str]:
     blake3 = subprocess.run(
         ["b3sum", executable], check=True, stdout=subprocess.PIPE, text=True
     ).stdout.split()[0]
@@ -25,6 +26,7 @@ def runtime_env(executable: str) -> dict[str, str]:
     ).stdout.split()[0]
     return {
         **os.environ,
+        **({"AOS_RUNTIME_PATH": expected_path} if expected_path is not None else {}),
         "AOS_RUNTIME_BLAKE3": blake3,
         "AOS_RUNTIME_SHA256": sha256,
     }
@@ -37,7 +39,7 @@ def test_child_exit_with_open_stdin() -> None:
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=runtime_env(executable),
+        env=runtime_env(executable, expected_path=executable),
     )
     try:
         deadline = time.time() + 2
@@ -67,7 +69,7 @@ def test_content_length_roundtrip() -> None:
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env=runtime_env(executable),
+        env=runtime_env(executable, expected_path=executable),
     )
     payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode()
     assert proc.stdin is not None and proc.stdout is not None
@@ -95,10 +97,31 @@ def test_content_length_roundtrip() -> None:
     assert proc.wait(timeout=2) == 0
 
 
+def test_matching_bytes_outside_release_path_rejected() -> None:
+    with tempfile.TemporaryDirectory() as temp_dir:
+        executable = str(Path(temp_dir) / "astrid")
+        Path(executable).write_text("#!/bin/sh\nexit 0\n")
+        Path(executable).chmod(0o700)
+        proc = subprocess.Popen(
+            [sys.executable, "-u", str(FRAME), executable, "-c", "exit 0"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=runtime_env(executable, expected_path="/definitely/not/release/astrid"),
+        )
+        if proc.stdin:
+            proc.stdin.close()
+        stdout, stderr = proc.communicate(timeout=2)
+        assert proc.returncode != 0
+        assert b"canonical release executable" in stderr
+        assert stdout == b""
+
+
 def main() -> None:
     assert FRAME.is_file()
     test_child_exit_with_open_stdin()
     test_content_length_roundtrip()
+    test_matching_bytes_outside_release_path_rejected()
 
 
 if __name__ == "__main__":

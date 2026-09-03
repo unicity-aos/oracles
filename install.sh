@@ -31,6 +31,17 @@ PLUGIN_STAGE=""
 RECEIPT_STAGE=""
 PREVIOUS_BINDINGS=""
 CURRENT_PACK_BINDINGS=""
+INSTALL_TRANSACTION_ACTIVE=0
+AOS_HOME_EXISTED=0
+ROLLBACK_AOS_HOME=0
+TRANSACTION_FAILED=0
+NEW_PLUGIN_SNAPSHOT=""
+NEW_RECEIPT=""
+ROLLBACK_RECEIPT_HOST="codex"
+PRIOR_CURRENT_EXISTS=0
+PRIOR_CURRENT_TARGET=""
+PRIOR_PACK_LOCK_EXISTS=0
+CAPSULE_RECORD_FOUND=0
 
 say() { printf '%s\n' "$*"; }
 die() { say "aos-oracles: $*" >&2; exit 1; }
@@ -52,16 +63,46 @@ release_install_lock() {
   LOCK_BACKEND=""
 }
 
+mark_transaction_failure() {
+  [ "$INSTALL_TRANSACTION_ACTIVE" -eq 1 ] || return 0
+  TRANSACTION_FAILED=1
+  [ "$AOS_HOME_EXISTED" -eq 0 ] && ROLLBACK_AOS_HOME=1 || return 0
+}
+
 cleanup() {
+  cleanup_status=$?
+  if [ "$cleanup_status" -ne 0 ]; then
+    mark_transaction_failure
+  fi
   release_install_lock
+  if [ "$ROLLBACK_AOS_HOME" -eq 1 ]; then
+    rm -rf "$AOS_HOME_DIR"
+    ROLLBACK_AOS_HOME=0
+  elif [ "$TRANSACTION_FAILED" -eq 1 ] && [ "$AOS_HOME_EXISTED" -eq 1 ]; then
+    [ -z "$NEW_RECEIPT" ] || rm -rf "$NEW_RECEIPT"
+    [ -z "$NEW_PLUGIN_SNAPSHOT" ] || rm -rf "$NEW_PLUGIN_SNAPSHOT"
+    receipt_host_root="$AOS_HOME_DIR/extensions/oracles/$ROLLBACK_RECEIPT_HOST"
+    if [ "$PRIOR_CURRENT_EXISTS" -eq 1 ]; then
+      if [ -n "$PRIOR_CURRENT_TARGET" ]; then
+        atomic_symlink "$PRIOR_CURRENT_TARGET" "$receipt_host_root/current"
+      fi
+    elif [ -L "$receipt_host_root/current" ]; then
+      rm -f "$receipt_host_root/current"
+    fi
+    if [ "$PRIOR_PACK_LOCK_EXISTS" -eq 0 ] && [ -L "$receipt_host_root/Pack.lock" ]; then
+      rm -f "$receipt_host_root/Pack.lock"
+    fi
+  fi
   [ -z "$PLUGIN_STAGE" ] || rm -rf "$PLUGIN_STAGE"
   [ -z "$RECEIPT_STAGE" ] || rm -rf "$RECEIPT_STAGE"
   [ -z "$WORK" ] || rm -rf "$WORK"
+  TRANSACTION_FAILED=0
 }
 
 on_signal() {
   code=$1
   trap - EXIT HUP INT TERM
+  mark_transaction_failure
   cleanup
   exit "$code"
 }
@@ -334,6 +375,7 @@ atomic_symlink() {
   parent=${destination%/*}
   name=${destination##*/}
   temporary="$parent/.$name.$$"
+  ensure_contained_directory "$parent" "symlink destination parent"
   if [ -d "$destination" ] && [ ! -L "$destination" ]; then
     die "$destination is a directory"
   fi
@@ -347,6 +389,21 @@ atomic_symlink() {
     Linux) mv -fT "$temporary" "$destination" ;;
     *) rm -f "$temporary"; die "unsupported platform for atomic symlink replacement" ;;
   esac
+}
+
+verify_receipt_commit_paths() {
+  verify_host=$1
+  verify_root="$AOS_HOME_DIR/extensions/oracles/$verify_host"
+  verify_releases="$verify_root/releases"
+  verify_destination="$verify_releases/$ORACLES_VERSION"
+  ensure_contained_directory "$AOS_HOME_DIR" "AOS home"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions" "AOS extensions root"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions/oracles" "oracle extension root"
+  ensure_contained_directory "$verify_root" "$verify_host receipt root"
+  ensure_contained_directory "$verify_releases" "$verify_host receipt release root"
+  reject_destination_link "$verify_destination" "$verify_host receipt destination"
+  [ ! -e "$verify_root/current" ] || [ -L "$verify_root/current" ] \
+    || die "$verify_host current receipt is not a symlink"
 }
 
 calendar_version_at_least() {
@@ -612,8 +669,14 @@ write_managed_capsules() {
 load_capsule_record() {
   cr_principal=$1
   cr_capsule=$2
+  CAPSULE_RECORD_FOUND=0
+  CAPSULE_HASH=""
+  CAPSULE_SOURCE=""
+  CAPSULE_INSTALLED_AT=""
+  CAPSULE_UPDATED_AT=""
   cr_record=$(aos capsule show "$cr_capsule" --agent "$cr_principal" \
     --format toml 2>/dev/null) || return 1
+  CAPSULE_RECORD_FOUND=1
   CAPSULE_HASH=$(printf '%s\n' "$cr_record" \
     | sed -n 's/^wasm_hash = "\([0-9a-f]*\)"$/\1/p')
   printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' || return 1
@@ -912,6 +975,24 @@ prepare_plugin_snapshot() {
   PLUGIN_SNAPSHOT="$stage"
 }
 
+capture_receipt_rollback_state() {
+  capture_host=$1
+  capture_root="$AOS_HOME_DIR/extensions/oracles/$capture_host"
+  ROLLBACK_RECEIPT_HOST=$capture_host
+  PRIOR_CURRENT_EXISTS=0
+  PRIOR_CURRENT_TARGET=""
+  PRIOR_PACK_LOCK_EXISTS=0
+  if [ -L "$capture_root/current" ]; then
+    PRIOR_CURRENT_EXISTS=1
+    PRIOR_CURRENT_TARGET=$(readlink "$capture_root/current")
+  fi
+  if [ -L "$capture_root/Pack.lock" ]; then
+    PRIOR_PACK_LOCK_EXISTS=1
+  elif [ -e "$capture_root/Pack.lock" ]; then
+    PRIOR_PACK_LOCK_EXISTS=1
+  fi
+}
+
 activate_plugin_snapshot() {
   stage="$WORK/plugin-stage"
   destination="$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION"
@@ -929,6 +1010,7 @@ activate_plugin_snapshot() {
   else
     reject_destination_link "$destination" "plugin snapshot destination"
     mv "$stage" "$destination" || die "could not activate the plugin snapshot"
+    NEW_PLUGIN_SNAPSHOT=$destination
   fi
   PLUGIN_STAGE=""
   PLUGIN_SNAPSHOT=""
@@ -1048,6 +1130,8 @@ resolve_aos_capsules() {
       printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
         || die "AOS capsule dependency '$rac_name' for $rac_principal has an invalid identity hash"
       rac_host_hash=$CAPSULE_HASH
+    elif [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
+      die "AOS capsule dependency '$rac_name' for $rac_principal has a malformed identity"
     fi
     if load_capsule_record default "$rac_name"; then
       [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
@@ -1059,6 +1143,8 @@ resolve_aos_capsules() {
         [ "$CAPSULE_HASH" = "$rac_default_hash" ] \
           || die "default and host identities disagree for AOS capsule '$rac_name'"
       fi
+    elif [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
+      die "default AOS capsule dependency '$rac_name' has a malformed identity"
     fi
     if [ -n "$rac_host_hash" ] && [ -n "$rac_expected_host_hash" ]; then
       [ "$rac_host_hash" = "$rac_expected_host_hash" ] \
@@ -1155,6 +1241,7 @@ stage_pack() {
 install_pack() {
   host=$1
   principal=$(principal_for "$host")
+  capture_receipt_rollback_state "$host"
   stage_pack "$host"
   stage=$STAGED_PACK
   validate_pack "$host" "$principal" "$stage/Pack.toml"
@@ -1292,8 +1379,8 @@ write_receipt() {
   destination="$releases/$ORACLES_VERSION"
   stage="$receipt_root/.receipt-${ORACLES_VERSION}.$$"
   RECEIPT_STAGE=$stage
-  mkdir -p "$releases"
-  mkdir -p "$stage"
+  verify_receipt_commit_paths "$host"
+  mkdir "$stage"
   cp "$pack_stage/Pack.toml" "$stage/Pack.lock"
   write_managed_capsules "$CURRENT_PACK_BINDINGS" "$stage/ManagedCapsules.toml"
   cp "$RELEASE_STAGE/BLAKE3SUMS.txt" "$stage/BLAKE3SUMS.txt"
@@ -1327,11 +1414,15 @@ write_receipt() {
       || die "installed $host receipt $ORACLES_VERSION differs from the staged release"
     rm -rf "$stage"
   else
+    verify_receipt_commit_paths "$host"
     mv "$stage" "$destination" || die "could not commit the $host oracle receipt"
+    NEW_RECEIPT=$destination
   fi
   RECEIPT_STAGE=""
 
+  verify_receipt_commit_paths "$host"
   atomic_symlink "releases/$ORACLES_VERSION" "$receipt_root/current"
+  verify_receipt_commit_paths "$host"
   atomic_symlink current/Pack.lock "$receipt_root/Pack.lock" 1
   if [ -f "$destination/Pack.toml.sigstore.json" ]; then
     atomic_symlink current/Pack.toml.sigstore.json \
@@ -1340,14 +1431,19 @@ write_receipt() {
     rm -f "$receipt_root/Pack.lock.sigstore.json"
   fi
   say "✓ $host oracle pack $ORACLES_VERSION committed"
+  NEW_RECEIPT=""
 }
 
 ensure_b3sum
 hosts=$(select_hosts)
+if [ -e "$AOS_HOME_DIR" ]; then
+  AOS_HOME_EXISTED=1
+fi
+INSTALL_TRANSACTION_ACTIVE=1
 ensure_install_destinations "$hosts"
 acquire_install_lock
-ensure_aos
 stage_release_metadata
+ensure_aos
 if [ "$PLUGINS_ONLY" -eq 1 ]; then
   prepare_plugin_snapshot
   for host in $hosts; do

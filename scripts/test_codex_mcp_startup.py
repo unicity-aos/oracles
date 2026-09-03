@@ -499,6 +499,9 @@ def main() -> None:
                 "-c",
                 f'. "{PLUGIN}/bin/lib-aos-resolve.sh"; '
                 f'ASTRID="{expected_runtime}"; export ASTRID; '
+                f'_aos_active_runtime_path="{expected_runtime}"; '
+                f'_aos_home="{home}"; '
+                f'_aos_release="{home / "releases/2026.9.0"}"; '
                 f'_aos_expected_blake3="{expected_digests[0]}"; '
                 f'_aos_expected_sha256="{expected_digests[1]}"; '
                 "export _aos_expected_blake3 _aos_expected_sha256; "
@@ -516,6 +519,32 @@ def main() -> None:
         assert "BLAKE3 digest does not match" in byte_gate.stderr
         expected_runtime.write_bytes(executable_bytes)
         expected_runtime.chmod(0o700)
+
+        noncanonical_gate = subprocess.run(
+            [
+                "/bin/sh",
+                "-c",
+                f'. "{PLUGIN}/bin/lib-aos-resolve.sh"; '
+                'ASTRID="/bin/sh"; export ASTRID; '
+                f'_aos_active_runtime_path="{expected_runtime}"; '
+                f'_aos_home="{home}"; '
+                f'_aos_release="{home / "releases/2026.9.0"}"; '
+                f'_aos_expected_blake3="{expected_digests[0]}"; '
+                f'_aos_expected_sha256="{expected_digests[1]}"; '
+                "export _aos_active_runtime_path _aos_home _aos_release "
+                "_aos_expected_blake3 _aos_expected_sha256; "
+                "_aos_verify_active_runtime_bytes",
+            ],
+            cwd=PLUGIN,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert noncanonical_gate.returncode != 0
+        assert "not the canonical active release executable" in noncanonical_gate.stderr
 
         # The schema-v2 executable table is the only accepted byte authority.
         # Its absence, v1 predecessor form, and archive-only manifest digest
@@ -550,14 +579,12 @@ def main() -> None:
         daemon_runtime = home / "releases/2026.9.0/runtime/bin/astrid-daemon"
         daemon_bytes = daemon_runtime.read_bytes()
         daemon_runtime.unlink()
-        rejected = resolve_active(environment)
-        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "signed Astrid sibling executable" in rejected.stderr
+        accepted = resolve_active(environment)
+        assert accepted.returncode == 0, (accepted.stdout, accepted.stderr)
         daemon_runtime.write_text("#!/bin/sh\nexit 3\n")
         daemon_runtime.chmod(0o700)
-        rejected = resolve_active(environment)
-        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "signed Astrid sibling executable record does not match" in rejected.stderr
+        accepted = resolve_active(environment)
+        assert accepted.returncode == 0, (accepted.stdout, accepted.stderr)
         daemon_runtime.write_bytes(daemon_bytes)
         daemon_runtime.chmod(0o700)
 

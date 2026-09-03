@@ -14,6 +14,8 @@ produced macOS "Python quit unexpectedly" dialogs under Codex.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import re
 import subprocess
 import sys
 import threading
@@ -83,10 +85,86 @@ def write_host(fd: int, mode: str, payload: bytes) -> None:
     os.write(fd, payload)
 
 
+def verify_runtime_before_popen() -> None:
+    if len(sys.argv) < 2:
+        raise SystemExit("aos-mcp-frame: missing attach command")
+    executable = sys.argv[1]
+    aos_home_value = os.environ.get("AOS_HOME", "")
+    expected_blake3 = os.environ.get("AOS_RUNTIME_BLAKE3", "")
+    expected_sha256 = os.environ.get("AOS_RUNTIME_SHA256", "")
+    if not aos_home_value or not os.path.isabs(aos_home_value):
+        raise SystemExit("aos-mcp-frame: missing canonical release runtime path")
+    if (
+        len(expected_blake3) != 64
+        or any(character not in "0123456789abcdef" for character in expected_blake3)
+        or len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+    ):
+        raise SystemExit("aos-mcp-frame: missing signed runtime digests")
+    executable_path = Path(executable)
+    aos_home = Path(aos_home_value)
+    releases = aos_home / "releases"
+    if aos_home.is_symlink() or not aos_home.is_dir() or releases.is_symlink() or not releases.is_dir():
+        raise SystemExit("aos-mcp-frame: active AOS release home is not canonical")
+    try:
+        relative = executable_path.relative_to(releases)
+    except (ValueError, OSError):
+        raise SystemExit(
+            "aos-mcp-frame: runtime is not the canonical release executable"
+        ) from None
+    if len(relative.parts) != 4 or relative.parts[1:] != ("runtime", "bin", "astrid"):
+        raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
+    current = Path(aos_home.anchor)
+    for component in aos_home.parts[1:]:
+        current /= component
+        if current.is_symlink() or not current.is_dir():
+            raise SystemExit("aos-mcp-frame: active AOS release path is not canonical")
+    release_version = relative.parts[0]
+    if not re.fullmatch(
+        r"20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", release_version
+    ):
+        raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
+    checked_directories = (
+        releases,
+        releases / release_version,
+        releases / release_version / "runtime",
+        releases / release_version / "runtime" / "bin",
+    )
+    try:
+        unsafe_path = any(path.is_symlink() or not path.is_dir() for path in checked_directories)
+    except OSError:
+        unsafe_path = True
+    if unsafe_path:
+        raise SystemExit("aos-mcp-frame: active AOS release path is not canonical")
+    if (
+        executable_path.is_symlink()
+        or not executable_path.is_file()
+        or not os.access(executable_path, os.X_OK)
+    ):
+        raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
+    try:
+        blake3 = subprocess.run(
+            ["b3sum", executable], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+        ).stdout.decode().split()[0]
+        if os.path.exists("/usr/bin/sha256sum"):
+            sha256 = subprocess.run(
+                ["/usr/bin/sha256sum", executable], check=True, stdout=subprocess.PIPE
+            ).stdout.decode().split()[0]
+        else:
+            sha256 = subprocess.run(
+                ["/usr/bin/shasum", "-a", "256", executable], check=True, stdout=subprocess.PIPE
+            ).stdout.decode().split()[0]
+    except (OSError, subprocess.SubprocessError, IndexError) as error:
+        raise SystemExit(f"aos-mcp-frame: could not hash runtime: {error}") from error
+    if blake3 != expected_blake3 or sha256 != expected_sha256:
+        raise SystemExit("aos-mcp-frame: runtime digest does not match its signed record")
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         sys.stderr.write("aos-mcp-frame: missing attach command\n")
         return 2
+    verify_runtime_before_popen()
     proc = subprocess.Popen(
         sys.argv[1:],
         stdin=subprocess.PIPE,

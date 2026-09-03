@@ -48,6 +48,11 @@ host pack to this plugin snapshot's exact Oracle release.
 USAGE
 }
 
+# Reject the trust bypass before value-taking options can consume it.
+for sentinel_argument in "$@"; do
+  [ "$sentinel_argument" != "--approve-untrusted" ] || die "--approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution"
+done
+
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --host)

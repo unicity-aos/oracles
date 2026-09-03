@@ -4,7 +4,7 @@ set -eu
 umask 077
 
 ORACLES_REPO="${AOS_ORACLES_REPO:-unicity-aos/oracles}"
-ORACLES_VERSION="${AOS_ORACLES_VERSION:-0.2.6}"
+ORACLES_VERSION="${AOS_ORACLES_VERSION:-0.3.0}"
 AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/base-install.sh}"
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 AOS_CHANNEL=""
@@ -31,6 +31,21 @@ PLUGIN_STAGE=""
 RECEIPT_STAGE=""
 PREVIOUS_BINDINGS=""
 CURRENT_PACK_BINDINGS=""
+INSTALL_TRANSACTION_ACTIVE=0
+AOS_HOME_EXISTED=0
+ROLLBACK_AOS_HOME=0
+TRANSACTION_FAILED=0
+NEW_PLUGIN_SNAPSHOT=""
+NEW_RECEIPT=""
+ROLLBACK_RECEIPT_HOST="codex"
+PRIOR_CURRENT_EXISTS=0
+PRIOR_CURRENT_TARGET=""
+PRIOR_PACK_LOCK_KIND=""
+PRIOR_PACK_LOCK_TARGET=""
+PRIOR_PACK_LOCK_BACKUP=""
+PRIOR_PACK_LOCK_MODE=""
+COMMITTED_HOSTS=""
+CAPSULE_RECORD_FOUND=0
 
 say() { printf '%s\n' "$*"; }
 die() { say "aos-oracles: $*" >&2; exit 1; }
@@ -52,16 +67,83 @@ release_install_lock() {
   LOCK_BACKEND=""
 }
 
+mark_transaction_failure() {
+  [ "$INSTALL_TRANSACTION_ACTIVE" -eq 1 ] || return 0
+  TRANSACTION_FAILED=1
+  [ "$AOS_HOME_EXISTED" -eq 0 ] && ROLLBACK_AOS_HOME=1 || return 0
+}
+
+mark_host_committed() {
+  case " $COMMITTED_HOSTS " in
+    *" $1 "*) ;;
+    *) COMMITTED_HOSTS="$COMMITTED_HOSTS $1" ;;
+  esac
+}
+
 cleanup() {
+  cleanup_status=$?
+  if [ "$cleanup_status" -ne 0 ]; then
+    mark_transaction_failure
+  fi
   release_install_lock
+  if [ "$ROLLBACK_AOS_HOME" -eq 1 ]; then
+    rm -rf "$AOS_HOME_DIR"
+    ROLLBACK_AOS_HOME=0
+  elif [ "$TRANSACTION_FAILED" -eq 1 ] && [ "$AOS_HOME_EXISTED" -eq 1 ]; then
+    case " $COMMITTED_HOSTS " in
+      *" $ROLLBACK_RECEIPT_HOST "*)
+        NEW_RECEIPT=""
+        ;;
+      *) [ -z "$NEW_RECEIPT" ] || rm -rf "$NEW_RECEIPT" ;;
+    esac
+    [ -z "$NEW_PLUGIN_SNAPSHOT" ] || [ -n "$COMMITTED_HOSTS" ] \
+      || rm -rf "$NEW_PLUGIN_SNAPSHOT"
+    receipt_host_root="$AOS_HOME_DIR/extensions/oracles/$ROLLBACK_RECEIPT_HOST"
+    if [ "$PRIOR_CURRENT_EXISTS" -eq 1 ]; then
+      if [ -n "$PRIOR_CURRENT_TARGET" ]; then
+        atomic_symlink "$PRIOR_CURRENT_TARGET" "$receipt_host_root/current"
+      fi
+    elif [ -L "$receipt_host_root/current" ]; then
+      rm -f "$receipt_host_root/current"
+    fi
+    case "$PRIOR_PACK_LOCK_KIND" in
+      absent)
+        [ ! -L "$receipt_host_root/Pack.lock" ] || rm -f "$receipt_host_root/Pack.lock"
+        [ ! -e "$receipt_host_root/Pack.lock" ] \
+          || die "cannot restore an absent Pack.lock over existing state"
+        ;;
+      symlink)
+        [ -n "$PRIOR_PACK_LOCK_TARGET" ] || die "lost prior Pack.lock link target during rollback"
+        atomic_symlink "$PRIOR_PACK_LOCK_TARGET" "$receipt_host_root/Pack.lock"
+        ;;
+      regular)
+        [ -n "$PRIOR_PACK_LOCK_BACKUP" ] || die "lost prior Pack.lock backup during rollback"
+        restore_parent="${receipt_host_root%/*}"
+        ensure_contained_directory "$restore_parent" "receipt rollback parent"
+        [ ! -L "$receipt_host_root/Pack.lock" ] || rm -f "$receipt_host_root/Pack.lock"
+        if [ -e "$receipt_host_root/Pack.lock" ]; then
+          [ -f "$receipt_host_root/Pack.lock" ] \
+            && [ ! -L "$receipt_host_root/Pack.lock" ] \
+            || die "cannot restore a regular Pack.lock over a non-regular path"
+          rm -f "$receipt_host_root/Pack.lock"
+        fi
+        mv "$PRIOR_PACK_LOCK_BACKUP" "$receipt_host_root/Pack.lock" \
+          || die "could not restore the prior regular Pack.lock"
+        chmod "$PRIOR_PACK_LOCK_MODE" "$receipt_host_root/Pack.lock" \
+          || die "could not restore the prior Pack.lock mode"
+        ;;
+    esac
+    fi
   [ -z "$PLUGIN_STAGE" ] || rm -rf "$PLUGIN_STAGE"
   [ -z "$RECEIPT_STAGE" ] || rm -rf "$RECEIPT_STAGE"
   [ -z "$WORK" ] || rm -rf "$WORK"
+  TRANSACTION_FAILED=0
 }
 
 on_signal() {
   code=$1
   trap - EXIT HUP INT TERM
+  mark_transaction_failure
   cleanup
   exit "$code"
 }
@@ -71,6 +153,12 @@ trap 'on_signal 129' HUP
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM
 
+# Reject the trust bypass before argument-specific parsing can consume it as a
+# value for --aos-channel, --aos-version, --oracle-version, or --aos-installer.
+for sentinel_argument in "$@"; do
+  [ "$sentinel_argument" != "--approve-untrusted" ] || die "--approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution"
+done
+
 usage() {
   cat <<'EOF'
 Usage: install.sh [options]
@@ -78,7 +166,7 @@ Usage: install.sh [options]
   --host HOST       install claude, codex, or grok (repeatable)
   --all             install every supported host
   --yes, -y         non-interactive host-pack provisioning
-  --oracle-version V exact signed oracle pack version (default: 0.2.6)
+  --oracle-version V exact signed oracle pack version (default: 0.3.0)
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
@@ -87,6 +175,8 @@ Usage: install.sh [options]
   --no-install-aos  fail instead of invoking the canonical AOS installer
   --skip-host-plugin
                      provision capsules/receipt without reinstalling the active host plugin
+  --approve-untrusted
+                     rejected: AOS dependencies require the signed OperatorDistribution
   -h, --help
 EOF
 }
@@ -126,6 +216,9 @@ while [ "$#" -gt 0 ]; do
     --plugins-only) PLUGINS_ONLY=1 ;;
     --no-install-aos) NO_INSTALL_AOS=1 ;;
     --skip-host-plugin) SKIP_HOST_PLUGIN=1 ;;
+    --approve-untrusted)
+      die "--approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution"
+      ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument '$1'" ;;
   esac
@@ -244,6 +337,78 @@ acquire_install_lock() {
   fi
 }
 
+ensure_contained_directory() {
+  ensure_root=$1
+  ensure_label=$2
+  case "$ensure_root" in
+    /*) ;;
+    *) die "$ensure_label must be an absolute path" ;;
+  esac
+  case "$ensure_root" in
+    /|*[/]|*//*|*/./*|*/../*|*/.|*/..) die "$ensure_label is not a canonical directory path" ;;
+  esac
+
+  checked="/"
+  remainder="${ensure_root#/}"
+  while [ -n "$remainder" ]; do
+    segment=${remainder%%/*}
+    case "$remainder" in
+      */*) remainder=${remainder#*/} ;;
+      *) remainder="" ;;
+    esac
+    case "$segment" in
+      ""|.|..) die "$ensure_label is not a canonical directory path" ;;
+    esac
+    checked="$checked$segment"
+    if mkdir "$checked" 2>/dev/null; then
+      :
+    elif [ -d "$checked" ] && [ ! -L "$checked" ]; then
+      :
+    else
+      die "$ensure_label contains a symlink or non-directory: $checked"
+    fi
+    [ -d "$checked" ] && [ ! -L "$checked" ] \
+      || die "$ensure_label contains a symlink or non-directory: $checked"
+    [ -n "$remainder" ] && checked="$checked/"
+  done
+  return 0
+}
+
+reject_destination_link() {
+  reject_path=$1
+  reject_label=$2
+  ensure_contained_directory "${reject_path%/*}" "$reject_label parent"
+  [ ! -L "$reject_path" ] || die "$reject_label is a symlink: $reject_path"
+  if [ -e "$reject_path" ]; then
+    [ -d "$reject_path" ] || die "$reject_label is not a directory: $reject_path"
+  fi
+}
+
+ensure_install_destinations() {
+  ensure_hosts=$1
+  ensure_contained_directory "$AOS_HOME_DIR" "AOS home"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions" "AOS extensions root"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions/oracles" "oracle extension root"
+
+  plugins_root="$AOS_HOME_DIR/extensions/oracles/plugins"
+  plugin_destination="$plugins_root/$ORACLES_VERSION"
+  plugin_stage="$plugins_root/.$ORACLES_VERSION.tmp.$$"
+  ensure_contained_directory "$plugins_root" "plugin snapshot root"
+  reject_destination_link "$plugin_destination" "plugin snapshot destination"
+  [ ! -e "$plugin_stage" ] || die "stale plugin transaction state exists: $plugin_stage"
+
+  for ensure_host in $ensure_hosts; do
+    receipt_root="$AOS_HOME_DIR/extensions/oracles/$ensure_host"
+    receipt_releases="$receipt_root/releases"
+    receipt_destination="$receipt_releases/$ORACLES_VERSION"
+    receipt_stage="$receipt_root/.receipt-$ORACLES_VERSION.$$"
+    ensure_contained_directory "$receipt_root" "$ensure_host receipt root"
+    ensure_contained_directory "$receipt_releases" "$ensure_host receipt release root"
+    reject_destination_link "$receipt_destination" "$ensure_host receipt destination"
+    [ ! -e "$receipt_stage" ] || die "stale receipt transaction state exists: $receipt_stage"
+  done
+}
+
 atomic_symlink() {
   target=$1
   destination=$2
@@ -251,6 +416,7 @@ atomic_symlink() {
   parent=${destination%/*}
   name=${destination##*/}
   temporary="$parent/.$name.$$"
+  ensure_contained_directory "$parent" "symlink destination parent"
   if [ -d "$destination" ] && [ ! -L "$destination" ]; then
     die "$destination is a directory"
   fi
@@ -264,6 +430,21 @@ atomic_symlink() {
     Linux) mv -fT "$temporary" "$destination" ;;
     *) rm -f "$temporary"; die "unsupported platform for atomic symlink replacement" ;;
   esac
+}
+
+verify_receipt_commit_paths() {
+  verify_host=$1
+  verify_root="$AOS_HOME_DIR/extensions/oracles/$verify_host"
+  verify_releases="$verify_root/releases"
+  verify_destination="$verify_releases/$ORACLES_VERSION"
+  ensure_contained_directory "$AOS_HOME_DIR" "AOS home"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions" "AOS extensions root"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions/oracles" "oracle extension root"
+  ensure_contained_directory "$verify_root" "$verify_host receipt root"
+  ensure_contained_directory "$verify_releases" "$verify_host receipt release root"
+  reject_destination_link "$verify_destination" "$verify_host receipt destination"
+  [ ! -e "$verify_root/current" ] || [ -L "$verify_root/current" ] \
+    || die "$verify_host current receipt is not a symlink"
 }
 
 calendar_version_at_least() {
@@ -404,13 +585,16 @@ ensure_base() {
   daemon_was_live=1
   if ! daemon_is_live; then daemon_was_live=0; fi
   if [ "$daemon_was_live" -eq 0 ]; then
-    version=$(aos --version | awk 'NF { value = $NF } END { print value }')
-    cli_artifact="$AOS_HOME_DIR/releases/$version/capsules/aos-cli.capsule"
-    [ -f "$cli_artifact" ] && [ ! -L "$cli_artifact" ] \
-      || die "installed Unicity AOS $version is missing aos-cli.capsule"
-    aos --principal default capsule install "$cli_artifact" --yes </dev/null
-    say "Starting Unicity CE..."
-    aos --principal default start >/dev/null
+    # The AOS-owned init command is the only supported bootstrap authority. It
+    # applies the authenticated release manifest as one OperatorDistribution;
+    # an Oracle must never turn the release's individual capsule files into
+    # caller-approved installs.
+    aos --principal default init --yes </dev/null \
+      || die "could not apply the signed Unicity AOS operator distribution"
+    if ! daemon_is_live; then
+      say "Starting Unicity CE..."
+      aos --principal default start >/dev/null
+    fi
     daemon_is_live \
       || die "Unicity CE did not become reachable after the runtime reported readiness"
   fi
@@ -526,8 +710,31 @@ write_managed_capsules() {
 load_capsule_record() {
   cr_principal=$1
   cr_capsule=$2
+  CAPSULE_RECORD_FOUND=0
+  CAPSULE_HASH=""
+  CAPSULE_SOURCE=""
+  CAPSULE_INSTALLED_AT=""
+  CAPSULE_UPDATED_AT=""
+  cr_error="$WORK/capsule-show-$cr_principal-$cr_capsule.err"
+  cr_status=0
   cr_record=$(aos capsule show "$cr_capsule" --agent "$cr_principal" \
-    --format toml 2>/dev/null) || return 1
+    --format toml 2>"$cr_error") || cr_status=$?
+  if [ "$cr_status" -ne 0 ]; then
+    # AOS marks an absent capsule with status 1 and this documented
+    # diagnostic. Any other failure can mean unreadable or truncated state,
+    # and must stop before workspace selection or default first-boot mutation.
+    if [ "$cr_status" -eq 1 ] \
+      && grep -Fqx "capsule '$cr_capsule' is not installed for agent '$cr_principal'" "$cr_error"
+    then
+      rm -f "$cr_error"
+      return 1
+    fi
+    cr_detail=$(tail -n 1 "$cr_error" 2>/dev/null || true)
+    rm -f "$cr_error"
+    die "could not read AOS capsule '$cr_capsule' for $cr_principal${cr_detail:+: $cr_detail}"
+  fi
+  rm -f "$cr_error"
+  CAPSULE_RECORD_FOUND=1
   CAPSULE_HASH=$(printf '%s\n' "$cr_record" \
     | sed -n 's/^wasm_hash = "\([0-9a-f]*\)"$/\1/p')
   printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' || return 1
@@ -804,13 +1011,10 @@ stage_release_metadata() {
 prepare_plugin_snapshot() {
   [ -z "$PLUGIN_SNAPSHOT" ] || return 0
   archive="$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
-  plugins_root="$AOS_HOME_DIR/extensions/oracles/plugins"
-  destination="$plugins_root/$ORACLES_VERSION"
-  stage="$plugins_root/.${ORACLES_VERSION}.tmp.$$"
+  stage="$WORK/plugin-stage"
   PLUGIN_STAGE=$stage
-  mkdir -p "$plugins_root"
-  rm -rf "$stage"
-  mkdir -p "$stage"
+  [ ! -e "$stage" ] || die "stale plugin snapshot stage exists"
+  mkdir "$stage"
   tar -xzf "$archive" -C "$stage" || die "could not extract the plugin snapshot"
   if find "$stage" ! -type f ! -type d -print -quit | grep . >/dev/null; then
     die "plugin snapshot extracted a link or special entry"
@@ -826,6 +1030,49 @@ prepare_plugin_snapshot() {
     [ -f "$stage/$required" ] && [ ! -L "$stage/$required" ] \
       || die "plugin snapshot is missing a regular $required"
   done
+  PLUGIN_SNAPSHOT="$stage"
+}
+
+capture_receipt_rollback_state() {
+  capture_host=$1
+  capture_root="$AOS_HOME_DIR/extensions/oracles/$capture_host"
+  ROLLBACK_RECEIPT_HOST=$capture_host
+  PRIOR_CURRENT_EXISTS=0
+  PRIOR_CURRENT_TARGET=""
+  PRIOR_PACK_LOCK_KIND="absent"
+  PRIOR_PACK_LOCK_BACKUP=""
+  PRIOR_PACK_LOCK_MODE=""
+  if [ -L "$capture_root/current" ]; then
+    PRIOR_CURRENT_EXISTS=1
+    PRIOR_CURRENT_TARGET=$(readlink "$capture_root/current")
+  fi
+  if [ -L "$capture_root/Pack.lock" ]; then
+    PRIOR_PACK_LOCK_KIND=symlink
+    PRIOR_PACK_LOCK_TARGET=$(readlink "$capture_root/Pack.lock")
+  elif [ -f "$capture_root/Pack.lock" ] && [ ! -L "$capture_root/Pack.lock" ]; then
+    PRIOR_PACK_LOCK_KIND=regular
+    PRIOR_PACK_LOCK_BACKUP="$WORK/rollback-$capture_host-Pack.lock"
+    cp -p "$capture_root/Pack.lock" "$PRIOR_PACK_LOCK_BACKUP" \
+      || die "could not preserve the prior regular Pack.lock"
+    PRIOR_PACK_LOCK_MODE=$(stat -c '%a' "$capture_root/Pack.lock" 2>/dev/null \
+      || stat -f '%Lp' "$capture_root/Pack.lock" 2>/dev/null)
+    case "$PRIOR_PACK_LOCK_MODE" in
+      ''|*[!0-7]*)
+        die "could not capture the prior $capture_host Pack.lock mode"
+        ;;
+    esac
+  elif [ -e "$capture_root/Pack.lock" ]; then
+    die "$capture_host Pack.lock is neither a regular file nor a symlink"
+  fi
+}
+
+activate_plugin_snapshot() {
+  stage="$WORK/plugin-stage"
+  destination="$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION"
+  [ -d "$stage" ] && [ -n "$PLUGIN_SNAPSHOT" ] && [ "$PLUGIN_SNAPSHOT" = "$stage" ] \
+    || die "plugin snapshot was not staged"
+  ensure_contained_directory "$AOS_HOME_DIR/extensions/oracles/plugins" "plugin snapshot root"
+  reject_destination_link "$destination" "plugin snapshot destination"
   if [ -e "$destination" ]; then
     if find "$destination" ! -type f ! -type d -print -quit | grep . >/dev/null; then
       die "installed plugin snapshot $ORACLES_VERSION contains a link or special entry"
@@ -834,10 +1081,12 @@ prepare_plugin_snapshot() {
       || die "installed plugin snapshot $ORACLES_VERSION differs from the staged release"
     rm -rf "$stage"
   else
+    reject_destination_link "$destination" "plugin snapshot destination"
     mv "$stage" "$destination" || die "could not activate the plugin snapshot"
+    NEW_PLUGIN_SNAPSHOT=$destination
   fi
   PLUGIN_STAGE=""
-  PLUGIN_SNAPSHOT="$destination"
+  PLUGIN_SNAPSHOT=""
 }
 
 validate_pack() {
@@ -876,7 +1125,8 @@ aos_release_has_capsule() {
   ar_name=$1
   ar_release=$2
   ar_artifact="$ar_release/capsules/$ar_name.capsule"
-  [ -f "$ar_release/Distro.toml" ] && [ ! -L "$ar_release/Distro.toml" ] \
+  [ -d "$ar_release/capsules" ] && [ ! -L "$ar_release/capsules" ] \
+    && [ -f "$ar_release/Distro.toml" ] && [ ! -L "$ar_release/Distro.toml" ] \
     && [ -f "$ar_release/capsule-assets.txt" ] && [ ! -L "$ar_release/capsule-assets.txt" ] \
     && [ -f "$ar_artifact" ] && [ ! -L "$ar_artifact" ] \
     && grep -Fqx "$ar_name.capsule" "$ar_release/capsule-assets.txt" \
@@ -907,41 +1157,6 @@ aos_release_has_capsule() {
     ' "$ar_release/Distro.toml"
 }
 
-install_aos_capsule_for_principal() {
-  iac_principal=$1
-  iac_name=$2
-  iac_artifact=$3
-  iac_install=1
-  AOS_CAPSULE_RESOLVED=0
-
-  if load_capsule_record "$iac_principal" "$iac_name"; then
-    case "$CAPSULE_SOURCE" in
-      "$iac_artifact") iac_install=0 ;;
-      "$AOS_HOME_DIR"/releases/*/capsules/"$iac_name".capsule) ;;
-      *)
-        say "Preserving locally supplied capsule '$iac_name' for $iac_principal without granting it as an AOS dependency."
-        return 0
-        ;;
-    esac
-  fi
-
-  if [ "$iac_install" -eq 1 ]; then
-    if [ "$ASSUME_YES" -eq 1 ]; then
-      aos --principal "$iac_principal" capsule install "$iac_artifact" --yes </dev/null
-    elif [ -r /dev/tty ]; then
-      aos --principal "$iac_principal" capsule install "$iac_artifact" </dev/tty
-    else
-      aos --principal "$iac_principal" capsule install "$iac_artifact"
-    fi
-  fi
-
-  load_capsule_record "$iac_principal" "$iac_name" \
-    || die "AOS capsule dependency '$iac_name' has no readable identity for $iac_principal"
-  [ "$CAPSULE_SOURCE" = "$iac_artifact" ] \
-    || die "AOS capsule dependency '$iac_name' did not resolve to the active product release"
-  AOS_CAPSULE_RESOLVED=1
-}
-
 resolve_aos_capsules() {
   rac_principal=$1
   rac_release="$AOS_HOME_DIR/releases/$ACTIVE_AOS_VERSION"
@@ -954,7 +1169,9 @@ resolve_aos_capsules() {
   grep -Fqx "version = \"$ACTIVE_AOS_VERSION\"" "$rac_release/Distro.toml" \
     || die "installed Unicity AOS release and distribution versions differ"
   RESOLVED_AOS_CAPSULES="$WORK/resolved-$rac_principal.aos-capsules"
+  RESOLVED_AOS_IDENTITIES="$WORK/resolved-$rac_principal.aos-identities"
   : > "$RESOLVED_AOS_CAPSULES"
+  : > "$RESOLVED_AOS_IDENTITIES"
 
   # Validate the complete required set before installing or granting any of
   # it. A partially compatible product release must not leave a half-applied
@@ -969,6 +1186,58 @@ resolve_aos_capsules() {
     fi
   done < "$CURRENT_AOS_CAPSULES"
 
+  # Preflight every existing identity before AOS can apply a distribution.
+  # A foreign source, malformed hash, or default/host disagreement is a reason
+  # to stop before init; it is not a state for the installer to reconcile by
+  # mutation.
+  while read -r rac_name rac_availability rac_extra; do
+    [ -n "$rac_name" ] || continue
+    [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
+    aos_release_has_capsule "$rac_name" "$rac_release" || continue
+    rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    rac_expected_host_hash=$(binding_hash "$CURRENT_PACK_BINDINGS" "$rac_name" 2>/dev/null || true)
+    rac_host_hash=""
+    if load_capsule_record "$rac_principal" "$rac_name"; then
+      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal is outside the signed operator distribution"
+      printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal has an invalid identity hash"
+      rac_host_hash=$CAPSULE_HASH
+    elif [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
+      die "AOS capsule dependency '$rac_name' for $rac_principal has a malformed identity"
+    fi
+    if load_capsule_record default "$rac_name"; then
+      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+        || die "default AOS capsule dependency '$rac_name' is outside the signed operator distribution"
+      printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
+        || die "default AOS capsule dependency '$rac_name' has an invalid identity hash"
+      rac_default_hash=$CAPSULE_HASH
+      if load_capsule_record "$rac_principal" "$rac_name"; then
+        [ "$CAPSULE_HASH" = "$rac_default_hash" ] \
+          || die "default and host identities disagree for AOS capsule '$rac_name'"
+      fi
+    elif [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
+      die "default AOS capsule dependency '$rac_name' has a malformed identity"
+    fi
+    if [ -n "$rac_host_hash" ] && [ -n "$rac_expected_host_hash" ]; then
+      [ "$rac_host_hash" = "$rac_expected_host_hash" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal differs from its signed pack identity"
+    fi
+  done < "$CURRENT_AOS_CAPSULES"
+
+  enter_product_workspace
+  repair_runtime_workspace_selection
+
+  # Only bootstrap the distribution after the complete signed subset has been
+  # proven present. A release missing a required Oracle dependency must not
+  # make a partial first-boot mutation.
+  ensure_base
+
+  # The default principal is the authenticated source for host grants. If its
+  # installed identities do not exactly match this active product release,
+  # reconcile the entire signed distribution in one AOS-owned transaction.
+  # Never approve or install one capsule at a time here.
+  rac_apply=0
   while read -r rac_name rac_availability rac_extra; do
     [ -n "$rac_name" ] || continue
     [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
@@ -976,10 +1245,43 @@ resolve_aos_capsules() {
       say "AOS capsule '$rac_name' is unavailable in Unicity AOS $ACTIVE_AOS_VERSION; continuing without it."
       continue
     fi
-    install_aos_capsule_for_principal \
-      "$rac_principal" "$rac_name" "$rac_release/capsules/$rac_name.capsule"
-    [ "$AOS_CAPSULE_RESOLVED" -eq 1 ] || continue
+    rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    if ! load_capsule_record default "$rac_name" \
+      || [ "$CAPSULE_SOURCE" != "$rac_artifact" ]
+    then
+      rac_apply=1
+    fi
+  done < "$CURRENT_AOS_CAPSULES"
+
+  if [ "$rac_apply" -eq 1 ]; then
+    say "Reconciling the signed Unicity AOS operator distribution..."
+    aos --principal default init --yes </dev/null \
+      || die "could not reconcile the signed Unicity AOS operator distribution"
+  fi
+
+  # Snapshot every selected default identity and reject a same-name foreign
+  # target before the grant transaction. agent modify intentionally preserves
+  # an existing target package; without this preflight that behavior could
+  # silently grant bytes outside the signed distribution.
+  while read -r rac_name rac_availability rac_extra; do
+    [ -n "$rac_name" ] || continue
+    [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
+    if ! aos_release_has_capsule "$rac_name" "$rac_release"; then
+      continue
+    fi
+    rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    load_capsule_record default "$rac_name" \
+      || die "signed AOS distribution has no readable identity for '$rac_name'"
+    [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+      || die "signed AOS distribution capsule '$rac_name' does not resolve to the active release"
+    rac_hash=$CAPSULE_HASH
+    printf '%s %s\n' "$rac_name" "$rac_hash" >> "$RESOLVED_AOS_IDENTITIES"
     printf '%s\n' "$rac_name" >> "$RESOLVED_AOS_CAPSULES"
+    if load_capsule_record "$rac_principal" "$rac_name"; then
+      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+        && [ "$CAPSULE_HASH" = "$rac_hash" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
+    fi
   done < "$CURRENT_AOS_CAPSULES"
 }
 
@@ -1012,14 +1314,15 @@ stage_pack() {
 install_pack() {
   host=$1
   principal=$(principal_for "$host")
+  capture_receipt_rollback_state "$host"
   stage_pack "$host"
   stage=$STAGED_PACK
   validate_pack "$host" "$principal" "$stage/Pack.toml"
   load_previous_bindings "$host" "$principal"
   OBSOLETE_BINDINGS="$WORK/obsolete-$host.bindings"
   : > "$OBSOLETE_BINDINGS"
-  ensure_principal "$host" "$principal"
   resolve_aos_capsules "$principal"
+  ensure_principal "$host" "$principal"
 
   for capsule in $(capsules_for "$host"); do
     expected_hash=$(binding_hash "$CURRENT_PACK_BINDINGS" "$capsule") \
@@ -1063,6 +1366,17 @@ install_pack() {
   done < "$RESOLVED_AOS_CAPSULES"
   "$@" >/dev/null
 
+  while read -r capsule expected_hash capsule_extra; do
+    [ -n "$capsule" ] || continue
+    [ -z "${capsule_extra:-}" ] || die "invalid resolved AOS capsule identity"
+    expected_source="$AOS_HOME_DIR/releases/$ACTIVE_AOS_VERSION/capsules/$capsule.capsule"
+    load_capsule_record "$principal" "$capsule" \
+      || die "AOS capsule grant '$capsule' has no readable identity for $principal"
+    [ "$CAPSULE_SOURCE" = "$expected_source" ] \
+      && [ "$CAPSULE_HASH" = "$expected_hash" ] \
+      || die "AOS capsule grant '$capsule' for $principal differs from the signed operator distribution"
+  done < "$RESOLVED_AOS_IDENTITIES"
+
   while read -r previous_name previous_hash previous_extra; do
     [ -n "$previous_name" ] || continue
     [ -z "${previous_extra:-}" ] || die "invalid previous ownership state"
@@ -1092,6 +1406,14 @@ reconcile_obsolete_bindings() {
   done < "$OBSOLETE_BINDINGS"
 
   [ -s "$ro_removals" ] || return 0
+  while IFS= read -r ro_name; do
+    [ -n "$ro_name" ] || continue
+    if ! load_capsule_record "$ro_principal" "$ro_name" \
+      && [ "$CAPSULE_RECORD_FOUND" -eq 1 ]
+    then
+      die "obsolete AOS capsule '$ro_name' for $ro_principal has a malformed identity"
+    fi
+  done < "$ro_removals"
   set -- aos --principal default agent modify "$ro_principal"
   while IFS= read -r ro_name; do
     set -- "$@" --remove-capsule "$ro_name"
@@ -1138,9 +1460,8 @@ write_receipt() {
   destination="$releases/$ORACLES_VERSION"
   stage="$receipt_root/.receipt-${ORACLES_VERSION}.$$"
   RECEIPT_STAGE=$stage
-  mkdir -p "$releases"
-  rm -rf "$stage"
-  mkdir -p "$stage"
+  verify_receipt_commit_paths "$host"
+  mkdir "$stage"
   cp "$pack_stage/Pack.toml" "$stage/Pack.lock"
   write_managed_capsules "$CURRENT_PACK_BINDINGS" "$stage/ManagedCapsules.toml"
   cp "$RELEASE_STAGE/BLAKE3SUMS.txt" "$stage/BLAKE3SUMS.txt"
@@ -1174,11 +1495,15 @@ write_receipt() {
       || die "installed $host receipt $ORACLES_VERSION differs from the staged release"
     rm -rf "$stage"
   else
+    verify_receipt_commit_paths "$host"
     mv "$stage" "$destination" || die "could not commit the $host oracle receipt"
+    NEW_RECEIPT=$destination
   fi
   RECEIPT_STAGE=""
 
+  verify_receipt_commit_paths "$host"
   atomic_symlink "releases/$ORACLES_VERSION" "$receipt_root/current"
+  verify_receipt_commit_paths "$host"
   atomic_symlink current/Pack.lock "$receipt_root/Pack.lock" 1
   if [ -f "$destination/Pack.toml.sigstore.json" ]; then
     atomic_symlink current/Pack.toml.sigstore.json \
@@ -1187,30 +1512,37 @@ write_receipt() {
     rm -f "$receipt_root/Pack.lock.sigstore.json"
   fi
   say "✓ $host oracle pack $ORACLES_VERSION committed"
+  mark_host_committed "$host"
+  NEW_RECEIPT=""
 }
 
 ensure_b3sum
 hosts=$(select_hosts)
+if [ -e "$AOS_HOME_DIR" ]; then
+  AOS_HOME_EXISTED=1
+fi
+INSTALL_TRANSACTION_ACTIVE=1
+ensure_install_destinations "$hosts"
 acquire_install_lock
-ensure_aos
 stage_release_metadata
+ensure_aos
 if [ "$PLUGINS_ONLY" -eq 1 ]; then
   prepare_plugin_snapshot
   for host in $hosts; do
     install_plugin "$host"
+    activate_plugin_snapshot
+    mark_host_committed "$host"
   done
   say "Unicity AOS plugin installation complete. Start a new host session to provision its oracle pack."
   exit 0
 fi
-enter_product_workspace
-repair_runtime_workspace_selection
-ensure_base
 for host in $hosts; do
   install_pack "$host"
   prepare_plugin_snapshot
   if [ "$SKIP_HOST_PLUGIN" -eq 0 ]; then
     install_plugin "$host"
   fi
+  activate_plugin_snapshot
   reconcile_obsolete_bindings "$(principal_for "$host")"
   write_receipt "$host" "$(principal_for "$host")" "$STAGED_PACK"
 done

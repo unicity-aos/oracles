@@ -8,7 +8,135 @@
 # belongs exclusively to the MCP JSON-RPC transport.
 set -eu
 
-HOST_WORKSPACE=$(pwd -P 2>/dev/null || pwd)
+if [ -z "${AOS_HOST:-}" ]; then
+  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
+    AOS_HOST=grok
+  else
+    AOS_HOST=claude
+  fi
+fi
+case "$AOS_HOST" in
+  claude) expected_principal=claude-code ;;
+  grok) expected_principal=grok-code ;;
+  *)
+    printf 'aos-up: unsupported host '"'"'%s'"'"'; want claude or grok\n' "$AOS_HOST" >&2
+    exit 2
+    ;;
+esac
+
+ambient_conflict=""
+for ambient_name in ASTRID_PRINCIPAL_ID AOS_PRINCIPAL_ID; do
+  case "$ambient_name" in
+    ASTRID_PRINCIPAL_ID) ambient_value=${ASTRID_PRINCIPAL_ID:-} ;;
+    AOS_PRINCIPAL_ID) ambient_value=${AOS_PRINCIPAL_ID:-} ;;
+  esac
+  case "$ambient_value" in
+    ''|'${user_config.principal}') ;;
+    "$expected_principal") ;;
+    *)
+      ambient_conflict=$ambient_value
+      break
+      ;;
+  esac
+done
+if [ -n "$ambient_conflict" ]; then
+  printf 'aos-up: refusing non-%s principal on the %s plugin path\n' \
+    "$expected_principal" "$AOS_HOST" >&2
+  exit 2
+fi
+
+principal_declared=0
+principal_value=""
+_aos_quote() {
+  _aos_quoted=$(printf '%s' "$1" | sed "s/'/'\\\\''/g")
+  printf "'%s'" "$_aos_quoted"
+}
+pass_through_arguments=""
+remaining_arguments=$#
+if [ "${1:-}" = -- ]; then
+  shift
+  remaining_arguments=$((remaining_arguments - 1))
+fi
+while [ "$remaining_arguments" -gt 0 ]; do
+  case "$1" in
+    --)
+      printf 'aos-up: user end-of-options markers are not supported after the first argument\n' >&2
+      exit 2
+      ;;
+    --principal)
+      [ "$principal_declared" -eq 0 ] || {
+        printf 'aos-up: multiple principal arguments are not supported\n' >&2
+        exit 2
+      }
+      shift
+      remaining_arguments=$((remaining_arguments - 1))
+      [ "$remaining_arguments" -gt 0 ] || {
+        printf 'aos-up: --principal requires %s\n' "$expected_principal" >&2
+        exit 2
+      }
+      principal_declared=1
+      principal_value=$1
+      case "$principal_value" in
+        "$expected_principal"|'${user_config.principal}') ;;
+        *)
+          printf 'aos-up: refusing non-%s principal on the %s plugin path\n' \
+            "$expected_principal" "$AOS_HOST" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      remaining_arguments=$((remaining_arguments - 1))
+      ;;
+    --principal=*)
+      [ "$principal_declared" -eq 0 ] || {
+        printf 'aos-up: multiple principal arguments are not supported\n' >&2
+        exit 2
+      }
+      principal_declared=1
+      principal_value=${1#--principal=}
+      case "$principal_value" in
+        "$expected_principal"|'${user_config.principal}') ;;
+        *)
+          printf 'aos-up: refusing non-%s principal on the %s plugin path\n' \
+            "$expected_principal" "$AOS_HOST" >&2
+          exit 2
+          ;;
+      esac
+      shift
+      remaining_arguments=$((remaining_arguments - 1))
+      ;;
+    *)
+      pass_through_arguments="$pass_through_arguments $(_aos_quote "$1")"
+      shift
+      remaining_arguments=$((remaining_arguments - 1))
+      ;;
+  esac
+done
+
+principal="${ASTRID_PRINCIPAL_ID:-}"
+if [ -z "$principal" ]; then
+  principal="${AOS_PRINCIPAL_ID:-}"
+fi
+if [ "$principal_declared" -eq 1 ]; then
+  principal=$principal_value
+fi
+case "$principal" in
+  ""|'${user_config.principal}') principal=$expected_principal ;;
+esac
+if [ "$principal" != "$expected_principal" ]; then
+  printf 'aos-up: refusing non-%s principal on the %s plugin path\n' \
+    "$expected_principal" "$AOS_HOST" >&2
+  exit 2
+fi
+ASTRID_PRINCIPAL_ID=$principal
+export ASTRID_PRINCIPAL_ID
+if [ -n "$pass_through_arguments" ]; then
+  eval "set --$pass_through_arguments"
+else
+  while [ "$#" -gt 0 ]; do
+    shift
+  done
+fi
 
 log() { printf 'aos-up: %s\n' "$*" >&2; }
 
@@ -21,14 +149,24 @@ if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
 fi
 export AOS_PLUGIN_ROOT
 
-if [ -z "${AOS_HOST:-}" ]; then
-  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
-    AOS_HOST=grok
-  else
-    AOS_HOST=claude
-  fi
+packaged_host=""
+if [ ! -L "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ] \
+  && [ -f "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ]
+then
+  packaged_host=claude
+elif [ ! -L "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ] \
+  && [ -f "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ]
+then
+  packaged_host=grok
 fi
+if [ "$packaged_host" != "$AOS_HOST" ]; then
+  log "plugin identity is not $AOS_HOST"
+  exit 2
+fi
+
 export AOS_HOST
+
+HOST_WORKSPACE=$(pwd -P 2>/dev/null || pwd)
 
 RESOLVE="$AOS_PLUGIN_ROOT/bin/lib-aos-resolve.sh"
 if [ ! -f "$RESOLVE" ]; then
@@ -41,6 +179,21 @@ AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 
 hook_segment() {
   printf '%s' "$1" | sed 's/[^A-Za-z0-9_-]/-/g; s/--*/-/g; s/^-//; s/-$//'
+}
+
+capsule_ready() {
+  capsule_output=""
+  capsule_status=0
+  capsule_output=$("$AOS" capsule show aos-mcp --agent "${AOS_HOST}-code" 2>&1) ||
+    capsule_status=$?
+  [ "$capsule_status" -eq 0 ] && return 0
+  if [ "$capsule_status" -eq 1 ] \
+    && [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent '${AOS_HOST}-code'" ]
+  then
+    return 1
+  fi
+  printf 'aos-up: AOS capsule transport failed: %s\n' "$capsule_output" >&2
+  exit 93
 }
 
 hook_json_escape() {
@@ -162,22 +315,27 @@ emit_host_hook() {
   trap 'rm -f "$tmp"' EXIT HUP INT TERM
   cat > "$tmp" || true
   session_id=$(host_session_id "$host" "$tmp")
-  if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
-    token="$ASTRID_HOOK_TOKEN"
-  else
-    token=$(host_hook_token "$host" "$session_id") || return 1
-  fi
   if ! aos_resolve_apply 2>/dev/null; then
     [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
     log "could not resolve the AOS command for the $host hook"
     return 127
+  fi
+  capsule_ready
+  if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
+    token="$ASTRID_HOOK_TOKEN"
+  else
+    token=$(host_hook_token "$host" "$session_id") || return 1
   fi
   if ! aos_enter_product_workspace; then
     [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
     log "could not enter the AOS runtime workspace for the $host hook"
     return 1
   fi
-  principal="${ASTRID_PRINCIPAL_ID:-$host-code}"
+  principal="${ASTRID_PRINCIPAL_ID:-$expected_principal}"
+  [ "$principal" = "$expected_principal" ] || {
+    log "refusing non-$expected_principal principal for the $host plugin"
+    return 1
+  }
   workspace=$(printf '%s\n' "$HOST_WORKSPACE" | cksum | sed 's/ .*//')
   context=""
   if context=$(ASTRID_HOOK_TOKEN="$token" "$AOS" --principal "$principal" hook \
@@ -200,10 +358,6 @@ if [ "${1:-}" = hook ]; then
   exit $?
 fi
 
-aos_enter_product_workspace || {
-  log "could not enter the AOS product runtime workspace"
-  exit 1
-}
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/$AOS_HOST/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$AOS_PLUGIN_ROOT/bin/aos-install"
@@ -224,11 +378,23 @@ printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || { log "plugin snapshot has an invalid Oracle release identity"; exit 1; }
 
 host_ready() {
+  if ! aos_resolve_apply 2>/dev/null; then
+    return 1
+  fi
+  if ! capsule_ready; then
+    return 1
+  fi
   [ -r "$PACK_RECEIPT" ] \
-    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT" \
-    && aos_resolve_apply 2>/dev/null \
-    && "$AOS" capsule show aos-mcp --agent "${AOS_HOST}-code" >/dev/null 2>&1
+    && grep -Fqx "version = \"$ORACLE_VERSION\"" "$PACK_RECEIPT"
 }
+
+# An unreadable or stale Pack.lock never suppresses the transport probe. Only
+# capsule_ready's documented exact absence result may continue to bootstrap.
+if aos_resolve_apply 2>/dev/null; then
+  if ! capsule_ready; then
+    :
+  fi
+fi
 
 install_lock_reclaimable() {
   owner=""
@@ -291,6 +457,10 @@ bootstrap_failed() {
 }
 
 if ! host_ready; then
+  aos_enter_product_workspace || {
+    log "could not enter the AOS product runtime workspace"
+    exit 1
+  }
   if ! start_bootstrap; then
     log "could not find this plugin's AOS installer."
     log "install AOS from https://aos.unicity.ai/install.sh, then provision the $AOS_HOST oracle pack."
@@ -319,17 +489,7 @@ if [ -n "$BOOTSTRAP_PID" ]; then
 fi
 [ -z "$BOOTSTRAP_LOG" ] || rm -f "$BOOTSTRAP_LOG"
 
-PRINCIPAL=""
-if [ "${1:-}" = "--principal" ]; then
-  shift
-  PRINCIPAL="${1:-}"
-  [ "$#" -gt 0 ] && shift
-fi
-case "$PRINCIPAL" in
-  ""|'${user_config.principal}') PRINCIPAL="${AOS_HOST}-code" ;;
-esac
-
 # AOS owns daemon startup, runtime keys, authentication, and home selection.
 # Any post-commit principal/capsule failure remains visible on stderr with the
 # product CLI's recovery guidance.
-exec "$AOS" --principal "$PRINCIPAL" mcp serve "$@"
+exec "$AOS" --principal "$principal" mcp serve "$@"

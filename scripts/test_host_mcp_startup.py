@@ -142,13 +142,21 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
     args_log = test_root / "hook-args"
     token_log = test_root / "hook-tokens"
     payload_log = test_root / "hook-payload"
+    hook_cwd = test_root / "hook-cwd"
     workspace.mkdir(parents=True)
     write_executable(
         fake_aos,
         "#!/bin/sh\n"
         "set -eu\n"
         'printf "%s\\n" "$*" >> "$TEST_HOOK_ARGS"\n'
-        'printf "%s\\n" "$ASTRID_HOOK_TOKEN" >> "$TEST_HOOK_TOKENS"\n'
+        'if [ "${TEST_HOOK_TRANSPORT_FAILURE:-0}" = 1 ]; then\n'
+        '  printf "%s\\n" '
+        '"error: daemon transport failed while reading capsule metadata" >&2\n'
+        "  exit 93\n"
+        "fi\n"
+        'case "$1" in --principal) '
+        'pwd -P > "$TEST_HOOK_CWD"; '
+        'printf "%s\\n" "${ASTRID_HOOK_TOKEN:-}" >> "$TEST_HOOK_TOKENS" ;; esac\n'
         'cat > "$TEST_HOOK_PAYLOAD"\n'
         'printf "%s\\n" "private same-turn context"\n',
     )
@@ -166,6 +174,7 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
         "TEST_HOOK_ARGS": str(args_log),
         "TEST_HOOK_TOKENS": str(token_log),
         "TEST_HOOK_PAYLOAD": str(payload_log),
+        "TEST_HOOK_CWD": str(hook_cwd),
         "TMPDIR": str(test_root),
     }
     payload = json.dumps(
@@ -193,17 +202,476 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
         }
 
     invocations = args_log.read_text().splitlines()
-    assert len(invocations) == 2, invocations
+    hook_invocations = [
+        line for line in invocations if line.startswith("--principal")
+    ]
+    assert len(invocations) == 4 and len(hook_invocations) == 2, invocations
+    assert invocations.count(f"capsule show aos-mcp --agent {host}-code") == 2
     expected = (
         f"--principal {spec['principal']} hook --host {host} "
         f"--session {host}-hook-session --event user_prompt_submit --workspace cwd-"
     )
-    assert all(invocation.startswith(expected) for invocation in invocations), invocations
+    assert all(
+        invocation.startswith(expected) for invocation in hook_invocations
+    ), hook_invocations
     assert all(" emit " not in f" {invocation} " for invocation in invocations)
     tokens = token_log.read_text().splitlines()
     assert len(tokens) == 2 and tokens[0] == tokens[1], tokens
     assert 32 <= len(tokens[0]) <= 128 and tokens[0].isalnum(), tokens[0]
     assert json.loads(payload_log.read_text()) == json.loads(payload)
+
+    wrong_principal = "wrong-code"
+    principal_environment = dict(environment)
+    principal_environment["ASTRID_PRINCIPAL_ID"] = wrong_principal
+    principal_environment["TEST_HOOK_ARGS"] = str(args_log) + ".principal"
+    result = subprocess.run(
+        command,
+        cwd=workspace,
+        env=principal_environment,
+        input=payload,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode != 0, (result.stdout, result.stderr)
+    assert f"refusing non-{spec['principal']} principal" in result.stderr
+    assert not Path(str(args_log) + ".principal").exists()
+
+    transport_environment = dict(environment)
+    transport_plugin_data = test_root / "plugin-data-transport"
+    transport_environment["PLUGIN_DATA"] = str(transport_plugin_data)
+    transport_environment["TEST_HOOK_TRANSPORT_FAILURE"] = "1"
+    transport_environment["TEST_HOOK_ARGS"] = str(args_log) + ".transport"
+    transport_environment["TEST_HOOK_CWD"] = str(hook_cwd) + ".transport"
+    transport = subprocess.run(
+        command,
+        cwd=workspace,
+        env=transport_environment,
+        input=payload,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert transport.returncode == 93, (transport.stdout, transport.stderr)
+    assert (
+        "daemon transport failed while reading capsule metadata" in transport.stderr
+    )
+    assert Path(transport_environment["TEST_HOOK_ARGS"]).read_text().strip() == (
+        f"capsule show aos-mcp --agent {host}-code"
+    )
+    assert not Path(transport_environment["TEST_HOOK_CWD"]).exists()
+    assert not transport_plugin_data.exists()
+    assert not (home / "cache").exists()
+
+
+def exercise_prebootstrap_invalid_principal(host: str, root: Path) -> None:
+    spec = HOSTS[host]
+    test_root = root / f"{host}-prebootstrap-principal"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    fake_aos = test_root / "bin" / "aos"
+    fake_installer = test_root / "fake-installer"
+    aos_args = test_root / "aos-args"
+    installer_args = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        "exit 0\n",
+    )
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALLER_ARGS"\n'
+        "exit 1\n",
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_BIN": str(fake_aos),
+        "AOS_HOME": str(home),
+        "AOS_HOST": host,
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "AOS_PLUGIN_ROOT": str(ROOT / f"plugins/{host}"),
+        str(HOSTS[host]["root_var"]): str(ROOT / f"plugins/{host}"),
+        "PATH": "/usr/bin:/bin",
+        "TMPDIR": str(test_root),
+        "TEST_AOS_ARGS": str(aos_args),
+        "TEST_INSTALLER_ARGS": str(installer_args),
+    }
+    cases = (
+        (["--help", "--", "--foo"], "-- --foo"),
+        (["--", "--", "--help"], "-- --help"),
+        (["--first", "--principal", "foreign"], "principal foreign"),
+        (["--help", "--principal=foreign"], "principal=foreign"),
+        (["--", "--principal", "foreign"], "principal foreign"),
+        (["--", "--principal=foreign"], "principal=foreign"),
+    )
+    for arguments, needle in cases:
+        result = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), *arguments],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode != 0, (arguments, result.stdout, result.stderr)
+        if "--principal" in arguments or "--principal=foreign" in arguments:
+            assert f"refusing non-{spec['principal']} principal" in result.stderr, (
+                arguments,
+                result.stderr,
+            )
+        else:
+            assert (
+                "user end-of-options markers are not supported after the first argument"
+                in result.stderr
+            ), (arguments, result.stderr)
+            assert needle in " ".join(arguments)
+        assert not aos_args.exists(), arguments
+        assert not installer_args.exists(), arguments
+    assert not home.exists(), arguments
+    assert not (home / "runtime").exists(), arguments
+    assert not (home / "cache").exists(), arguments
+
+    for principal_variable, expected_ambient in (
+        ("ASTRID_PRINCIPAL_ID", "foreign-principal"),
+        ("AOS_PRINCIPAL_ID", "foreign-principal"),
+    ):
+        conflict_environment = dict(environment)
+        conflict_environment[principal_variable] = expected_ambient
+        conflict = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), "--principal", spec["principal"]],
+            cwd=workspace,
+            env=conflict_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert conflict.returncode != 0, (principal_variable, conflict.stdout, conflict.stderr)
+        assert f"refusing non-{spec['principal']} principal" in conflict.stderr
+        assert not aos_args.exists(), principal_variable
+        assert not installer_args.exists(), principal_variable
+
+    placeholder = "${user_config.principal}"
+    masked_conflicts = (
+        {"ASTRID_PRINCIPAL_ID": placeholder, "AOS_PRINCIPAL_ID": "foreign-principal"},
+        {"ASTRID_PRINCIPAL_ID": "foreign-principal", "AOS_PRINCIPAL_ID": placeholder},
+    )
+    for masked_conflict in masked_conflicts:
+        conflict_environment = dict(environment)
+        conflict_environment.update(masked_conflict)
+        conflict = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), "--principal", spec["principal"]],
+            cwd=workspace,
+            env=conflict_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert conflict.returncode != 0, (masked_conflict, conflict.stdout, conflict.stderr)
+        assert f"refusing non-{spec['principal']} principal" in conflict.stderr
+        assert not aos_args.exists(), masked_conflict
+        assert not installer_args.exists(), masked_conflict
+
+    # The doctor honors the same ambient principal boundary before it can touch
+    # the product workspace or provisioning path.
+    for principal_variable in ("ASTRID_PRINCIPAL_ID", "AOS_PRINCIPAL_ID"):
+        doctor_environment = dict(environment)
+        doctor_environment[principal_variable] = "foreign-principal"
+        doctor = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+            cwd=workspace,
+            env=doctor_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert doctor.returncode != 0, (principal_variable, doctor.stderr)
+        assert f"refusing non-{spec['principal']} principal" in doctor.stderr
+        assert not aos_args.exists(), principal_variable
+        assert not installer_args.exists(), principal_variable
+        assert not home.exists(), principal_variable
+
+    for masked_conflict in masked_conflicts:
+        doctor_environment = dict(environment)
+        doctor_environment.update(masked_conflict)
+        doctor = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+            cwd=workspace,
+            env=doctor_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert doctor.returncode != 0, (masked_conflict, doctor.stdout, doctor.stderr)
+        assert f"refusing non-{spec['principal']} principal" in doctor.stderr
+        assert not aos_args.exists(), masked_conflict
+        assert not installer_args.exists(), masked_conflict
+        assert not home.exists(), masked_conflict
+
+
+def exercise_host_plugin_identity(host: str, root: Path) -> None:
+    test_root = root / f"{host}-plugin-identity"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    fake_aos = test_root / "bin" / "aos"
+    fake_installer = test_root / "fake-installer"
+    aos_args = test_root / "aos-args"
+    installer_args = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        "exit 0\n",
+    )
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALLER_ARGS"\n'
+        "exit 1\n",
+    )
+
+    other_host = "grok" if host == "claude" else "claude"
+    mismatched_root = test_root / f"regular-{other_host}-root"
+    mismatched_marker = mismatched_root / f".{other_host}-plugin/plugin.json"
+    mismatched_marker.parent.mkdir(parents=True)
+    mismatched_marker.write_text("{}\n")
+
+    symlinked_root = test_root / "symlinked-root"
+    actual_marker = test_root / "actual-plugin.json"
+    symlinked_marker = symlinked_root / f".{host}-plugin/plugin.json"
+    symlinked_marker.parent.mkdir(parents=True)
+    actual_marker.write_text("{}\n")
+    symlinked_marker.symlink_to(actual_marker)
+
+    nonregular_root = test_root / "nonregular-root"
+    nonregular_marker = nonregular_root / f".{host}-plugin/plugin.json"
+    nonregular_marker.parent.mkdir(parents=True)
+    os.mkfifo(nonregular_marker)
+
+    missing_root = test_root / "missing-root"
+    missing_root.mkdir()
+    common_launcher = ROOT / "plugins/common/bin/aos-up"
+    vendored_launcher = ROOT / f"plugins/{host}/bin/aos-up"
+    cases = (
+        ("missing common", missing_root, common_launcher),
+        ("missing vendored", missing_root, vendored_launcher),
+        ("mismatched", mismatched_root, common_launcher),
+        ("symlinked", symlinked_root, common_launcher),
+        ("non-regular", nonregular_root, vendored_launcher),
+    )
+    for label, plugin_root, launcher in cases:
+        environment = {
+            "HOME": str(test_root / "home"),
+            "AOS_BIN": str(fake_aos),
+            "AOS_HOME": str(home),
+            "AOS_HOST": host,
+            "AOS_ORACLES_INSTALLER": str(fake_installer),
+            "AOS_PLUGIN_ROOT": str(plugin_root),
+            str(HOSTS[host]["root_var"]): str(plugin_root),
+            "PATH": "/usr/bin:/bin",
+            "TMPDIR": str(test_root),
+            "TEST_AOS_ARGS": str(aos_args),
+            "TEST_INSTALLER_ARGS": str(installer_args),
+        }
+        result = subprocess.run(
+            [str(launcher), "--help"],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 2, (label, result.stdout, result.stderr)
+        assert f"plugin identity is not {host}" in result.stderr, (label, result.stderr)
+        assert result.stdout == "", (label, result.stdout)
+        assert not aos_args.exists(), label
+        assert not installer_args.exists(), label
+        assert not home.exists(), label
+        assert not (home / "extensions/oracles").exists(), label
+
+
+def exercise_doctor_rejects_unknown_host(host: str, root: Path) -> None:
+    test_root = root / f"{host}-doctor-unknown-host"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "workspace"
+    fake_aos = test_root / "bin" / "aos"
+    fake_installer = test_root / "fake-installer"
+    aos_args = test_root / "aos-args"
+    installer_args = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    write_executable(
+        fake_aos,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        "exit 0\n",
+    )
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALLER_ARGS"\n'
+        "exit 1\n",
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_BIN": str(fake_aos),
+        "AOS_HOME": str(home),
+        "AOS_HOST": host,
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "AOS_PLUGIN_ROOT": str(ROOT / f"plugins/{host}"),
+        "PATH": "/usr/bin:/bin",
+        "TEST_AOS_ARGS": str(aos_args),
+        "TEST_INSTALLER_ARGS": str(installer_args),
+    }
+    for bad_host in ("codex", "evil"):
+        result = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+            cwd=workspace,
+            env={**environment, "AOS_HOST": bad_host},
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert result.returncode == 2, (bad_host, result.stdout, result.stderr)
+        assert f"unsupported host '{bad_host}'; want claude or grok" in result.stderr
+        assert result.stdout == "", result.stdout
+        assert not aos_args.exists(), bad_host
+        assert not installer_args.exists(), bad_host
+        assert not home.exists(), bad_host
+
+    other_host = "grok" if host == "claude" else "claude"
+    mismatch = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+        cwd=workspace,
+        env={**environment, "AOS_HOST": other_host},
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert mismatch.returncode == 2, (mismatch.stdout, mismatch.stderr)
+    assert f"plugin identity is not {other_host}" in mismatch.stderr
+    assert not aos_args.exists(), other_host
+    assert not installer_args.exists(), other_host
+
+
+def exercise_default_host_without_injection(host: str, root: Path) -> None:
+    test_root = root / f"{host}-default-host"
+    test_root.mkdir()
+    installer = test_root / "missing-installer"
+    write_executable(installer, "#!/bin/sh\nexit 77\n")
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_HOME": str(test_root / "home/.aos"),
+        str(HOSTS[host]["root_var"]): str(ROOT / f"plugins/{host}"),
+        "AOS_ORACLES_INSTALLER": str(installer),
+        "PATH": "/usr/bin:/bin",
+    }
+    result = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-up"), "--help"],
+        cwd=test_root,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 1, (result.returncode, result.stdout, result.stderr)
+    assert "automatic claude provisioning failed" in result.stderr or (
+        "automatic grok provisioning failed" in result.stderr
+    )
+
+
+def exercise_transport_failure(host: str, root: Path) -> None:
+    spec = HOSTS[host]
+    test_root = root / f"{host}-capsule-transport"
+    home = test_root / "home" / ".aos"
+    workspace = test_root / "user-project"
+    fake_installer = test_root / "fake-installer"
+    aos_args = test_root / "aos-args"
+    installer_args = test_root / "installer-args"
+    workspace.mkdir(parents=True)
+    (home / "bin").mkdir(parents=True)
+    write_executable(
+        fake_installer,
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_INSTALLER_ARGS"\n'
+        "exit 1\n",
+    )
+    write_executable(
+        home / "bin/aos",
+        "#!/bin/sh\n"
+        'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
+        'case " ${*:-} " in\n'
+        '  *" capsule show aos-mcp "*)\n'
+        '    printf "%s\\n" '
+        '"error: daemon transport failed while reading capsule metadata" >&2\n'
+        "    exit 93\n"
+        "    ;;\n"
+        "esac\n",
+    )
+    environment = {
+        "HOME": str(test_root / "home"),
+        "AOS_BIN": str(home / "bin/aos"),
+        "AOS_HOME": str(home),
+        "AOS_HOST": host,
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
+        "AOS_PLUGIN_ROOT": str(ROOT / f"plugins/{host}"),
+        str(spec["root_var"]): str(ROOT / f"plugins/{host}"),
+        "PATH": "/usr/bin:/bin",
+        "TEST_AOS_ARGS": str(aos_args),
+        "TEST_INSTALLER_ARGS": str(installer_args),
+    }
+    launcher = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-up")],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert launcher.returncode == 93, (launcher.returncode, launcher.stderr)
+    assert "daemon transport failed while reading capsule metadata" in launcher.stderr
+    doctor = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert doctor.returncode == 93, (doctor.returncode, doctor.stderr)
+    assert "daemon transport failed while reading capsule metadata" in doctor.stderr
+    assert not installer_args.exists()
+    assert not (home / f"extensions/oracles/{host}/Pack.lock").exists()
+    assert not (home / "runtime").exists()
+    assert not (home / "cache").exists()
 
 
 def exercise_host(host: str, root: Path) -> None:
@@ -265,7 +733,7 @@ def exercise_host(host: str, root: Path) -> None:
     wait_for(wait_marker, process)
     receipt = home / f"extensions/oracles/{host}/Pack.lock"
     receipt.parent.mkdir(parents=True)
-    receipt.write_text('version = "0.2.6"\n')
+    receipt.write_text('version = "0.3.0"\n')
     wait_gate.touch()
     assert_success(process)
 
@@ -273,6 +741,68 @@ def exercise_host(host: str, root: Path) -> None:
     assert args_log.read_text().strip() == (
         f"--principal {spec['principal']} mcp serve"
     )
+
+    args_before = args_log.read_text()
+    for bad_environment, bad_arguments in (
+        ({**environment, "ASTRID_PRINCIPAL_ID": "wrong-code"}, []),
+        (environment, ["--principal", "wrong-code"]),
+        (environment, ["--principal=wrong-code"]),
+    ):
+        rejected = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), *bad_arguments],
+            cwd=workspace,
+            env=bad_environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert (
+            f"refusing non-{spec['principal']} principal on the {host} plugin path"
+            in rejected.stderr
+        )
+    added_arguments = args_log.read_text()[len(args_before):].splitlines()
+    assert not any(argument.endswith(" mcp serve") for argument in added_arguments)
+
+    # A user end-of-options marker is parsed out and never reaches AOS argv.
+    user_marker = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-up"), "--", "--help"],
+        cwd=workspace,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        timeout=5,
+        check=False,
+    )
+    assert user_marker.returncode == 0, (user_marker.stdout, user_marker.stderr)
+    assert args_log.read_text().splitlines()[-1] == (
+        f"--principal {spec['principal']} mcp serve --help"
+    )
+
+    args_before_markers = args_log.read_text()
+    for marker_arguments in (
+        ["--", "--", "--help"],
+        ["--help", "--", "--foo"],
+    ):
+        marker = subprocess.run(
+            [str(ROOT / f"plugins/{host}/bin/aos-up"), *marker_arguments],
+            cwd=workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            check=False,
+        )
+        assert marker.returncode != 0, (marker_arguments, marker.stdout, marker.stderr)
+        assert (
+            "user end-of-options markers are not supported after the first argument"
+            in marker.stderr
+        )
+    assert args_log.read_text() == args_before_markers
 
     # A receipt alone is not ready until the product command is executable.
     (home / "bin/aos").unlink()
@@ -319,7 +849,7 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
         'done\n'
         '[ "$host" = "$TEST_EXPECTED_HOST" ]\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.3.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'pwd -P > "$TEST_AOS_CWD"\n'
@@ -347,7 +877,7 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
     assert f"--host {host}" in invocation
     assert "--skip-host-plugin" in invocation
     assert "--yes" in invocation
-    assert "--oracle-version 0.2.6" in invocation
+    assert "--oracle-version 0.3.0" in invocation
     assert "--claude-auth" not in invocation
     assert "--claude-mode" not in invocation
 
@@ -389,7 +919,7 @@ def exercise_doctor_waits_for_concurrent_bootstrap(host: str, root: Path) -> Non
         "fi\n"
         'host="$TEST_EXPECTED_HOST"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.3.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'case " ${*:-} " in\n'
@@ -490,7 +1020,7 @@ def exercise_abandoned_lock_recovery(
         "fi\n"
         'host="$TEST_EXPECTED_HOST"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.3.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
@@ -592,7 +1122,7 @@ def exercise_concurrent_launchers_use_private_logs(host: str, root: Path) -> Non
         '  while [ ! -e "$TEST_RELEASE_GATE" ]; do /bin/sleep 0.01; done\n'
         '  host="$TEST_EXPECTED_HOST"\n'
         '  mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        '  printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        '  printf "%s\\n" \'version = "0.3.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         '  cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_ARGS"\n'
@@ -670,7 +1200,7 @@ def exercise_bootstrap_survives_wrapper_timeout(host: str, root: Path) -> None:
         'touch "$TEST_STARTED_MARKER"\n'
         'while [ ! -e "$TEST_RELEASE_GATE" ]; do /bin/sleep 0.01; done\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
-        'printf "%s\\n" \'version = "0.2.6"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
+        'printf "%s\\n" \'version = "0.3.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n'
@@ -715,6 +1245,11 @@ def main() -> None:
         root = Path(raw)
         for host in HOSTS:
             exercise_hook_adapter(host, root)
+            exercise_prebootstrap_invalid_principal(host, root)
+            exercise_host_plugin_identity(host, root)
+            exercise_doctor_rejects_unknown_host(host, root)
+            exercise_default_host_without_injection(host, root)
+            exercise_transport_failure(host, root)
             exercise_host(host, root)
             exercise_blank_slate_bootstrap(host, root)
             exercise_doctor_waits_for_concurrent_bootstrap(host, root)

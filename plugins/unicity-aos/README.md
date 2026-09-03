@@ -13,8 +13,9 @@ On installation, Codex reads `.codex-plugin/plugin.json` and discovers:
 - `skills/meta-harness` for proactively extending the agent's user-space world
   when work reveals missing capability or reusable leverage;
 - `.mcp.json`, which starts the persistent-gateway `mcp attach` path through
-  `aos-up` and its stdio frame; explicit `mcp serve` remains available as an
-  escape hatch; and
+  `aos-up` and its stdio frame from the exact Codex project directory; the
+  adapter executes Astrid only from the authenticated active AOS release, with
+  no mutable-runtime or ambient-PATH fallback; and
 - session and tool hooks under `hooks/hooks.json`.
 
 Skill metadata is available for routing. Codex reads a skill's complete

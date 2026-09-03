@@ -73,18 +73,19 @@ write_mcp_config() {
     "aos": {
       "command": "/bin/sh",
       "args": [
-        "./bin/aos-up",
-        "--principal",
-        "codex-code"
+        "-c",
+        "root=\${CODEX_PLUGIN_ROOT:-\${PLUGIN_ROOT:-}}; [ -n \"\$root\" ] || { echo 'aos: Codex plugin root is unavailable' >&2; exit 127; }; exec \"\$root/bin/aos-up\" --principal codex-code",
+        "aos"
       ],
-      "cwd": ".",
       "startup_timeout_sec": 20,
       "env_vars": [
         "AOS_HOME",
         "AOS_BIN",
         "AOS_BIN_ROOT",
         "ASTRID_SESSION_ID",
-        "ASTRID_WORKSPACE"
+        "ASTRID_WORKSPACE",
+        "AOS_HOST_WORKSPACE",
+        "CODEX_WORKSPACE"
       ],
       "env": {
         "AOS_BIN": "$escaped_aos"

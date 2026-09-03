@@ -3,6 +3,7 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d)
+work=$(cd "$work" && pwd -P)
 trap 'rm -rf "$work"' EXIT
 fake_bin="$work/bin"
 assets="$work/assets"
@@ -29,7 +30,7 @@ schema-version = 1
 
 [distro]
 id = "unicity-ce"
-version = "2026.1.3"
+version = "2026.9.0"
 
 [[capsule]]
 name = "aos-cli"
@@ -82,9 +83,11 @@ cat > "$fake_bin/aos" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 if [ "${1:-}" = --version ]; then
-  mkdir -p "$AOS_HOME/releases/2026.1.3"
-  cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.1.3/"
-  printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.1.3}"
+  if [ -z "${TEST_NO_PRODUCT_INSTALL:-}" ]; then
+    mkdir -p "$AOS_HOME/releases/2026.9.0"
+    cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.9.0/"
+  fi
+  printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.9.0}"
   exit 0
 fi
 printf 'aos' >> "$TEST_LOG"
@@ -141,6 +144,10 @@ case " $* " in
     : > "$TEST_STATE/agent-$principal"
     ;;
   *" capsule show "*)
+    if [ "${TEST_CAPSULE_SHOW_FAILURE:-0}" -ne 0 ]; then
+      printf '%s\n' 'error: daemon transport failed while reading capsule metadata' >&2
+      exit 93
+    fi
     capsule=""
     principal=""
     previous=""
@@ -150,7 +157,11 @@ case " $* " in
       previous=$argument
     done
     record="$TEST_STATE/installed-$principal-$capsule"
-    test -f "$record"
+    if [ ! -f "$record" ]; then
+      printf "capsule '%s' is not installed for agent '%s'\n" \
+        "$capsule" "$principal" >&2
+      exit 1
+    fi
     if printf ' %s ' "$*" | grep -Fq ' --format toml '; then
       hash=$(sed -n '1p' "$record")
       source=$(sed -n '2p' "$record")
@@ -188,16 +199,40 @@ case " $* " in
     ;;
   *" agent modify "*)
     principal=${5}
+    if [ "${TEST_SWAP_RELEASES:-0}" -eq 1 ]; then
+      rm -rf "$AOS_HOME/extensions/oracles/codex/releases"
+      ln -s "$TEST_SWAP_TARGET" "$AOS_HOME/extensions/oracles/codex/releases"
+    fi
     previous=""
     for argument in "$@"; do
       case "$previous" in
-        --add-capsule) : > "$TEST_STATE/granted-$principal-$argument" ;;
+        --add-capsule)
+          : > "$TEST_STATE/granted-$principal-$argument"
+          if [ ! -f "$TEST_STATE/installed-$principal-$argument" ] \
+            && [ -f "$TEST_STATE/installed-default-$argument" ]; then
+            cp "$TEST_STATE/installed-default-$argument" \
+              "$TEST_STATE/installed-$principal-$argument"
+          fi
+          ;;
         --remove-capsule) rm -f "$TEST_STATE/granted-$principal-$argument" ;;
       esac
       previous=$argument
     done
     ;;
   *" init "*)
+    version=${TEST_AOS_VERSION:-2026.9.0}
+    release="$AOS_HOME/releases/$version"
+    [ -f "$release/capsule-assets.txt" ] || exit 92
+    while IFS= read -r asset; do
+      capsule=${asset%.capsule}
+      source="$release/capsules/$asset"
+      hash=$(shasum -a 256 "$source" | awk '{print $1}')
+      printf '%s\n%s\n%s\n%s\n' "$hash" "$source" \
+        '2026-09-01T00:00:00+00:00' '2026-09-01T00:00:00+00:00' \
+        > "$TEST_STATE/installed-default-$capsule"
+    done < "$release/capsule-assets.txt"
+    mkdir -p "$AOS_HOME"
+    : > "$AOS_HOME/runtime-running"
     target=""
     previous=""
     for argument in "$@"; do
@@ -228,6 +263,10 @@ set -euo pipefail
 printf 'codex' >> "$TEST_LOG"
 printf ' %q' "$@" >> "$TEST_LOG"
 printf '\n' >> "$TEST_LOG"
+if [ -n "${TEST_PLUGIN_STATE:-}" ]; then
+  mkdir -p "$(dirname "$TEST_PLUGIN_STATE")"
+  : > "$TEST_PLUGIN_STATE"
+fi
 [ "${TEST_FAIL_PLUGIN:-0}" -eq 0 ] || exit 70
 EOF
 cat > "$fake_bin/claude" <<'EOF'
@@ -244,7 +283,10 @@ set -euo pipefail
 printf 'grok' >> "$TEST_LOG"
 printf ' %q' "$@" >> "$TEST_LOG"
 printf '\n' >> "$TEST_LOG"
-[ "${TEST_FAIL_PLUGIN:-0}" -eq 0 ] || exit 70
+if [ "${TEST_FAIL_PLUGIN:-0}" -ne 0 ] \
+  || [ "${TEST_FAIL_PLUGIN_HOST:-}" = grok ]; then
+  exit 70
+fi
 EOF
 chmod +x \
   "$fake_bin/aos" "$fake_bin/b3sum" "$fake_bin/codex" "$fake_bin/claude" "$fake_bin/grok"
@@ -270,6 +312,107 @@ write_test_capsule() {
     > "$state/installed-$principal-$name"
 }
 
+# A caller must not be able to turn the old per-capsule approval switch back
+# into a global trust bypass. Both public installer surfaces recognize the flag
+# as a rejected contract and fail before resolving installer bytes or creating
+# durable AOS state.
+approval_canary="$work/approval-installer"
+: > "$approval_canary"
+chmod 700 "$approval_canary"
+approval_plugin_home="$home/approval-plugin/.aos"
+if AOS_HOME="$approval_plugin_home" \
+  AOS_ORACLES_INSTALLER="$approval_canary" \
+  "$repo_root/plugins/unicity-aos/bin/aos-install" \
+  --host codex --yes --approve-untrusted >"$work/approval-plugin.out" 2>&1
+then
+  echo "plugin installer accepted --approve-untrusted" >&2
+  exit 1
+fi
+grep -Fq "aos-install: ERROR: --approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution" \
+  "$work/approval-plugin.out"
+test ! -s "$approval_canary"
+test ! -e "$approval_plugin_home"
+
+approval_root_home="$home/approval-root/.aos"
+if AOS_HOME="$approval_root_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  --approve-untrusted >"$work/approval-root.out" 2>&1
+then
+  echo "oracle installer accepted --approve-untrusted" >&2
+  exit 1
+fi
+grep -Fq "aos-oracles: --approve-untrusted is rejected: AOS dependencies require the signed OperatorDistribution" \
+  "$work/approval-root.out"
+test ! -e "$approval_root_home"
+test ! -e "$approval_root_home/runtime"
+test ! -e "$approval_root_home/extensions/oracles/codex/Pack.lock"
+test ! -s "$TEST_LOG"
+
+# A value-taking option must not consume the rejected sentinel. Exercise the
+# complete parser boundary before either surface can resolve installer bytes.
+for sentinel_case in \
+  '--aos-channel --approve-untrusted' \
+  '--aos-version --approve-untrusted' \
+  '--oracle-version --approve-untrusted' \
+  '--aos-installer --approve-untrusted'
+do
+  # shellcheck disable=SC2086
+  set -- $sentinel_case
+  case_home="$home/parser-plugin-$1/.aos"
+  if AOS_HOME="$case_home" AOS_ORACLES_INSTALLER="$approval_canary" \
+    "$repo_root/plugins/unicity-aos/bin/aos-install" \
+    --host codex --yes "$@" >"$work/parser-plugin.out" 2>&1
+  then
+    echo "plugin parser consumed sentinel in: $sentinel_case" >&2
+    exit 1
+  fi
+  grep -Fq -- "--approve-untrusted is rejected" "$work/parser-plugin.out"
+  test ! -s "$approval_canary"
+  test ! -e "$case_home"
+
+  root_case_home="$home/parser-root-$1/.aos"
+  if AOS_HOME="$root_case_home" AOS_ORACLE_ASSETS="$assets" \
+    "$repo_root/install.sh" --host codex --yes --no-install-aos "$@" \
+    >"$work/parser-root.out" 2>&1
+  then
+    echo "root parser consumed sentinel in: $sentinel_case" >&2
+    exit 1
+  fi
+  grep -Fq -- "--approve-untrusted is rejected" "$work/parser-root.out"
+  test ! -e "$root_case_home"
+  test ! -e "$root_case_home/runtime"
+  test ! -e "$root_case_home/extensions/oracles/codex/Pack.lock"
+  test ! -s "$TEST_LOG"
+done
+
+# A truncated option fails without shifting an unrelated later argument into
+# its value or beginning provisioning.
+for missing_option in --host --oracle-version --aos-channel --aos-version --local-assets --aos-installer; do
+  missing_plugin_home="$home/missing-plugin-${missing_option#--}/.aos"
+  if AOS_HOME="$missing_plugin_home" AOS_ORACLES_INSTALLER="$approval_canary" \
+    "$repo_root/plugins/unicity-aos/bin/aos-install" \
+    "$missing_option" >"$work/missing-plugin.out" 2>&1
+  then
+    echo "plugin parser accepted missing value for $missing_option" >&2
+    exit 1
+  fi
+  test ! -s "$approval_canary"
+  test ! -e "$missing_plugin_home"
+
+  missing_root_home="$home/missing-root-${missing_option#--}/.aos"
+  if AOS_HOME="$missing_root_home" AOS_ORACLE_ASSETS="$assets" \
+    "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    "$missing_option" >"$work/missing-root.out" 2>&1
+  then
+    echo "root parser accepted missing value for $missing_option" >&2
+    exit 1
+  fi
+  test ! -e "$missing_root_home"
+  test ! -e "$missing_root_home/runtime"
+  test ! -e "$missing_root_home/extensions/oracles/codex/Pack.lock"
+  test ! -s "$TEST_LOG"
+done
+
 # The public one-command path installs only marketplace plugins. Host startup
 # owns principal and capsule provisioning, so this path must not initialize or
 # start AOS and must not create a pack receipt.
@@ -278,8 +421,7 @@ plugin_only_start=$(wc -l < "$TEST_LOG")
 AOS_HOME="$plugin_only_home" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
 tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
-grep -Fq "codex plugin marketplace add $plugin_only_home/extensions/oracles/plugins/0.2.6" \
-  "$work/plugin-only.log"
+grep -Eq '^codex plugin marketplace add /.*/plugin-stage$' "$work/plugin-only.log"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
 if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
   echo "plugin-only installation provisioned AOS or another host" >&2
@@ -298,7 +440,7 @@ sed 's#  #  ./#' "$assets/BLAKE3SUMS.txt" > "$prefixed_assets/BLAKE3SUMS.txt"
 prefixed_home="$home/prefixed-checksums/.aos"
 AOS_HOME="$prefixed_home" AOS_ORACLE_ASSETS="$prefixed_assets" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
-test -d "$prefixed_home/extensions/oracles/plugins/0.2.6"
+test -d "$prefixed_home/extensions/oracles/plugins/0.3.0"
 
 # An existing unrelated host pack is private state. Installing Codex must not
 # inspect, rewrite, remove, or provision Claude/Grok.
@@ -322,8 +464,10 @@ fi
 lock="$AOS_HOME/extensions/oracles/codex/Pack.lock"
 cmp "$assets/codex.toml" "$lock"
 test ! -e "$home/.astrid"
+test ! -e "$AOS_HOME/runtime/bin"
 grep -Fq 'aos status --json' "$TEST_LOG"
-grep -Fq 'aos --principal default start' "$TEST_LOG"
+grep -Fq 'aos --principal default init --yes' "$TEST_LOG"
+[ "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG")" -eq 1 ]
 if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
   echo "oracle installer stopped a runtime it does not exclusively own" >&2
   exit 1
@@ -332,8 +476,8 @@ if grep -Fq 'aos --principal default status' "$TEST_LOG"; then
   echo "installer used the principal-scoped status probe" >&2
   exit 1
 fi
-if grep -Eq '^aos .* init( |$)' "$TEST_LOG"; then
-  echo "oracle host provisioning initialized a default product workspace" >&2
+if grep -Eq '^aos .* capsule install( |$)' "$TEST_LOG"; then
+  echo "oracle host provisioning bypassed the signed operator distribution" >&2
   exit 1
 fi
 grep -Fq 'aos --principal default agent create codex-code' "$TEST_LOG"
@@ -346,18 +490,12 @@ if grep -Fq -- '--inherit-from' "$TEST_LOG"; then
   echo "oracle principal inherited another principal's state" >&2
   exit 1
 fi
-grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-mcp\.capsule --yes$' "$TEST_LOG"
-grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-skills\.capsule --yes$' "$TEST_LOG"
-grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-forge\.capsule --yes$' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-skills' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-forge' "$TEST_LOG"
-if grep -Eq '^aos --principal codex-code capsule install .*/aos-(cli|fs|openai-compat)\.capsule' "$TEST_LOG"; then
-  echo "oracle host provisioning installed an undeclared CE distribution capsule" >&2
-  exit 1
-fi
-grep -Fq "codex plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.6" "$TEST_LOG"
+grep -Eq '^codex plugin marketplace add /.*/plugin-stage$' "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
+test -d "$AOS_HOME/extensions/oracles/plugins/0.3.0"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
 test -f "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
@@ -417,14 +555,14 @@ then
   exit 1
 fi
 tail -n "+$((without_skills_start + 1))" "$TEST_LOG" > "$work/without-skills.log"
-if grep -Eq 'capsule install .*/aos-mcp\.capsule|^codex ' "$work/without-skills.log"; then
+if grep -Eq '^aos .* init( |$)|capsule install .*/aos-mcp\.capsule|^codex ' "$work/without-skills.log"; then
   echo "required AOS dependency failure mutated the Oracle pack or host plugin" >&2
   exit 1
 fi
 test ! -e "$without_skills_home/extensions/oracles/codex/current"
 
 # A same-ID user capsule is not a valid substitute for the signed AOS service.
-# Preserve it, but do not have the Oracle installer manufacture a new grant.
+# Reject the transaction before the immutable Oracle receipt or a grant lands.
 local_skills_state="$work/state-local-skills"
 local_skills_home="$home/local-skills/.aos"
 mkdir -p "$local_skills_state"
@@ -433,16 +571,127 @@ write_test_capsule "$local_skills_state" codex-code aos-skills \
   /tmp/user/aos-skills.capsule \
   2026-07-19T12:00:00+00:00 2026-07-19T12:00:00+00:00
 local_skills_start=$(wc -l < "$TEST_LOG")
-TEST_STATE="$local_skills_state" AOS_HOME="$local_skills_home" \
+if TEST_STATE="$local_skills_state" AOS_HOME="$local_skills_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
+then
+  echo "same-ID foreign AOS capsule was accepted as operator distribution state" >&2
+  exit 1
+fi
 tail -n "+$((local_skills_start + 1))" "$TEST_LOG" > "$work/local-skills.log"
 if grep -Fq -- '--add-capsule aos-skills' "$work/local-skills.log"; then
   echo "same-ID local skills capsule was auto-granted as an AOS dependency" >&2
   exit 1
 fi
+if grep -Fq 'aos --principal default init --yes' "$work/local-skills.log"; then
+  echo "same-ID foreign AOS capsule triggered operator-distribution mutation" >&2
+  exit 1
+fi
 test ! -e "$local_skills_state/granted-codex-code-aos-skills"
+test ! -e "$local_skills_home/extensions/oracles/codex/current"
+test ! -e "$local_skills_state/default-initialized"
+test ! -e "$local_skills_state/agent-codex-code"
+test ! -e "$local_skills_state/installed-codex-code-aos-mcp"
+test ! -e "$local_skills_home/runtime"
+test ! -e "$local_skills_home/runtime/etc/profiles/default.toml"
+test ! -e "$local_skills_home/extensions/oracles/plugins/0.3.0"
 test "$(sed -n '2p' "$local_skills_state/installed-codex-code-aos-skills")" \
   = /tmp/user/aos-skills.capsule
+
+# A malformed installed identity is not the same as an absent capsule. It must
+# stop before workspace selection or default first-boot can mutate AOS state.
+malformed_identity_state="$work/malformed-identity-state"
+malformed_identity_home="$home/malformed-identity/.aos"
+malformed_identity_start=$(wc -l < "$TEST_LOG")
+mkdir -p "$malformed_identity_state"
+write_test_capsule "$malformed_identity_state" default aos-skills \
+  zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz \
+  "$product_assets/capsules/aos-skills.capsule" \
+  2026-09-03T00:00:00+00:00 2026-09-03T00:00:00+00:00
+if TEST_STATE="$malformed_identity_state" AOS_HOME="$malformed_identity_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/malformed-identity-direct.out" 2>&1
+then
+  echo "malformed default AOS capsule identity was treated as absent" >&2
+  exit 1
+fi
+grep -Fq 'has a malformed identity' "$work/malformed-identity-direct.out"
+tail -n "+$((malformed_identity_start + 1))" "$TEST_LOG" \
+  > "$work/malformed-identity.log"
+test ! -e "$malformed_identity_state/default-initialized"
+test ! -e "$malformed_identity_state/agent-codex-code"
+test ! -e "$malformed_identity_state/granted-codex-code-aos-skills"
+test ! -e "$malformed_identity_home/runtime"
+test ! -e "$malformed_identity_home/extensions/oracles/plugins/0.3.0"
+test ! -e "$malformed_identity_home/extensions/oracles/codex/current"
+
+# A failed read is not proof of absence. Even with no prior capsule record,
+# a daemon/transport failure must stop before AOS workspace selection, first
+# boot, principal creation, grants, snapshot activation, or any receipt state.
+unreadable_show_state="$work/unreadable-show-state"
+unreadable_show_home="$home/unreadable-show/.aos"
+unreadable_show_start=$(wc -l < "$TEST_LOG")
+mkdir -p "$unreadable_show_state"
+if TEST_CAPSULE_SHOW_FAILURE=1 TEST_STATE="$unreadable_show_state" \
+  AOS_HOME="$unreadable_show_home" "$repo_root/install.sh" \
+  --host codex --yes --no-install-aos \
+  >"$work/unreadable-show.out" 2>&1
+then
+  echo "failed capsule-show read was treated as an absent capsule" >&2
+  exit 1
+fi
+grep -Fq "could not read AOS capsule 'aos-mcp' for codex-code" \
+  "$work/unreadable-show.out"
+tail -n "+$((unreadable_show_start + 1))" "$TEST_LOG" \
+  > "$work/unreadable-show.log"
+if grep -Fq 'aos --principal default init --yes' "$work/unreadable-show.log"; then
+  echo "failed capsule-show read triggered first-boot mutation" >&2
+  exit 1
+fi
+test ! -e "$unreadable_show_state/default-initialized"
+test ! -e "$unreadable_show_state/agent-codex-code"
+test ! -e "$unreadable_show_state/granted-codex-code-aos-mcp"
+test ! -e "$unreadable_show_home/runtime"
+test ! -e "$unreadable_show_home/extensions/oracles/plugins/0.3.0"
+test ! -e "$unreadable_show_home/extensions/oracles/codex/current"
+test ! -e "$unreadable_show_home/extensions/oracles/codex/Pack.lock"
+
+# A source can look correct while its recorded byte identity disagrees with the
+# authenticated default. That disagreement stops the transaction before init,
+# principal creation, grants, snapshot activation, or any receipt state.
+identity_mismatch_home="$home/identity-mismatch/.aos"
+identity_mismatch_state="$work/identity-mismatch-state"
+identity_release="$identity_mismatch_home/releases/2026.9.0"
+identity_artifact="$identity_release/capsules/aos-mcp.capsule"
+mkdir -p "$identity_mismatch_state" "$identity_release/capsules"
+cp -R "$product_assets/." "$identity_release/"
+printf 'release artifact\n' > "$identity_artifact"
+write_test_capsule "$identity_mismatch_state" default aos-mcp \
+  1111111111111111111111111111111111111111111111111111111111111111 \
+  "$identity_artifact" \
+  2026-09-03T00:00:00+00:00 2026-09-03T00:00:00+00:00
+write_test_capsule "$identity_mismatch_state" codex-code aos-mcp \
+  2222222222222222222222222222222222222222222222222222222222222222 \
+  "$identity_artifact" \
+  2026-09-03T00:00:00+00:00 2026-09-03T00:00:00+00:00
+identity_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$identity_mismatch_state" AOS_HOME="$identity_mismatch_home" \
+  TEST_NO_PRODUCT_INSTALL=1 \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+then
+  echo "disagreeing default and host capsule hashes were accepted" >&2
+  exit 1
+fi
+tail -n "+$((identity_start + 1))" "$TEST_LOG" > "$work/identity-mismatch.log"
+if grep -Fq 'aos --principal default init --yes' "$work/identity-mismatch.log"; then
+  echo "identity disagreement triggered first-boot mutation" >&2
+  exit 1
+fi
+test ! -e "$identity_mismatch_state/default-initialized"
+test ! -e "$identity_mismatch_state/agent-codex-code"
+test ! -e "$identity_mismatch_state/granted-codex-code-aos-mcp"
+test ! -e "$identity_mismatch_home/runtime"
+test ! -e "$identity_mismatch_home/extensions/oracles/plugins/0.3.0"
+test ! -e "$identity_mismatch_home/extensions/oracles/codex/current"
 
 # Local development may stage only the selected host, provided every staged
 # byte has a strict checksum entry.
@@ -466,15 +715,17 @@ do
   printf '%s  %s\n' "$digest" "$asset" >> "$minimal_assets/BLAKE3SUMS.txt"
 done
 minimal_home="$home/minimal/.aos"
-AOS_HOME="$minimal_home" AOS_ORACLE_ASSETS="$minimal_assets" \
+minimal_state="$work/minimal-state"
+mkdir -p "$minimal_state"
+TEST_STATE="$minimal_state" AOS_HOME="$minimal_home" AOS_ORACLE_ASSETS="$minimal_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 test -f "$minimal_home/extensions/oracles/codex/Pack.lock"
 
 first_lock=$(shasum -a 256 "$lock" | awk '{print $1}')
-start_count=$(grep -Fc 'aos --principal default start' "$TEST_LOG")
+init_count=$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG" || true)
 "$repo_root/install.sh" --host codex --yes --no-install-aos
 test "$first_lock" = "$(shasum -a 256 "$lock" | awk '{print $1}')"
-test "$(grep -Fc 'aos --principal default start' "$TEST_LOG")" -eq "$start_count"
+test "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG" || true)" -eq "$init_count"
 if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
   echo "repeat oracle install stopped the shared runtime" >&2
   exit 1
@@ -483,15 +734,17 @@ fi
 # A daemon selected by an older host plugin from another project is stopped
 # through the recovery command and restarted in the product-owned workspace.
 stale_home="$home/stale-workspace/.aos"
+stale_state="$work/stale-workspace-state"
+mkdir -p "$stale_state"
 mkdir -p "$stale_home"
 : > "$stale_home/runtime-running"
 stale_start=$(wc -l < "$TEST_LOG")
-AOS_HOME="$stale_home" TEST_STALE_WORKSPACE=1 \
+TEST_STATE="$stale_state" AOS_HOME="$stale_home" TEST_STALE_WORKSPACE=1 \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 tail -n "+$((stale_start + 1))" "$TEST_LOG" > "$work/stale-workspace.log"
 grep -Fq 'aos --principal default ps --format json' "$work/stale-workspace.log"
 grep -Fq 'aos --principal default stop' "$work/stale-workspace.log"
-grep -Fq 'aos --principal default start' "$work/stale-workspace.log"
+grep -Fq 'aos --principal default init --yes' "$work/stale-workspace.log"
 
 failed_probe_home="$home/failed-workspace-probe/.aos"
 mkdir -p "$failed_probe_home"
@@ -509,9 +762,11 @@ if grep -Fq 'aos --principal default stop' "$work/failed-workspace-probe.log"; t
   exit 1
 fi
 
+distribution=$(grep -n 'aos --principal default init --yes' "$TEST_LOG" | head -n1 | cut -d: -f1)
 create=$(grep -n 'agent create codex-code' "$TEST_LOG" | head -n1 | cut -d: -f1)
-first_install=$(grep -n 'aos --principal codex-code capsule install' "$TEST_LOG" | head -n1 | cut -d: -f1)
-test "$create" -lt "$first_install"
+grant=$(grep -n 'agent modify codex-code' "$TEST_LOG" | head -n1 | cut -d: -f1)
+test "$distribution" -lt "$create"
+test "$create" -lt "$grant"
 
 # Grok is a separate pack. Installing it provisions only grok-code, the Oracle
 # broker, and the signed pack's selected AOS services; it installs its own host
@@ -524,7 +779,10 @@ grok_start=$(wc -l < "$TEST_LOG")
 "$repo_root/install.sh" --host grok --yes --no-install-aos
 tail -n "+$((grok_start + 1))" "$TEST_LOG" > "$work/grok-only.log"
 cmp "$work/grok-before" "$legacy_grok"
-grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-mcp\.capsule --yes$' "$work/grok-only.log"
+if grep -Eq '^aos .* (init|capsule install)( |$)' "$work/grok-only.log"; then
+  echo "Grok provisioning re-applied or bypassed the operator distribution" >&2
+  exit 1
+fi
 grep -Fq -- 'agent modify grok-code --add-capsule aos-mcp' "$work/grok-only.log"
 grep -Fq -- '--add-capsule aos-skills' "$work/grok-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/grok-only.log"
@@ -545,12 +803,15 @@ env -u ANTHROPIC_API_KEY \
   "$repo_root/install.sh" --host claude --yes --no-install-aos
 test -f "$AOS_HOME/extensions/oracles/claude/Pack.lock"
 tail -n "+$((claude_start + 1))" "$TEST_LOG" > "$work/claude-only.log"
-grep -Eq 'capsule install .*/releases/2026\.1\.3/capsules/aos-mcp\.capsule --yes$' "$work/claude-only.log"
+if grep -Eq '^aos .* (init|capsule install)( |$)' "$work/claude-only.log"; then
+  echo "Claude provisioning re-applied or bypassed the operator distribution" >&2
+  exit 1
+fi
 grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-skills' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-grep -Fq "claude plugin marketplace add $AOS_HOME/extensions/oracles/plugins/0.2.6" "$TEST_LOG"
+grep -Eq '^claude plugin marketplace add /.*/plugin-stage$' "$TEST_LOG"
 if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
   echo "external Claude plugin installed an AOS-managed workload adapter" >&2
   exit 1
@@ -562,15 +823,169 @@ fi
 
 # A plugin failure leaves no success receipt for a fresh installation.
 failed_plugin_home="$home/plugin-failure/.aos"
-if TEST_FAIL_PLUGIN=1 AOS_HOME="$failed_plugin_home" \
+failed_plugin_home_state="$failed_plugin_home/test-state"
+failed_plugin_state="$failed_plugin_home_state"
+failed_plugin_marketplace="$failed_plugin_home/fake-host-marketplace"
+if TEST_FAIL_PLUGIN=1 TEST_STATE="$failed_plugin_state" \
+  TEST_PLUGIN_STATE="$failed_plugin_marketplace" AOS_HOME="$failed_plugin_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 then
   echo "oracle install unexpectedly succeeded after plugin failure" >&2
   exit 1
 fi
+test ! -e "$failed_plugin_home"
+test ! -e "$failed_plugin_state/default-initialized"
+test ! -e "$failed_plugin_state/agent-codex-code"
+test ! -e "$failed_plugin_state/granted-codex-code-aos-mcp"
 test ! -e "$failed_plugin_home/extensions/oracles/codex/Pack.lock"
 test ! -e "$failed_plugin_home/extensions/oracles/codex/current"
 test ! -e "$failed_plugin_home/extensions/oracles/.install.lock"
+
+# A release-directory substitution after the early preflight fails receipt
+# commit, writes nothing to the substituted destination, and rolls back the
+# entire fresh AOS transaction.
+swap_home="$home/release-swap/.aos"
+swap_state="$swap_home/test-state"
+swap_outside="$work/release-swap-outside"
+mkdir -p "$swap_outside"
+printf 'not Oracle trust state\n' > "$swap_outside/receipt"
+if TEST_SWAP_RELEASES=1 TEST_SWAP_TARGET="$swap_outside" \
+  TEST_STATE="$swap_state" AOS_HOME="$swap_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+then
+  echo "swapped receipt release root unexpectedly committed" >&2
+  exit 1
+fi
+test ! -e "$swap_home"
+test ! -e "$swap_state/default-initialized"
+test ! -e "$swap_state/agent-codex-code"
+test ! -e "$swap_state/granted-codex-code-aos-mcp"
+test "$(cat "$swap_outside/receipt")" = 'not Oracle trust state'
+test ! -e "$swap_outside/Receipt.toml"
+
+# A failed host-plugin replacement cannot advance an already authenticated
+# Oracle generation. Its immutable receipt and selected current generation
+# remain byte-for-byte available for a later clean retry.
+prior_plugin_home="$home/plugin-failure-prior/.aos"
+prior_plugin_state="$work/plugin-failure-prior-state"
+prior_receipt="$prior_plugin_home/extensions/oracles/codex/releases/0.2.6"
+mkdir -p "$prior_plugin_state" "$prior_receipt"
+cat > "$prior_receipt/Pack.lock" <<'EOF'
+schema-version = 1
+
+[pack]
+version = "0.2.6"
+host = "codex"
+principal = "codex-code"
+EOF
+cat > "$prior_receipt/Receipt.toml" <<'EOF'
+schema-version = 1
+oracle-version = "0.2.6"
+host = "codex"
+principal = "codex-code"
+source = "release"
+EOF
+printf 'authenticated prior generation\n' > "$prior_receipt/prior-marker"
+ln -s releases/0.2.6 "$prior_plugin_home/extensions/oracles/codex/current"
+ln -s current/Pack.lock "$prior_plugin_home/extensions/oracles/codex/Pack.lock"
+prior_receipt_hash=$(shasum -a 256 "$prior_receipt/Receipt.toml" | awk '{print $1}')
+if TEST_FAIL_PLUGIN=1 TEST_STATE="$prior_plugin_state" AOS_HOME="$prior_plugin_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+then
+  echo "oracle replacement unexpectedly succeeded after plugin failure" >&2
+  exit 1
+fi
+test "$(readlink "$prior_plugin_home/extensions/oracles/codex/current")" = releases/0.2.6
+test ! -e "$prior_plugin_home/extensions/oracles/codex/releases/0.3.0"
+test "$(shasum -a 256 "$prior_receipt/Receipt.toml" | awk '{print $1}')" \
+  = "$prior_receipt_hash"
+grep -Fxq 'authenticated prior generation' "$prior_receipt/prior-marker"
+
+cat > "$fake_bin/stat" <<'STAT'
+#!/usr/bin/env bash
+if [ "$1" = -c ]; then
+  printf '%s\n' 604
+elif [ "$1" = -f ]; then
+  cat <<'GNU'
+  File: "/fixture/Pack.lock"
+  Size: 0          Blocks: 0          IO Block: 4096   regular file
+Device: 8,2   Inode: 1   Links: 1
+Access: (0604/-rw----r--)  Uid: ( 1000/    user)   Gid: ( 1000/ group)
+GNU
+else
+  exec /usr/bin/stat "$@"
+fi
+STAT
+chmod 755 "$fake_bin/stat"
+grep -Fq 'Device: 8,2' "$fake_bin/stat"
+
+# A multi-host transaction cannot delete one shared plugin snapshot that an
+# already committed host selects. When the next host fails, its own regular
+# Pack.lock must also return byte-for-byte, not merely the prior symlink case.
+multi_host_home="$home/multi-host-partial/.aos"
+multi_host_state="$work/multi-host-state"
+multi_host_grok_receipt="$multi_host_home/extensions/oracles/grok/releases/0.2.8"
+mkdir -p "$multi_host_state" "$multi_host_grok_receipt"
+cat > "$multi_host_grok_receipt/Pack.lock" <<'EOF'
+schema-version = 1
+
+[pack]
+version = "0.2.8"
+host = "grok"
+principal = "grok-code"
+EOF
+cat > "$work/multi-host-grok-Pack.lock" <<'EOF'
+schema-version = 1
+
+[pack]
+version = "0.2.8"
+host = "grok"
+principal = "grok-code"
+# byte-for-byte prior regular lock
+EOF
+cp -p "$work/multi-host-grok-Pack.lock" \
+  "$multi_host_home/extensions/oracles/grok/Pack.lock"
+cat > "$multi_host_grok_receipt/Receipt.toml" <<'EOF'
+schema-version = 1
+oracle-version = "0.2.8"
+host = "grok"
+principal = "grok-code"
+EOF
+chmod 604 "$multi_host_home/extensions/oracles/grok/Pack.lock"
+ln -s releases/0.2.8 "$multi_host_home/extensions/oracles/grok/current"
+if env PATH="$fake_bin:$PATH" TEST_FAIL_PLUGIN_HOST=grok \
+  TEST_STATE="$multi_host_state" AOS_HOME="$multi_host_home" \
+  "$repo_root/install.sh" --host codex --host grok --yes --no-install-aos
+then
+  echo "second host failure unexpectedly completed the multi-host install" >&2
+  exit 1
+fi
+shared_snapshot="$multi_host_home/extensions/oracles/plugins/0.3.0"
+test -f "$shared_snapshot/plugins/claude/bin/aos-up"
+test -f "$shared_snapshot/plugins/unicity-aos/.aos-oracle-version"
+codex_receipt="$multi_host_home/extensions/oracles/codex/releases/0.3.0"
+test -f "$codex_receipt/Pack.lock"
+test "$(readlink "$multi_host_home/extensions/oracles/codex/current")" = releases/0.3.0
+grok_pack_lock="$multi_host_home/extensions/oracles/grok/Pack.lock"
+test -f "$grok_pack_lock"
+test ! -L "$grok_pack_lock"
+cmp -s "$grok_pack_lock" "$work/multi-host-grok-Pack.lock"
+pack_lock_mode=$(stat -c '%a' "$grok_pack_lock" 2>/dev/null \
+  || stat -f '%Lp' "$grok_pack_lock" 2>/dev/null \
+  || true)
+case "$pack_lock_mode" in
+  ''|*[!0-7]*)
+    echo "could not read an octal Pack.lock mode for $grok_pack_lock" >&2
+    exit 1
+    ;;
+esac
+if [ "$pack_lock_mode" != 604 ]; then
+  echo "Pack.lock mode is $pack_lock_mode, expected 604" >&2
+  exit 1
+fi
+test "$(readlink "$multi_host_home/extensions/oracles/grok/current")" = releases/0.2.8
+test ! -e "$multi_host_home/extensions/oracles/grok/releases/0.3.0"
+test ! -e "$multi_host_home/extensions/oracles/.install.lock"
 
 # Local development assets cannot inherit a Sigstore bundle from an older
 # remote receipt.
@@ -675,14 +1090,81 @@ then
   exit 1
 fi
 
+# Destination containment is checked before release staging or AOS mutation. A
+# symlinked plugin ancestor cannot turn extraction or rename into an escape.
+aos_link_base="$home/destination-aos-base"
+aos_link_real="$home/destination-aos-real"
+plugin_link_home="$aos_link_base/aos"
+plugin_escape="$home/destination-plugin-escape"
+mkdir "$aos_link_real" "$plugin_escape"
+ln -s "$aos_link_real" "$aos_link_base"
+destination_state="$work/destination-aos-link-state"
+mkdir -p "$destination_state"
+aos_destination_log_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$destination_state" AOS_HOME="$plugin_link_home" \
+  AOS_ORACLE_ASSETS="$assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/destination-aos.out" 2>&1
+then
+  echo "symlinked AOS home ancestor was accepted" >&2
+  exit 1
+fi
+grep -Fq "AOS home contains a symlink or non-directory: $aos_link_base" \
+  "$work/destination-aos.out"
+test ! -e "$aos_link_real/aos"
+test "$(wc -l < "$TEST_LOG")" -eq "$aos_destination_log_start"
+
+plugin_link_home="$home/destination-plugin-link/.aos"
+plugin_escape="$home/destination-plugin-escape"
+mkdir -p "$plugin_link_home/extensions/oracles" "$plugin_escape"
+ln -s "$plugin_escape/plugins" "$plugin_link_home/extensions/oracles/plugins"
+destination_state="$work/destination-link-state"
+mkdir -p "$destination_state"
+plugin_destination_log_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$destination_state" AOS_HOME="$plugin_link_home" \
+  AOS_ORACLE_ASSETS="$assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/destination-plugin.out" 2>&1
+then
+  echo "symlinked plugin ancestor was accepted" >&2
+  exit 1
+fi
+grep -Fq "plugin snapshot root contains a symlink or non-directory" \
+  "$work/destination-plugin.out"
+test ! -e "$plugin_escape/plugins"
+test "$(wc -l < "$TEST_LOG")" -eq "$plugin_destination_log_start"
+
+# The immutable receipt destination is held with the same rule, even when the
+# intermediate releases directory is real but the version leaf is a link.
+receipt_link_home="$home/destination-receipt-link/.aos"
+receipt_escape="$home/destination-receipt-escape"
+mkdir -p "$receipt_link_home/extensions/oracles/codex/releases" "$receipt_escape"
+ln -s "$receipt_escape/0.3.0" "$receipt_link_home/extensions/oracles/codex/releases/0.3.0"
+destination_state="$work/destination-receipt-state"
+mkdir -p "$destination_state"
+receipt_destination_log_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$destination_state" AOS_HOME="$receipt_link_home" \
+  AOS_ORACLE_ASSETS="$assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/destination-receipt.out" 2>&1
+then
+  echo "symlinked receipt destination was accepted" >&2
+  exit 1
+fi
+grep -Fq "codex receipt destination is a symlink" "$work/destination-receipt.out"
+test ! -e "$receipt_escape/0.3.0"
+test "$(wc -l < "$TEST_LOG")" -eq "$receipt_destination_log_start"
+
 # A released version directory is immutable. Reruns may reuse identical bytes,
 # but must not replace a snapshot or receipt that differs.
 immutable_home="$home/immutable/.aos"
-AOS_HOME="$immutable_home" \
+immutable_state="$work/immutable-state"
+mkdir -p "$immutable_state"
+TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-snapshot_manifest="$immutable_home/extensions/oracles/plugins/0.2.6/.agents/plugins/marketplace.json"
+snapshot_manifest="$immutable_home/extensions/oracles/plugins/0.3.0/.agents/plugins/marketplace.json"
 printf '\nmodified\n' >> "$snapshot_manifest"
-if AOS_HOME="$immutable_home" \
+if TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 then
   echo "modified immutable plugin snapshot was replaced" >&2
@@ -691,11 +1173,13 @@ fi
 grep -Fq modified "$snapshot_manifest"
 
 receipt_home="$home/immutable-receipt/.aos"
-AOS_HOME="$receipt_home" \
+receipt_state="$work/immutable-receipt-state"
+mkdir -p "$receipt_state"
+TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-receipt="$receipt_home/extensions/oracles/codex/releases/0.2.6/Receipt.toml"
+receipt="$receipt_home/extensions/oracles/codex/releases/0.3.0/Receipt.toml"
 printf '\nmodified = true\n' >> "$receipt"
-if AOS_HOME="$receipt_home" \
+if TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 then
   echo "modified immutable receipt was replaced" >&2
@@ -791,9 +1275,10 @@ printf '%s\n' \
   aos-forge.capsule \
   > "$legacy_home/releases/2026.1.1/capsule-assets.txt"
 
+product_mcp_hash=$(shasum -a 256 "$product_assets/capsules/aos-mcp.capsule" | awk '{print $1}')
 write_test_capsule "$legacy_state" codex-code aos-mcp \
-  ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff \
-  /tmp/user/aos-mcp.capsule \
+  "$product_mcp_hash" \
+  "$legacy_home/releases/2026.9.0/capsules/aos-mcp.capsule" \
   2026-07-17T23:13:33+00:00 2026-07-17T23:14:00+00:00
 write_test_capsule "$legacy_state" codex-code codex-install \
   6c510fd2185311dd6de4fd44adb19f9ff19f2251adcad16ff18d859a434e8593 \
@@ -820,23 +1305,23 @@ for capsule in aos-mcp codex-install codex-runner aos-cli aos-fs user-capsule; d
 done
 
 if TEST_FAIL_PLUGIN=1 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.1.3 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.9.0 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 0.2.6
+    --oracle-version 0.3.0
 then
   echo "legacy repair unexpectedly committed after host plugin failure" >&2
   exit 1
 fi
 test -f "$legacy_state/granted-codex-code-codex-install"
 test -f "$legacy_state/granted-codex-code-aos-cli"
-test ! -e "$legacy_home/extensions/oracles/codex/releases/0.2.6"
+test ! -e "$legacy_home/extensions/oracles/codex/releases/0.3.0"
 
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.1.3 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.9.0 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 0.2.6
+    --oracle-version 0.3.0
 test ! -e "$legacy_state/granted-codex-code-codex-install"
 test ! -e "$legacy_state/granted-codex-code-aos-cli"
 test -f "$legacy_state/granted-codex-code-codex-runner"
@@ -844,13 +1329,13 @@ test -f "$legacy_state/granted-codex-code-aos-fs"
 test -f "$legacy_state/granted-codex-code-user-capsule"
 test -f "$legacy_state/granted-codex-code-aos-mcp"
 test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
-  = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+  = "$product_mcp_hash"
 test -f "$legacy_state/installed-codex-code-codex-install"
-test -f "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml"
-test "$(cat "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml")" \
+test -f "$legacy_home/extensions/oracles/codex/releases/0.3.0/ManagedCapsules.toml"
+test "$(cat "$legacy_home/extensions/oracles/codex/releases/0.3.0/ManagedCapsules.toml")" \
   = 'schema-version = 1'
 if grep -Eq 'codex-(install|runner)|aos-(cli|fs)' \
-  "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml"
+  "$legacy_home/extensions/oracles/codex/releases/0.3.0/ManagedCapsules.toml"
 then
   echo "new Oracle receipt claimed an obsolete or CE capsule" >&2
   exit 1
@@ -859,22 +1344,24 @@ fi
 # The immutable current pack receipt remains stable when the user keeps a
 # same-ID superseding implementation.
 receipt_before=$(shasum -a 256 \
-  "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml" \
+  "$legacy_home/extensions/oracles/codex/releases/0.3.0/ManagedCapsules.toml" \
   | awk '{print $1}')
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.1.3 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.9.0 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 0.2.6
+    --oracle-version 0.3.0
 test "$receipt_before" = "$(shasum -a 256 \
-  "$legacy_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml" \
+  "$legacy_home/extensions/oracles/codex/releases/0.3.0/ManagedCapsules.toml" \
   | awk '{print $1}')"
 test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
-  = ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+  = "$product_mcp_hash"
 
 # A live per-home lock fails closed and an unsuccessful contender never removes
 # the active installer's lock.
 locked_home="$home/locked/.aos"
+locked_state="$work/locked-state"
+mkdir -p "$locked_state"
 mkdir -p "$locked_home/extensions/oracles"
 lock_path="$locked_home/extensions/oracles/.install.lock"
 lock_ready="$work/live-lock-ready"
@@ -891,7 +1378,7 @@ lock_release="$work/live-lock-release"
 ) &
 live_lock_pid=$!
 while [ ! -e "$lock_ready" ]; do sleep 0.01; done
-if AOS_HOME="$locked_home" \
+if TEST_STATE="$locked_state" AOS_HOME="$locked_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 then
   echo "installer lock without a published diagnostic pid was ignored" >&2
@@ -901,7 +1388,7 @@ then
 fi
 test ! -s "$lock_path"
 printf '%s\n' "$live_lock_pid" > "$lock_path"
-if AOS_HOME="$locked_home" \
+if TEST_STATE="$locked_state" AOS_HOME="$locked_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 then
   echo "concurrent installer lock was ignored" >&2
@@ -914,19 +1401,21 @@ wait "$live_lock_pid"
 
 # A lock whose validated owner no longer exists is reclaimed atomically.
 printf '%s\n' 999999999 > "$lock_path"
-AOS_HOME="$locked_home" \
+TEST_STATE="$locked_state" AOS_HOME="$locked_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 test ! -e "$locked_home/extensions/oracles/.install.lock"
 
 # Missing and malformed stale lock files are reclaimed by the platform lock.
 for abandoned in missing malformed; do
   abandoned_home="$home/abandoned-$abandoned/.aos"
+  abandoned_state="$work/abandoned-$abandoned-state"
+  mkdir -p "$abandoned_state"
   mkdir -p "$abandoned_home/extensions/oracles"
   : > "$abandoned_home/extensions/oracles/.install.lock"
   if [ "$abandoned" = malformed ]; then
     printf '%s\n' not-a-pid > "$abandoned_home/extensions/oracles/.install.lock"
   fi
-  AOS_HOME="$abandoned_home" \
+  TEST_STATE="$abandoned_state" AOS_HOME="$abandoned_home" \
     "$repo_root/install.sh" --host codex --yes --no-install-aos
   test ! -e "$abandoned_home/extensions/oracles/.install.lock"
   test -f "$abandoned_home/extensions/oracles/codex/Pack.lock"

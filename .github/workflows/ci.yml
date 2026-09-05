@@ -224,6 +224,7 @@ jobs:
           python3 scripts/test_pack_contract.py
           python3 scripts/test_brand_boundary.py
           python3 scripts/test_wit_contract.py
+          python3 scripts/test_release_contract.py
       - name: Exercise the non-interactive pack installer twice
         run: |
           scripts/test-install.sh

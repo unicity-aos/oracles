@@ -1,0 +1,100 @@
+name: Signed release rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact commit on current main ancestry to rehearse
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oracle-signed-rehearsal-${{ inputs.source_commit }}
+  cancel-in-progress: false
+
+env:
+  B3SUM_VERSION: 1.8.5
+
+jobs:
+  rehearsal:
+    name: Build signed Oracle rehearsal assets
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: step-security/harden-runner@9af89fc71515a100421586dfdb3dc9c984fbf411 # v2.19.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Validate main-ancestry source selection
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          test "$DEFAULT_BRANCH" = main
+          test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+          test "$GITHUB_REF_TYPE" = branch
+          printf '%s\n' "$SOURCE_COMMIT" | grep -Eq '^[0-9a-f]{40}$'
+          git fetch --no-tags origin "$DEFAULT_BRANCH"
+          test "$(git rev-parse 'HEAD^{commit}')" = "$(git rev-parse "origin/$DEFAULT_BRANCH^{commit}")"
+          test "$SOURCE_COMMIT" = "$(git rev-parse "$SOURCE_COMMIT^{commit}")"
+          git merge-base --is-ancestor "$SOURCE_COMMIT" "origin/$DEFAULT_BRANCH"
+          git diff --exit-code
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.source_commit }}
+
+      - name: Validate exact rehearsal source
+        env:
+          SOURCE_COMMIT: ${{ inputs.source_commit }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse 'HEAD^{commit}')" = "$SOURCE_COMMIT"
+          test "$(cat release/oracle-version)" = 0.3.0
+          git diff --exit-code
+          python3 scripts/test_pack_contract.py
+          python3 scripts/test_brand_boundary.py
+          python3 scripts/test_release_contract.py
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: '1.94.0'
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          key: aos-oracles-rehearsal
+      - name: Install pinned BLAKE3 tool
+        run: cargo install b3sum --locked --version "$B3SUM_VERSION"
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+
+      - name: Build exact Oracle 0.3.0 inventory
+        run: scripts/oracle-release-assets.sh build artifacts
+
+      - name: Sign and verify every rehearsal asset
+        env:
+          COSIGN_YES: 'true'
+        run: |
+          set -euo pipefail
+          identity="https://github.com/unicity-aos/oracles/.github/workflows/rehearsal.yml@refs/heads/main"
+          scripts/oracle-release-assets.sh sign artifacts "$identity"
+
+      - name: Verify exact rehearsal inventory
+        run: scripts/oracle-release-assets.sh inventory artifacts expected-assets.txt
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: oracle-0.3.0-rehearsal-${{ inputs.source_commit }}
+          path: artifacts/*
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0

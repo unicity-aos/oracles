@@ -1536,7 +1536,6 @@ install_pack() {
   while read -r capsule expected_hash capsule_extra; do
     [ -n "$capsule" ] || continue
     [ -z "${capsule_extra:-}" ] || die "invalid resolved AOS capsule identity"
-    expected_source="$AOS_HOME_DIR/releases/$ACTIVE_AOS_VERSION/capsules/$capsule.capsule"
     load_capsule_record "$principal" "$capsule" \
       || die "AOS capsule grant '$capsule' has no readable identity for $principal"
     [ -n "$CAPSULE_SOURCE" ] \

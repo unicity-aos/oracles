@@ -335,6 +335,17 @@ blake3_file() {
   "$B3SUM" "$1" | awk '{print $1}'
 }
 
+release_capsule_wasm_blake3() {
+  rcw_archive=$1
+  rcw_name=$2
+  rcw_member=$(printf '%s\n' "$rcw_name" | tr '-' '_')
+  rcw_output="$WORK/release-$rcw_name.wasm"
+  [ -n "$B3SUM" ] || die "b3sum is required to authenticate AOS capsule '$rcw_name'"
+  tar -xOf "$rcw_archive" "$rcw_member.wasm" >"$rcw_output" \
+    || die "AOS capsule '$rcw_name' has no readable WASM member"
+  blake3_file "$rcw_output"
+}
+
 acquire_install_lock() {
   lock_root="$AOS_HOME_DIR/extensions/oracles"
   INSTALL_LOCK="$lock_root/.install.lock"
@@ -857,10 +868,10 @@ load_capsule_record() {
   CAPSULE_UPDATED_AT=""
   cr_error="$WORK/capsule-show-$cr_principal-$cr_capsule.err"
   cr_status=0
-  # The global principal authenticates the IPC request. Keep the matching
-  # --agent label so the human-readable absent diagnostic remains scoped to
-  # the same principal; a display label alone does not authorize the query.
-  cr_record=$(aos --principal "$cr_principal" capsule show "$cr_capsule" \
+  # The booted default principal authenticates the IPC request. The agent label
+  # selects the metadata projection; host principals are not authenticated or
+  # created until after this preflight.
+  cr_record=$(aos --principal default capsule show "$cr_capsule" \
     --agent "$cr_principal" --format toml 2>"$cr_error") || cr_status=$?
   if [ "$cr_status" -ne 0 ]; then
     # AOS marks an absent capsule with status 1 and this documented
@@ -1345,22 +1356,27 @@ resolve_aos_capsules() {
     [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
     aos_release_has_capsule "$rac_name" "$rac_release" || continue
     rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    rac_release_hash=$(release_capsule_wasm_blake3 "$rac_artifact" "$rac_name")
     rac_expected_host_hash=$(binding_hash "$CURRENT_PACK_BINDINGS" "$rac_name" 2>/dev/null || true)
     rac_host_hash=""
     if load_capsule_record "$rac_principal" "$rac_name"; then
-      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
-        || die "AOS capsule dependency '$rac_name' for $rac_principal is outside the signed operator distribution"
+      [ -n "$CAPSULE_SOURCE" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal has no registry source"
       printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
         || die "AOS capsule dependency '$rac_name' for $rac_principal has an invalid identity hash"
+      [ "$CAPSULE_HASH" = "$rac_release_hash" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
       rac_host_hash=$CAPSULE_HASH
     elif [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
       die "AOS capsule dependency '$rac_name' for $rac_principal has a malformed identity"
     fi
     if load_capsule_record default "$rac_name"; then
-      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
-        || die "default AOS capsule dependency '$rac_name' is outside the signed operator distribution"
+      [ -n "$CAPSULE_SOURCE" ] \
+        || die "default AOS capsule dependency '$rac_name' has no registry source"
       printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
         || die "default AOS capsule dependency '$rac_name' has an invalid identity hash"
+      [ "$CAPSULE_HASH" = "$rac_release_hash" ] \
+        || die "default AOS capsule dependency '$rac_name' differs from the signed operator distribution"
       rac_default_hash=$CAPSULE_HASH
       if load_capsule_record "$rac_principal" "$rac_name"; then
         [ "$CAPSULE_HASH" = "$rac_default_hash" ] \
@@ -1393,8 +1409,9 @@ resolve_aos_capsules() {
       continue
     fi
     rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    rac_release_hash=$(release_capsule_wasm_blake3 "$rac_artifact" "$rac_name")
     if ! load_capsule_record default "$rac_name" \
-      || [ "$CAPSULE_SOURCE" != "$rac_artifact" ]
+      || [ "$CAPSULE_HASH" != "$rac_release_hash" ]
     then
       rac_apply=1
     fi
@@ -1417,15 +1434,18 @@ resolve_aos_capsules() {
       continue
     fi
     rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    rac_release_hash=$(release_capsule_wasm_blake3 "$rac_artifact" "$rac_name")
     load_capsule_record default "$rac_name" \
       || die "signed AOS distribution has no readable identity for '$rac_name'"
-    [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+    [ -n "$CAPSULE_SOURCE" ] \
+      || die "signed AOS distribution capsule '$rac_name' does not resolve to the active release"
+    [ "$CAPSULE_HASH" = "$rac_release_hash" ] \
       || die "signed AOS distribution capsule '$rac_name' does not resolve to the active release"
     rac_hash=$CAPSULE_HASH
     printf '%s %s\n' "$rac_name" "$rac_hash" >> "$RESOLVED_AOS_IDENTITIES"
     printf '%s\n' "$rac_name" >> "$RESOLVED_AOS_CAPSULES"
     if load_capsule_record "$rac_principal" "$rac_name"; then
-      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+      [ -n "$CAPSULE_SOURCE" ] \
         && [ "$CAPSULE_HASH" = "$rac_hash" ] \
         || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
     fi
@@ -1519,7 +1539,7 @@ install_pack() {
     expected_source="$AOS_HOME_DIR/releases/$ACTIVE_AOS_VERSION/capsules/$capsule.capsule"
     load_capsule_record "$principal" "$capsule" \
       || die "AOS capsule grant '$capsule' has no readable identity for $principal"
-    [ "$CAPSULE_SOURCE" = "$expected_source" ] \
+    [ -n "$CAPSULE_SOURCE" ] \
       && [ "$CAPSULE_HASH" = "$expected_hash" ] \
       || die "AOS capsule grant '$capsule' for $principal differs from the signed operator distribution"
   done < "$RESOLVED_AOS_IDENTITIES"
@@ -1571,11 +1591,12 @@ reconcile_obsolete_bindings() {
 
 install_plugin() {
   host=$1
+  plugin_root="$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION"
   case "$host" in
     claude)
       have claude || die "Claude Code is not installed"
       claude plugin marketplace remove unicity-aos-oracles >/dev/null 2>&1 || true
-      claude plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
+      claude plugin marketplace add "$plugin_root" >/dev/null
       claude plugin install unicity-aos@unicity-aos-oracles >/dev/null
       ;;
     codex)
@@ -1584,15 +1605,15 @@ install_plugin() {
         | awk '$1 == "unicity-aos-oracles" { found = 1 } END { exit !found }'
       then
         codex plugin marketplace remove unicity-aos-oracles >/dev/null 2>&1 || true
-        codex plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
+        codex plugin marketplace add "$plugin_root" >/dev/null
       else
-        codex plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
+        codex plugin marketplace add "$plugin_root" >/dev/null
       fi
       codex plugin add unicity-aos@unicity-aos-oracles >/dev/null
       ;;
     grok)
       have grok || die "Grok Build is not installed"
-      grok plugin install "$PLUGIN_SNAPSHOT/plugins/grok" --trust >/dev/null
+      grok plugin install "$plugin_root/plugins/grok" --trust >/dev/null
       ;;
   esac
   say "✓ $host marketplace plugin installed"
@@ -1675,9 +1696,9 @@ stage_release_metadata
 ensure_aos
 if [ "$PLUGINS_ONLY" -eq 1 ]; then
   prepare_plugin_snapshot
+  activate_plugin_snapshot
   for host in $hosts; do
     install_plugin "$host"
-    activate_plugin_snapshot
     mark_host_committed "$host"
   done
   say "Unicity AOS plugin installation complete. Start a new host session to provision its oracle pack."
@@ -1686,10 +1707,10 @@ fi
 for host in $hosts; do
   install_pack "$host"
   prepare_plugin_snapshot
+  activate_plugin_snapshot
   if [ "$SKIP_HOST_PLUGIN" -eq 0 ]; then
     install_plugin "$host"
   fi
-  activate_plugin_snapshot
   reconcile_obsolete_bindings "$(principal_for "$host")"
   write_receipt "$host" "$(principal_for "$host")" "$STAGED_PACK"
 done

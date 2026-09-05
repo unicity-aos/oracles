@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import re
 import shutil
 import subprocess
 import tempfile
@@ -96,6 +95,13 @@ def runtime_manifest(
                     f"release.yml@refs/tags/v{runtime_version}"
                 ),
             },
+            "release_files": {
+                "runtime/bin/astrid": {
+                    "blake3": "0" * 64,
+                    "mode": 0o755,
+                    "sha256": "0" * 64,
+                },
+            },
         },
         indent=2,
     ) + "\n"
@@ -114,85 +120,7 @@ def ready_compatibility(release_ready: bool = True) -> str:
     )
 
 
-def executable_statement(
-    *,
-    schema_version: int = 2,
-    target: str = "aarch64-apple-darwin",
-    path: str = "runtime/bin/astrid",
-    blake3: str = "0" * 64,
-    sha256: str = "0" * 64,
-) -> str:
-    return (
-        f"schema-version = {schema_version}\n"
-        'product = "unicity-aos-ce"\n'
-        'version = "2026.9.0"\n\n'
-        "[[executables]]\n"
-        f'target = "{target}"\n'
-        f'path = "{path}"\n'
-        f'blake3 = "{blake3}"\n'
-        f'sha256 = "{sha256}"\n'
-    )
-
-
-def full_executable_statement(
-    *,
-    blake3: str,
-    sha256: str,
-    daemon_blake3: str,
-    daemon_sha256: str,
-) -> str:
-    records = []
-    for target in (
-        "aarch64-apple-darwin",
-        "x86_64-apple-darwin",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-gnu",
-    ):
-        for path in ("runtime/bin/astrid", "runtime/bin/astrid-daemon"):
-            if path == "runtime/bin/astrid":
-                blake = blake3
-                sha = sha256
-            else:
-                blake = daemon_blake3
-                sha = daemon_sha256
-            records.append(
-                "[[executables]]\n"
-                f'target = "{target}"\n'
-                f'path = "{path}"\n'
-                f'blake3 = "{blake}"\n'
-                f'sha256 = "{sha}"\n'
-            )
-    return (
-        "schema-version = 2\n"
-        'product = "unicity-aos-ce"\n'
-        'version = "2026.9.0"\n\n' + "\n".join(records)
-    )
-
-
 def plant_fake_runtime(home: Path, installer: Path) -> None:
-    statement_script = (
-        'cat > "$release/unicity-aos-2026.9.0-release.toml" <<STATEMENT\n'
-        "schema-version = 2\n"
-        'product = "unicity-aos-ce"\n'
-        'version = "2026.9.0"\n'
-        "\n"
-    )
-    for target in (
-        "aarch64-apple-darwin",
-        "x86_64-apple-darwin",
-        "aarch64-unknown-linux-gnu",
-        "x86_64-unknown-linux-gnu",
-    ):
-        for path in ("runtime/bin/astrid", "runtime/bin/astrid-daemon"):
-            digest_prefix = "runtime" if path.endswith("/astrid") else "daemon"
-            statement_script += (
-                "[[executables]]\n"
-                f'target = "{target}"\n'
-                f'path = "{path}"\n'
-                f'blake3 = "${digest_prefix}_blake3"\n'
-                f'sha256 = "${digest_prefix}_sha256"\n'
-            )
-    statement_script += "STATEMENT\n"
     write_executable(
         installer,
         "#!/bin/sh\n"
@@ -262,7 +190,17 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         'runtime_sha256=$(shasum -a 256 "$release/runtime/bin/astrid" | awk \'{print $1}\')\n'
         'daemon_blake3=$(b3sum "$release/runtime/bin/astrid-daemon" | awk \'{print $1}\')\n'
         'daemon_sha256=$(shasum -a 256 "$release/runtime/bin/astrid-daemon" | awk \'{print $1}\')\n'
-        f"{statement_script}"
+        'python3 - "$release/release-manifest.json" "$runtime_blake3" "$runtime_sha256" <<\'PY\'\n'
+        "import json, pathlib, sys\n"
+        "path, blake3, sha256 = sys.argv[1:]\n"
+        "manifest = json.loads(pathlib.Path(path).read_text())\n"
+        'manifest["release_files"]["runtime/bin/astrid"] = {\n'
+        '    "blake3": blake3,\n'
+        '    "mode": 0o755,\n'
+        '    "sha256": sha256,\n'
+        "}\n"
+        "pathlib.Path(path).write_text(json.dumps(manifest, indent=2) + \"\\n\")\n"
+        "PY\n"
         'ln -s "releases/0.3.0" "$receipt_root/current"\n'
         'ln -s "current/Pack.lock" "$receipt_root/Pack.lock"\n',
     )
@@ -837,35 +775,34 @@ def main() -> None:
         assert noncanonical_gate.returncode != 0
         assert "not the canonical active release executable" in noncanonical_gate.stderr
 
-        # The schema-v2 executable table is the only accepted byte authority.
-        # Its absence, v1 predecessor form, and archive-only manifest digest
-        # all fail closed.
-        statement = home / "releases/2026.9.0/unicity-aos-2026.9.0-release.toml"
-        statement_text = statement.read_text()
-        statement.unlink()
+        # The package manifest's executable inventory is the byte authority.
+        # A missing, malformed, or non-executable Astrid record fails closed.
+        manifest = home / "releases/2026.9.0/release-manifest.json"
+        manifest_text = manifest.read_text()
+        original_manifest = json.loads(manifest_text)
+        original_record = original_manifest["release_files"]["runtime/bin/astrid"]
+        del original_manifest["release_files"]["runtime/bin/astrid"]
+        manifest.write_text(json.dumps(original_manifest, indent=2) + "\n")
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "no regular signed executable statement" in rejected.stderr
-        statement.write_text(executable_statement(schema_version=1))
+        assert "lacks an exact Astrid inventory record" in rejected.stderr
+        original_manifest["release_files"]["runtime/bin/astrid"] = {
+            **original_record,
+            "unexpected": True,
+        }
+        manifest.write_text(json.dumps(original_manifest, indent=2) + "\n")
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "must use schema-version 2" in rejected.stderr
-        statement.write_text(
-            'schema-version = 2\nproduct = "unicity-aos-ce"\nversion = "2026.9.0"\n'
-        )
+        assert "lacks an exact Astrid inventory record" in rejected.stderr
+        original_manifest["release_files"]["runtime/bin/astrid"] = {
+            **original_record,
+            "mode": 0o600,
+        }
+        manifest.write_text(json.dumps(original_manifest, indent=2) + "\n")
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "exactly eight executable records" in rejected.stderr
-        wrong_path_statement = statement_text.replace(
-            'path = "runtime/bin/astrid"\n',
-            'path = "runtime/bin/astrid-other"\n',
-            1,
-        )
-        statement.write_text(wrong_path_statement)
-        rejected = resolve_active(environment)
-        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "unsupported executable path" in rejected.stderr
-        statement.write_text(statement_text)
+        assert "Astrid inventory record is invalid" in rejected.stderr
+        manifest.write_text(manifest_text)
 
         daemon_runtime = home / "releases/2026.9.0/runtime/bin/astrid-daemon"
         daemon_bytes = daemon_runtime.read_bytes()
@@ -946,22 +883,23 @@ def main() -> None:
             stderr=subprocess.PIPE,
             check=True,
         ).stdout.split()
-        current_digests = re.search(
-            r'^blake3 = "([0-9a-f]+)"\nsha256 = "([0-9a-f]+)"$',
-            statement_text,
-            re.MULTILINE,
-        )
-        assert current_digests
-        wrong_statement = statement_text.replace(
-            current_digests.group(1), wrong_report_digests[0]
-        ).replace(current_digests.group(2), wrong_report_digests[1])
-        statement.write_text(wrong_statement)
+        authorized_manifest = json.loads(manifest.read_text())
+        authorized_manifest["release_files"]["runtime/bin/astrid"] = {
+            "blake3": wrong_report_digests[0],
+            "mode": 0o755,
+            "sha256": wrong_report_digests[1],
+        }
+        manifest.write_text(json.dumps(authorized_manifest, indent=2) + "\n")
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
         assert "expected 0.11.0" in rejected.stderr
-        statement.write_text(statement_text)
+        authorized_manifest["release_files"]["runtime/bin/astrid"] = {
+            "blake3": expected_digests[0],
+            "mode": 0o755,
+            "sha256": expected_digests[1],
+        }
+        manifest.write_text(json.dumps(authorized_manifest, indent=2) + "\n")
 
-        manifest = home / "releases/2026.9.0/release-manifest.json"
         manifest.write_text(runtime_manifest(runtime_version="0.10.4"))
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
@@ -987,7 +925,7 @@ def main() -> None:
         compatibility.write_text(ready_compatibility(release_ready=False))
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "does not authorize a released Astrid 0.11.0" in rejected.stderr
+        assert "does not authorize a released Astrid runtime" in rejected.stderr
         compatibility.write_text(ready_compatibility())
 
         receipt = home / "extensions/oracles/codex/current/Receipt.toml"

@@ -57,8 +57,13 @@ name = "aos-forge"
 source = "capsules/aos-forge.capsule"
 EOF
 for capsule in aos-cli aos-mcp aos-fs aos-openai-compat aos-skills aos-forge; do
+  capsule_stage="$work/product-capsule-$capsule"
+  mkdir -p "$capsule_stage"
+  capsule_member=$(printf '%s\n' "$capsule" | tr '-' '_')
   printf 'signed product fixture for %s\n' "$capsule" \
-    > "$product_assets/capsules/$capsule.capsule"
+    > "$capsule_stage/$capsule_member.wasm"
+  COPYFILE_DISABLE=1 tar -czf "$product_assets/capsules/$capsule.capsule" \
+    -C "$capsule_stage" "$capsule_member.wasm"
 done
 
 write_fixture_checksums() {
@@ -203,19 +208,17 @@ case " $* " in
       if [ "$previous" = --agent ]; then principal=$argument; fi
       previous=$argument
     done
-    # The agent option is only a matching display label. The fake daemon uses
-    # the global principal as the authenticated identity and rejects the old
-    # label-only form (or a P/Q mismatch) so parent revisions fail this test.
+    # The global principal is the authenticated identity. The agent label
+    # selects the projection being inspected.
     [ -n "$authenticated_principal" ] || {
       printf '%s\n' 'capsule show requires a global --principal' >&2
       exit 94
     }
-    [ "$authenticated_principal" = "$principal" ] || {
-      printf 'capsule show principal mismatch: %s vs %s\n' \
-        "$authenticated_principal" "$principal" >&2
+    [ "$authenticated_principal" = default ] || {
+      printf 'capsule show must authenticate as default: %s\n' \
+        "$authenticated_principal" >&2
       exit 95
     }
-    principal=$authenticated_principal
     record="$TEST_STATE/installed-$principal-$capsule"
     if [ ! -f "$record" ]; then
       printf "capsule '%s' is not installed for agent '%s'\n" \
@@ -286,7 +289,8 @@ case " $* " in
     while IFS= read -r asset; do
       capsule=${asset%.capsule}
       source="$release/capsules/$asset"
-      hash=$(shasum -a 256 "$source" | awk '{print $1}')
+      member=$(printf '%s\n' "$capsule" | tr '-' '_')
+      hash=$(tar -xOf "$source" "$member.wasm" | b3sum | awk '{print $1}')
       printf '%s\n%s\n%s\n%s\n' "$hash" "$source" \
         '2026-09-01T00:00:00+00:00' '2026-09-01T00:00:00+00:00' \
         > "$TEST_STATE/installed-default-$capsule"
@@ -313,8 +317,13 @@ EOF
 cat > "$fake_bin/b3sum" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-digest=$(shasum -a 256 "$1" | awk '{print $1}')
-printf '%s  %s\n' "$digest" "$1"
+if (( $# == 0 )); then
+  digest=$(shasum -a 256 | awk '{print $1}')
+  printf '%s  -\n' "$digest"
+else
+  digest=$(shasum -a 256 "$1" | awk '{print $1}')
+  printf '%s  %s\n' "$digest" "$1"
+fi
 EOF
 
 cat > "$fake_bin/codex" <<'EOF'
@@ -326,6 +335,9 @@ printf '\n' >> "$TEST_LOG"
 if [ -n "${TEST_PLUGIN_STATE:-}" ]; then
   mkdir -p "$(dirname "$TEST_PLUGIN_STATE")"
   : > "$TEST_PLUGIN_STATE"
+fi
+if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = add ]; then
+  printf '%s\n' "${4:-}" > "$TEST_STATE/codex-marketplace-root"
 fi
 [ "${TEST_FAIL_PLUGIN:-0}" -eq 0 ] || exit 70
 EOF
@@ -481,7 +493,8 @@ plugin_only_start=$(wc -l < "$TEST_LOG")
 AOS_HOME="$plugin_only_home" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
 tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
-grep -Eq '^codex plugin marketplace add /.*/plugin-stage$' "$work/plugin-only.log"
+grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/0\.3\.0$' \
+  "$work/plugin-only.log"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
 if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
   echo "plugin-only installation provisioned AOS or another host" >&2
@@ -511,6 +524,9 @@ codex_start=$(wc -l < "$TEST_LOG")
 
 "$repo_root/install.sh" --host codex --yes --no-install-aos
 
+codex_marketplace_root=$(cat "$TEST_STATE/codex-marketplace-root")
+[ "$codex_marketplace_root" = "$AOS_HOME/extensions/oracles/plugins/0.3.0" ]
+[ -d "$codex_marketplace_root" ]
 tail -n "+$((codex_start + 1))" "$TEST_LOG" > "$work/codex-only.log"
 cmp "$work/claude-before" "$AOS_HOME/extensions/oracles/claude/private-state"
 if grep -Eq '^(claude|grok) ' "$work/codex-only.log" \
@@ -526,18 +542,17 @@ cmp "$assets/codex.toml" "$lock"
 test ! -e "$home/.astrid"
 test ! -e "$AOS_HOME/runtime/bin"
 grep -Fq 'aos status --json' "$TEST_LOG"
-# Capsule metadata is authenticated by the global principal, not merely by an
-# agent display label. Every query must put the principal before the command
-# and carry the same value in its optional --agent label.
-capsule_query_pattern='^aos --principal (default|claude-code|codex-code|grok-code) capsule show [A-Za-z0-9][A-Za-z0-9._-]* --agent (default|claude-code|codex-code|grok-code) --format toml$'
+# Capsule metadata is authenticated by the booted default principal, while the
+# agent label selects the projection being inspected.
+capsule_query_pattern='^aos --principal default capsule show [A-Za-z0-9][A-Za-z0-9._-]* --agent (default|claude-code|codex-code|grok-code) --format toml$'
 capsule_queries=$(grep -Ec "$capsule_query_pattern" "$TEST_LOG")
 [ "$capsule_queries" -gt 0 ]
 if grep -Eq '^aos capsule show ' "$TEST_LOG"; then
   echo "capsule metadata query omitted global --principal" >&2
   exit 1
 fi
-while read -r _query _flag query_principal _capsule _show _name _agent_flag label_principal _format _toml; do
-  [ "$query_principal" = "$label_principal" ]
+while read -r _query _flag _query_principal _capsule _show _name _agent_flag label_principal _format _toml; do
+  [ -n "$label_principal" ]
 done < <(grep -E "$capsule_query_pattern" "$TEST_LOG")
 grep -Fq 'aos --principal default init --yes' "$TEST_LOG"
 [ "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG")" -eq 1 ]
@@ -581,7 +596,7 @@ fi
 grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-skills' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-forge' "$TEST_LOG"
-grep -Eq '^codex plugin marketplace add /.*/plugin-stage$' "$TEST_LOG"
+grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/0\.3\.0$' "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
 test -d "$AOS_HOME/extensions/oracles/plugins/0.3.0"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
@@ -1010,7 +1025,7 @@ grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.
 grep -Fq -- '--add-capsule aos-skills' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-grep -Eq '^claude plugin marketplace add /.*/plugin-stage$' "$TEST_LOG"
+grep -Eq '^claude plugin marketplace add /.*/extensions/oracles/plugins/0\.3\.0$' "$TEST_LOG"
 if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
   echo "external Claude plugin installed an AOS-managed workload adapter" >&2
   exit 1
@@ -1474,7 +1489,8 @@ printf '%s\n' \
   aos-forge.capsule \
   > "$legacy_home/releases/2026.1.1/capsule-assets.txt"
 
-product_mcp_hash=$(shasum -a 256 "$product_assets/capsules/aos-mcp.capsule" | awk '{print $1}')
+product_mcp_hash=$(tar -xOf "$product_assets/capsules/aos-mcp.capsule" aos_mcp.wasm \
+  | b3sum | awk '{print $1}')
 write_test_capsule "$legacy_state" codex-code aos-mcp \
   "$product_mcp_hash" \
   "$legacy_home/releases/2026.9.0/capsules/aos-mcp.capsule" \

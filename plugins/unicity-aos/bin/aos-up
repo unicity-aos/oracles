@@ -116,6 +116,9 @@ _aos_expected_sha256=""
 . "$RESOLVE"
 
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
+ASTRID_WORKSPACE_STATE_DIR=.aos
+ASTRID_RUN_DIR="$AOS_HOME_DIR/run"
+export ASTRID_WORKSPACE_STATE_DIR ASTRID_RUN_DIR
 PACK_RECEIPT="$AOS_HOME_DIR/extensions/oracles/codex/Pack.lock"
 INSTALL_LOCK="$AOS_HOME_DIR/extensions/oracles/.install.lock"
 INSTALLER="$HERE/aos-install"

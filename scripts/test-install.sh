@@ -103,6 +103,18 @@ if [ -n "${AOS_VAR_OPENAI_API_KEY:-}" ]; then
 fi
 case " $* " in
   *" status "*)
+    if [ "${TEST_STATUS_FAILURE:-0}" -ne 0 ]; then
+      printf '%s\n' 'error: daemon status transport failed' >&2
+      exit 93
+    fi
+    if [ "${TEST_STATUS_WORKSPACE:-0}" -ne 0 ] \
+      && [ -f "$AOS_HOME/runtime-running" ] \
+      && [ ! -e "$TEST_STATE/status-workspace-seen" ]
+    then
+      : > "$TEST_STATE/status-workspace-seen"
+      printf '%s\n' 'error: running daemon belongs to another project or workspace layout' >&2
+      exit 1
+    fi
     if [ -f "$AOS_HOME/runtime-running" ]; then
       printf '{"state":"running"}\n'
     else
@@ -827,6 +839,59 @@ if grep -Fq 'aos --principal default stop' "$work/failed-workspace-probe.log"; t
   echo "unrelated runtime probe failure stopped the runtime" >&2
   exit 1
 fi
+
+# The status command itself can report a running daemon from another project
+# before it can emit JSON. The installer must treat that exact diagnostic as a
+# stale workspace selection, stop the daemon, and continue in the product
+# workspace; a status error must not be silently treated as stopped.
+status_workspace_home="$home/status-workspace/.aos"
+status_workspace_state="$work/status-workspace-state"
+mkdir -p "$status_workspace_state" "$status_workspace_home"
+: > "$status_workspace_home/runtime-running"
+status_workspace_start=$(wc -l < "$TEST_LOG")
+TEST_STATE="$status_workspace_state" AOS_HOME="$status_workspace_home" \
+  TEST_STATUS_WORKSPACE=1 "$repo_root/install.sh" --host codex --yes --no-install-aos
+tail -n "+$((status_workspace_start + 1))" "$TEST_LOG" \
+  > "$work/status-workspace.log"
+grep -Fq 'aos status --json' "$work/status-workspace.log"
+grep -Fq 'aos --principal default stop' "$work/status-workspace.log"
+grep -Fq 'aos --principal default init --yes' "$work/status-workspace.log"
+status_probe=$(grep -n 'aos status --json' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
+status_stop=$(grep -n 'aos --principal default stop' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
+status_init=$(grep -n 'aos --principal default init --yes' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
+test "$status_probe" -lt "$status_stop"
+test "$status_stop" -lt "$status_init"
+test -f "$status_workspace_state/default-initialized"
+test -f "$status_workspace_state/agent-codex-code"
+test -f "$status_workspace_home/extensions/oracles/codex/Pack.lock"
+test -f "$status_workspace_home/runtime-running"
+
+# An unrelated status failure is not evidence that the daemon is stopped. It
+# must fail closed without stopping the runtime or beginning first-boot state.
+status_failure_home="$home/status-failure/.aos"
+status_failure_state="$work/status-failure-state"
+mkdir -p "$status_failure_state" "$status_failure_home"
+: > "$status_failure_home/runtime-running"
+status_failure_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$status_failure_state" AOS_HOME="$status_failure_home" \
+  TEST_STATUS_FAILURE=1 "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/status-failure.out" 2>&1
+then
+  echo "unrelated status failure was treated as a successful runtime query" >&2
+  exit 1
+fi
+grep -Fq 'could not query Unicity CE status: error: daemon status transport failed' \
+  "$work/status-failure.out"
+tail -n "+$((status_failure_start + 1))" "$TEST_LOG" \
+  > "$work/status-failure.log"
+if grep -Fq 'aos --principal default stop' "$work/status-failure.log" \
+  || grep -Fq 'aos --principal default init --yes' "$work/status-failure.log"
+then
+  echo "unrelated status failure mutated or stopped the runtime" >&2
+  exit 1
+fi
+test -f "$status_failure_home/runtime-running"
+test ! -e "$status_failure_state/default-initialized"
 
 distribution=$(grep -n 'aos --principal default init --yes' "$TEST_LOG" | head -n1 | cut -d: -f1)
 create=$(grep -n 'agent create codex-code' "$TEST_LOG" | head -n1 | cut -d: -f1)

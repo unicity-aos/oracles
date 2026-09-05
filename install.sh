@@ -550,9 +550,25 @@ select_hosts() {
 }
 
 daemon_is_live() {
-  status=$(aos status --json 2>/dev/null || true)
-  printf '%s' "$status" \
-    | grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"'
+  status_output="$WORK/daemon-status.json"
+  status_error="$WORK/daemon-status.err"
+  status_code=0
+  aos status --json >"$status_output" 2>"$status_error" || status_code=$?
+  if [ "$status_code" -ne 0 ]; then
+    # AOS reports a running daemon from a different project/layout as an
+    # explicit diagnostic instead of JSON status. Preserve that distinction so
+    # the caller can restart it through the canonical product workspace. Every
+    # other status failure is an unreadable runtime, not proof that it is
+    # stopped, and must remain fail-closed.
+    if grep -Fq 'running daemon belongs to another project or workspace layout' \
+      "$status_error" "$status_output"
+    then
+      return 2
+    fi
+    status_detail=$(tail -n 1 "$status_error" 2>/dev/null || true)
+    die "could not query Unicity CE status${status_detail:+: $status_detail}"
+  fi
+  grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$status_output"
 }
 
 enter_product_workspace() {
@@ -565,7 +581,24 @@ enter_product_workspace() {
 }
 
 repair_runtime_workspace_selection() {
-  daemon_is_live || return 0
+  if daemon_is_live; then
+    :
+  else
+    status_code=$?
+    case "$status_code" in
+      1) return 0 ;;
+      2)
+        # `aos status` can report the workspace mismatch before it can emit a
+        # status document. That diagnostic is authoritative: stop the stale
+        # daemon now, while still refusing to mutate for unrelated errors.
+        say "Restarting Unicity CE in its product runtime workspace..."
+        aos --principal default stop >/dev/null \
+          || die "could not stop the runtime using a stale workspace selection"
+        return 0
+        ;;
+      *) die "could not verify the active product runtime workspace" ;;
+    esac
+  fi
   probe_error="$WORK/runtime-workspace-probe.err"
   if aos --principal default ps --format json >/dev/null 2>"$probe_error"; then
     rm -f "$probe_error"
@@ -582,8 +615,14 @@ repair_runtime_workspace_selection() {
 }
 
 ensure_base() {
-  daemon_was_live=1
-  if ! daemon_is_live; then daemon_was_live=0; fi
+  if daemon_is_live; then
+    daemon_was_live=1
+  else
+    status_code=$?
+    [ "$status_code" -eq 1 ] \
+      || die "could not verify the active product runtime workspace"
+    daemon_was_live=0
+  fi
   if [ "$daemon_was_live" -eq 0 ]; then
     # The AOS-owned init command is the only supported bootstrap authority. It
     # applies the authenticated release manifest as one OperatorDistribution;
@@ -591,12 +630,23 @@ ensure_base() {
     # caller-approved installs.
     aos --principal default init --yes </dev/null \
       || die "could not apply the signed Unicity AOS operator distribution"
-    if ! daemon_is_live; then
+    if daemon_is_live; then
+      :
+    else
+      status_code=$?
+      [ "$status_code" -eq 1 ] \
+        || die "could not verify the active product runtime workspace"
       say "Starting Unicity CE..."
       aos --principal default start >/dev/null
     fi
-    daemon_is_live \
-      || die "Unicity CE did not become reachable after the runtime reported readiness"
+    if daemon_is_live; then
+      :
+    else
+      status_code=$?
+      [ "$status_code" -eq 1 ] \
+        || die "could not verify the active product runtime workspace"
+      die "Unicity CE did not become reachable after the runtime reported readiness"
+    fi
   fi
 }
 

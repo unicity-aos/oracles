@@ -159,12 +159,27 @@ case " $* " in
     fi
     capsule=""
     principal=""
+    authenticated_principal=""
     previous=""
     for argument in "$@"; do
+      if [ "$previous" = --principal ]; then authenticated_principal=$argument; fi
       if [ "$previous" = show ]; then capsule=$argument; fi
       if [ "$previous" = --agent ]; then principal=$argument; fi
       previous=$argument
     done
+    # The agent option is only a matching display label. The fake daemon uses
+    # the global principal as the authenticated identity and rejects the old
+    # label-only form (or a P/Q mismatch) so parent revisions fail this test.
+    [ -n "$authenticated_principal" ] || {
+      printf '%s\n' 'capsule show requires a global --principal' >&2
+      exit 94
+    }
+    [ "$authenticated_principal" = "$principal" ] || {
+      printf 'capsule show principal mismatch: %s vs %s\n' \
+        "$authenticated_principal" "$principal" >&2
+      exit 95
+    }
+    principal=$authenticated_principal
     record="$TEST_STATE/installed-$principal-$capsule"
     if [ ! -f "$record" ]; then
       printf "capsule '%s' is not installed for agent '%s'\n" \
@@ -475,6 +490,19 @@ cmp "$assets/codex.toml" "$lock"
 test ! -e "$home/.astrid"
 test ! -e "$AOS_HOME/runtime/bin"
 grep -Fq 'aos status --json' "$TEST_LOG"
+# Capsule metadata is authenticated by the global principal, not merely by an
+# agent display label. Every query must put the principal before the command
+# and carry the same value in its optional --agent label.
+capsule_query_pattern='^aos --principal (default|claude-code|codex-code|grok-code) capsule show [A-Za-z0-9][A-Za-z0-9._-]* --agent (default|claude-code|codex-code|grok-code) --format toml$'
+capsule_queries=$(grep -Ec "$capsule_query_pattern" "$TEST_LOG")
+[ "$capsule_queries" -gt 0 ]
+if grep -Eq '^aos capsule show ' "$TEST_LOG"; then
+  echo "capsule metadata query omitted global --principal" >&2
+  exit 1
+fi
+while read -r _query _flag query_principal _capsule _show _name _agent_flag label_principal _format _toml; do
+  [ "$query_principal" = "$label_principal" ]
+done < <(grep -E "$capsule_query_pattern" "$TEST_LOG")
 grep -Fq 'aos --principal default init --yes' "$TEST_LOG"
 [ "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG")" -eq 1 ]
 if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then

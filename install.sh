@@ -717,8 +717,11 @@ load_capsule_record() {
   CAPSULE_UPDATED_AT=""
   cr_error="$WORK/capsule-show-$cr_principal-$cr_capsule.err"
   cr_status=0
-  cr_record=$(aos capsule show "$cr_capsule" --agent "$cr_principal" \
-    --format toml 2>"$cr_error") || cr_status=$?
+  # The global principal authenticates the IPC request. Keep the matching
+  # --agent label so the human-readable absent diagnostic remains scoped to
+  # the same principal; a display label alone does not authorize the query.
+  cr_record=$(aos --principal "$cr_principal" capsule show "$cr_capsule" \
+    --agent "$cr_principal" --format toml 2>"$cr_error") || cr_status=$?
   if [ "$cr_status" -ne 0 ]; then
     # AOS marks an absent capsule with status 1 and this documented
     # diagnostic. Any other failure can mean unreadable or truncated state,

@@ -31,6 +31,13 @@ done
 release="$AOS_HOME/releases/2026.9.0"
 receipt_root="$AOS_HOME/extensions/oracles/codex"
 receipt="$receipt_root/releases/0.3.0"
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64|Darwin/aarch64) fixture_target=aarch64-apple-darwin ;;
+  Darwin/x86_64) fixture_target=x86_64-apple-darwin ;;
+  Linux/aarch64) fixture_target=aarch64-unknown-linux-gnu ;;
+  Linux/x86_64) fixture_target=x86_64-unknown-linux-gnu ;;
+  *) exit 89 ;;
+esac
 mkdir -p "$AOS_HOME/bin" "$release/runtime/bin" "$receipt"
 printf '%s\n' 'version = "0.3.0"' > "$receipt/Pack.lock"
 cat > "$receipt/Receipt.toml" <<'RECEIPT'
@@ -67,7 +74,7 @@ cat > "$release/release-manifest.json" <<'MANIFEST'
     "name": "Unicity AOS Community Edition",
     "version": "2026.9.0"
   },
-  "target": "aarch64-apple-darwin",
+  "target": "__TARGET__",
   "layout": {
     "release_directory": "releases/2026.9.0",
     "runtime_executables": "runtime/bin",
@@ -77,9 +84,16 @@ cat > "$release/release-manifest.json" <<'MANIFEST'
     "repository": "astrid-runtime/astrid",
     "version": "0.11.0",
     "tag": "v0.11.0",
-    "asset": "astrid-0.11.0-aarch64-apple-darwin.tar.gz",
+    "asset": "astrid-0.11.0-__TARGET__.tar.gz",
     "digest": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
     "release_workflow_identity": "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.11.0"
+  },
+  "release_files": {
+    "runtime/bin/astrid": {
+      "blake3": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mode": 493,
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    }
   }
 }
 MANIFEST
@@ -102,6 +116,23 @@ daemon_sha256=$(shasum -a 256 "$release/runtime/bin/astrid-daemon" 2>/dev/null |
 if [ "${#daemon_blake3}" -ne 64 ] || [ "${#daemon_sha256}" -ne 64 ]; then
   exit 90
 fi
+python3 - "$release/release-manifest.json" "$fixture_target" \
+  "$runtime_blake3" "$runtime_sha256" <<'PY'
+import json
+import pathlib
+import sys
+
+path, target, blake3, sha256 = sys.argv[1:]
+manifest = json.loads(pathlib.Path(path).read_text())
+manifest["target"] = target
+manifest["runtime"]["asset"] = f"astrid-0.11.0-{target}.tar.gz"
+manifest["release_files"]["runtime/bin/astrid"] = {
+    "blake3": blake3,
+    "mode": 0o755,
+    "sha256": sha256,
+}
+pathlib.Path(path).write_text(json.dumps(manifest, indent=2) + "\n")
+PY
 {
   printf '%s\n' \
     'schema-version = 2' \

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import platform
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,6 +15,15 @@ ROOT = Path(__file__).resolve().parent.parent
 PLUGIN = ROOT / "plugins/unicity-aos"
 SERVER = json.loads((PLUGIN / ".mcp.json").read_text())["mcpServers"]["aos"]
 PYTHON_DIR = str(Path(shutil.which("python3") or "/usr/bin/python3").resolve().parent)
+SYSTEM = platform.system()
+MACHINE = platform.machine()
+RUNTIME_TARGET = {
+    ("Darwin", "arm64"): "aarch64-apple-darwin",
+    ("Darwin", "aarch64"): "aarch64-apple-darwin",
+    ("Darwin", "x86_64"): "x86_64-apple-darwin",
+    ("Linux", "aarch64"): "aarch64-unknown-linux-gnu",
+    ("Linux", "x86_64"): "x86_64-unknown-linux-gnu",
+}[(SYSTEM, MACHINE)]
 
 
 def write_executable(path: Path, body: str) -> None:
@@ -70,7 +80,7 @@ def resolve_active(
 def runtime_manifest(
     product_version: str = "2026.9.0", runtime_version: str = "0.11.0"
 ) -> str:
-    target = "aarch64-apple-darwin"
+    target = RUNTIME_TARGET
     return json.dumps(
         {
             "schema_version": 2,

@@ -66,8 +66,10 @@ install never writes a success receipt.
 ```text
 host marketplace plugin
         |
-        v
-aos --principal <host>-code mcp serve
+        +-- Codex (default): aos-up -> persistent gateway `mcp attach`
+        |     (`mcp serve` remains an explicit Codex escape hatch)
+        |
+        +-- Claude Code / Grok Build: aos --principal <host>-code mcp serve
         |
         v
 aos-mcp
@@ -76,15 +78,24 @@ aos-mcp
 Unicity AOS Community Edition
 ```
 
-The customer-facing server, broker capsule, and tool namespace are `aos`,
-`aos-mcp`, and `mcp__aos__*`. Neutral runtime identifiers remain unchanged
-behind that adapter: `astrid.v1.*`, `astrid-sdk`, the `astrid:*` WIT world, and
-the bundled runtime binaries retain their permanent names and provenance.
+Codex attaches to a warm AOS gateway. Claude Code and Grok Build still start
+`aos mcp serve` per session. The customer-facing server, broker capsule, and
+tool namespace remain `aos`, `aos-mcp`, and `mcp__aos__*`. Neutral runtime
+identifiers stay unchanged behind that adapter: `astrid.v1.*`, `astrid-sdk`,
+the `astrid:*` WIT world, and the bundled runtime binaries retain their
+permanent names and provenance.
 
 The Codex plugin separates three kinds of knowledge: the AOS operating model,
 capsule authoring through Forge, and proactive user-space world extension. See
-[Unicity AOS for Codex](plugins/unicity-aos/README.md) for the exact fresh-session
-load path and its current runtime boundaries.
+[Unicity AOS for Codex](plugins/unicity-aos/README.md) for the exact
+fresh-session load path and its current runtime boundaries. After installing
+or updating the plugin, start a new Codex thread so skills, hooks, and
+`mcp__aos__*` tools are discovered together.
+
+Current published Oracle identity is `0.2.6`, compatible with AOS `>=2026.1.3`.
+A later signed AOS `2026.9.0` / Oracle `0.3.0` bootstrap (verify signed
+artifacts, install with the daemon stopped, enable the plugin, then start a
+fresh Codex session) is not shipped.
 
 ## Develop
 

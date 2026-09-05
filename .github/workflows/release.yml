@@ -111,21 +111,7 @@ jobs:
         run: cargo install b3sum --locked --version "$B3SUM_VERSION"
 
       - name: Build host adapter pack manifests
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts
-          for host in claude codex grok; do
-            install -m 0644 "packs/$host.toml" "artifacts/$host-pack.toml"
-          done
-          tar --sort=name --mtime='UTC 1970-01-01' \
-            --owner=0 --group=0 --numeric-owner \
-            -czf artifacts/aos-oracle-plugins.tar.gz \
-            .agents .claude-plugin .grok-plugin \
-            plugins/claude plugins/grok plugins/unicity-aos
-          cp release/runtime-compatibility.toml artifacts/runtime-compatibility.toml
-          cd artifacts
-          b3sum ./*-pack.toml aos-oracle-plugins.tar.gz \
-            runtime-compatibility.toml | sed 's#  \./#  #' > BLAKE3SUMS.txt
+        run: scripts/oracle-release-assets.sh build artifacts
 
       - uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
@@ -140,36 +126,13 @@ jobs:
           COSIGN_YES: 'true'
         run: |
           set -euo pipefail
-          cd artifacts
           identity="https://github.com/unicity-aos/oracles/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}"
-          for asset in ./*-pack.toml aos-oracle-plugins.tar.gz \
-            BLAKE3SUMS.txt runtime-compatibility.toml; do
-            cosign sign-blob --yes --bundle "$asset.sigstore.json" "$asset"
-            cosign verify-blob \
-              --bundle "$asset.sigstore.json" \
-              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-              --certificate-identity "$identity" \
-              --use-signed-timestamps \
-              "$asset"
-          done
+          scripts/oracle-release-assets.sh sign artifacts "$identity"
 
       - name: Verify exact release inventory
         run: |
           set -euo pipefail
-          cd artifacts
-          {
-            printf '%s\n' \
-              claude-pack.toml codex-pack.toml grok-pack.toml \
-              aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml
-            for asset in \
-              claude-pack.toml codex-pack.toml grok-pack.toml \
-              aos-oracle-plugins.tar.gz BLAKE3SUMS.txt runtime-compatibility.toml
-            do
-              printf '%s.sigstore.json\n' "$asset"
-            done
-          } | sort > ../expected-assets.txt
-          find . -maxdepth 1 -type f -exec basename {} \; | sort > ../actual-assets.txt
-          diff -u ../expected-assets.txt ../actual-assets.txt
+          scripts/oracle-release-assets.sh inventory artifacts expected-assets.txt
 
       - name: Stage, verify, and publish immutable GitHub release
         env:

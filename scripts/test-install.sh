@@ -148,6 +148,15 @@ case " $* " in
       printf '%s\n' 'error: daemon transport failed while reading capsule metadata' >&2
       exit 93
     fi
+    if [ -n "${TEST_CAPSULE_SHOW_CWD_LOG:-}" ]; then
+      printf '%s\n' "$PWD" >> "$TEST_CAPSULE_SHOW_CWD_LOG"
+    fi
+    if [ "${TEST_REQUIRE_PRODUCT_WORKSPACE:-0}" -ne 0 ] \
+      && [ "$PWD" != "$AOS_HOME/runtime" ]; then
+      printf 'error: capsule metadata read requires the product workspace: %s\n' \
+        "$AOS_HOME/runtime" >&2
+      exit 124
+    fi
     capsule=""
     principal=""
     previous=""
@@ -510,6 +519,34 @@ test -f "$TEST_STATE/granted-codex-code-aos-skills"
 test -f "$TEST_STATE/granted-codex-code-aos-forge"
 test ! -e "$AOS_HOME/extensions/oracles/.install.lock"
 
+# Capsule identity preflight must enter the canonical product workspace before
+# the first real AOS read. This launches the assembled manual install from an
+# unrelated project directory and makes the fake AOS reject capsule metadata
+# reads from any other cwd; the production path therefore fails on the old
+# ordering and passes only when workspace entry precedes `capsule show`.
+workspace_order_home="$home/workspace-order/.aos"
+workspace_order_state="$work/workspace-order-state"
+workspace_order_cwd="$work/workspace-order-cwd"
+workspace_order_cwd_log="$work/workspace-order-cwd.log"
+mkdir -p "$workspace_order_state" "$workspace_order_cwd"
+if ! (
+  cd "$workspace_order_cwd"
+  TEST_CAPSULE_SHOW_CWD_LOG="$workspace_order_cwd_log" \
+  TEST_REQUIRE_PRODUCT_WORKSPACE=1 TEST_STATE="$workspace_order_state" \
+  AOS_HOME="$workspace_order_home" \
+    "$repo_root/install.sh" --host claude --yes --no-install-aos
+); then
+  echo "capsule identity preflight ran outside the product workspace" >&2
+  exit 1
+fi
+test -s "$workspace_order_cwd_log"
+while IFS= read -r capsule_show_cwd; do
+  test "$capsule_show_cwd" = "$workspace_order_home/runtime"
+done < "$workspace_order_cwd_log"
+test -f "$workspace_order_state/installed-claude-code-aos-mcp"
+test -f "$workspace_order_home/extensions/oracles/claude/Pack.lock"
+test ! -e "$workspace_order_home/extensions/oracles/.install.lock"
+
 # AOS-owned optional services are resolved from the active signed product
 # release. Older compatible AOS releases can omit Forge while the generic
 # skills index remains required and granted.
@@ -689,7 +726,8 @@ fi
 test ! -e "$identity_mismatch_state/default-initialized"
 test ! -e "$identity_mismatch_state/agent-codex-code"
 test ! -e "$identity_mismatch_state/granted-codex-code-aos-mcp"
-test ! -e "$identity_mismatch_home/runtime"
+test -d "$identity_mismatch_home/runtime"
+test ! -e "$identity_mismatch_home/runtime/etc/profiles/default.toml"
 test ! -e "$identity_mismatch_home/extensions/oracles/plugins/0.3.0"
 test ! -e "$identity_mismatch_home/extensions/oracles/codex/current"
 

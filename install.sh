@@ -1186,6 +1186,13 @@ resolve_aos_capsules() {
     fi
   done < "$CURRENT_AOS_CAPSULES"
 
+  # Every AOS state/read command must run from the canonical product workspace.
+  # The identity preflight below calls `aos capsule show`; enter the workspace
+  # before that first read so a stopped or freshly restored runtime cannot bind
+  # the daemon to the caller's arbitrary host project.
+  enter_product_workspace
+  repair_runtime_workspace_selection
+
   # Preflight every existing identity before AOS can apply a distribution.
   # A foreign source, malformed hash, or default/host disagreement is a reason
   # to stop before init; it is not a state for the installer to reconcile by
@@ -1224,9 +1231,6 @@ resolve_aos_capsules() {
         || die "AOS capsule dependency '$rac_name' for $rac_principal differs from its signed pack identity"
     fi
   done < "$CURRENT_AOS_CAPSULES"
-
-  enter_product_workspace
-  repair_runtime_workspace_selection
 
   # Only bootstrap the distribution after the complete signed subset has been
   # proven present. A release missing a required Oracle dependency must not

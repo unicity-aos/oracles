@@ -115,11 +115,25 @@ case " $* " in
       printf '%s\n' 'error: running daemon belongs to another project or workspace layout' >&2
       exit 1
     fi
-    if [ -f "$AOS_HOME/runtime-running" ]; then
-      printf '{"state":"running"}\n'
-    else
-      printf '{"state":"stopped"}\n'
-    fi
+    case "${TEST_STATUS_SHAPE:-}" in
+      empty) exit 0 ;;
+      malformed) printf '%s\n' 'not-json' ;;
+      unknown) printf '%s\n' '{"state":"paused"}' ;;
+      nested) printf '%s\n' '{"details":{"state":"running"}}' ;;
+      duplicate) printf '%s\n' '{"state":"running","state":"stopped"}' ;;
+      trailing) printf '%s\n' '{"state":"running","pid":4242,"uptime_secs":3,"runtime_version":"0.10.4","ephemeral":false,"connected_clients":0,"loaded_capsules":[]}garbage' ;;
+      *)
+        status_pid=${TEST_DAEMON_PID:-4242}
+        if [ -f "$AOS_HOME/runtime-pid" ]; then
+          status_pid=$(sed -n '1p' "$AOS_HOME/runtime-pid")
+        fi
+        if [ -f "$AOS_HOME/runtime-running" ]; then
+          printf '{"state":"running","pid":%s,"uptime_secs":3,"runtime_version":"0.10.4","ephemeral":false,"connected_clients":0,"loaded_capsules":[]}\n' "$status_pid"
+        else
+          printf '{"state":"stopped","pid":0,"uptime_secs":0,"runtime_version":"0.10.4","ephemeral":false,"connected_clients":0,"loaded_capsules":[]}\n'
+        fi
+        ;;
+    esac
     ;;
   *" ps --format json "*)
     if [ "${TEST_PS_FAILURE:-0}" -ne 0 ]; then
@@ -135,6 +149,7 @@ case " $* " in
   *" start "*)
     mkdir -p "$AOS_HOME"
     : > "$AOS_HOME/runtime-running"
+    printf '%s\n' "${TEST_DAEMON_PID:-4242}" > "$AOS_HOME/runtime-pid"
     ;;
   *" stop "*)
     rm -f "$AOS_HOME/runtime-running"
@@ -156,6 +171,15 @@ case " $* " in
     : > "$TEST_STATE/agent-$principal"
     ;;
   *" capsule show "*)
+    if [ ! -f "$AOS_HOME/runtime-running" ]; then
+      printf '%s\n' 'error: capsule metadata requires a running daemon' >&2
+      exit 96
+    fi
+    if [ -n "${TEST_RUNTIME_PID_SWITCH:-}" ] \
+      && [ ! -e "$TEST_STATE/runtime-pid-switched" ]; then
+      : > "$TEST_STATE/runtime-pid-switched"
+      printf '%s\n' "$TEST_RUNTIME_PID_SWITCH" > "$AOS_HOME/runtime-pid"
+    fi
     if [ "${TEST_CAPSULE_SHOW_FAILURE:-0}" -ne 0 ]; then
       printf '%s\n' 'error: daemon transport failed while reading capsule metadata' >&2
       exit 93
@@ -517,10 +541,25 @@ while read -r _query _flag query_principal _capsule _show _name _agent_flag labe
 done < <(grep -E "$capsule_query_pattern" "$TEST_LOG")
 grep -Fq 'aos --principal default init --yes' "$TEST_LOG"
 [ "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG")" -eq 1 ]
-if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
-  echo "oracle installer stopped a runtime it does not exclusively own" >&2
-  exit 1
-fi
+grep -Fq 'aos --principal default start' "$TEST_LOG"
+grep -Fq 'aos --principal default stop' "$TEST_LOG"
+first_start=$(grep -n 'aos --principal default start' "$work/codex-only.log" | head -n1 | cut -d: -f1)
+first_capsule_query=$(grep -n ' capsule show ' "$work/codex-only.log" | head -n1 | cut -d: -f1)
+first_stop=$(grep -n 'aos --principal default stop' "$work/codex-only.log" | head -n1 | cut -d: -f1)
+test "$first_start" -lt "$first_capsule_query"
+test "$first_capsule_query" -lt "$first_stop"
+test ! -e "$AOS_HOME/runtime-running"
+
+# If another owner takes over after preflight, restoration must not stop that
+# process merely because this invocation started the prior daemon.
+concurrent_home="$home/concurrent-runtime/.aos"
+concurrent_state="$work/concurrent-runtime-state"
+mkdir -p "$concurrent_state"
+TEST_STATE="$concurrent_state" AOS_HOME="$concurrent_home" \
+  TEST_RUNTIME_PID_SWITCH=9999 "$repo_root/install.sh" \
+  --host codex --yes --no-install-aos
+test -f "$concurrent_home/runtime-running"
+test "$(sed -n '1p' "$concurrent_home/runtime-pid")" = 9999
 if grep -Fq 'aos --principal default status' "$TEST_LOG"; then
   echo "installer used the principal-scoped status probe" >&2
   exit 1
@@ -801,13 +840,14 @@ test -f "$minimal_home/extensions/oracles/codex/Pack.lock"
 
 first_lock=$(shasum -a 256 "$lock" | awk '{print $1}')
 init_count=$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG" || true)
+repeat_start=$(wc -l < "$TEST_LOG")
 "$repo_root/install.sh" --host codex --yes --no-install-aos
 test "$first_lock" = "$(shasum -a 256 "$lock" | awk '{print $1}')"
 test "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG" || true)" -eq "$init_count"
-if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
-  echo "repeat oracle install stopped the shared runtime" >&2
-  exit 1
-fi
+tail -n "+$((repeat_start + 1))" "$TEST_LOG" > "$work/repeat-install.log"
+grep -Fq 'aos --principal default start' "$work/repeat-install.log"
+grep -Fq 'aos --principal default stop' "$work/repeat-install.log"
+test ! -e "$AOS_HOME/runtime-running"
 
 # A daemon selected by an older host plugin from another project is stopped
 # through the recovery command and restarted in the product-owned workspace.
@@ -859,8 +899,10 @@ grep -Fq 'aos --principal default init --yes' "$work/status-workspace.log"
 status_probe=$(grep -n 'aos status --json' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
 status_stop=$(grep -n 'aos --principal default stop' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
 status_init=$(grep -n 'aos --principal default init --yes' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
+status_start=$(grep -n 'aos --principal default start' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
 test "$status_probe" -lt "$status_stop"
-test "$status_stop" -lt "$status_init"
+test "$status_stop" -lt "$status_start"
+test "$status_start" -lt "$status_init"
 test -f "$status_workspace_state/default-initialized"
 test -f "$status_workspace_state/agent-codex-code"
 test -f "$status_workspace_home/extensions/oracles/codex/Pack.lock"
@@ -892,6 +934,32 @@ then
 fi
 test -f "$status_failure_home/runtime-running"
 test ! -e "$status_failure_state/default-initialized"
+
+# A successful status response must be a well-formed object with exactly one
+# supported top-level state. Malformed, empty, unknown, nested, and duplicate
+# state fields fail before any start/stop/init mutation.
+for status_shape in empty malformed unknown nested duplicate trailing; do
+  strict_home="$home/status-strict-$status_shape/.aos"
+  strict_state="$work/status-strict-$status_shape-state"
+  mkdir -p "$strict_state" "$strict_home"
+  strict_start=$(wc -l < "$TEST_LOG")
+  if TEST_STATE="$strict_state" AOS_HOME="$strict_home" \
+    TEST_STATUS_SHAPE="$status_shape" \
+    "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    >"$work/status-strict-$status_shape.out" 2>&1
+  then
+    echo "status shape $status_shape was accepted" >&2
+    exit 1
+  fi
+  tail -n "+$((strict_start + 1))" "$TEST_LOG" \
+    > "$work/status-strict-$status_shape.log"
+  if grep -Eq 'aos --principal default (start|stop|init --yes)' \
+    "$work/status-strict-$status_shape.log"; then
+    echo "status shape $status_shape mutated runtime state" >&2
+    exit 1
+  fi
+  test ! -e "$strict_home/runtime-running"
+done
 
 distribution=$(grep -n 'aos --principal default init --yes' "$TEST_LOG" | head -n1 | cut -d: -f1)
 create=$(grep -n 'agent create codex-code' "$TEST_LOG" | head -n1 | cut -d: -f1)

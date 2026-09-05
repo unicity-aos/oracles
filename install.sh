@@ -46,6 +46,11 @@ PRIOR_PACK_LOCK_BACKUP=""
 PRIOR_PACK_LOCK_MODE=""
 COMMITTED_HOSTS=""
 CAPSULE_RECORD_FOUND=0
+RUNTIME_RESTORE_STOPPED=0
+RUNTIME_STARTED_PID=""
+DAEMON_STATUS_STATE=""
+DAEMON_STATUS_PID=""
+DAEMON_STATUS_ERROR_DETAIL=""
 
 say() { printf '%s\n' "$*"; }
 die() { say "aos-oracles: $*" >&2; exit 1; }
@@ -80,10 +85,45 @@ mark_host_committed() {
   esac
 }
 
+restore_runtime_state() {
+  [ "$RUNTIME_RESTORE_STOPPED" -eq 1 ] || return 0
+  if query_daemon_status; then
+    case "$DAEMON_STATUS_STATE" in
+      stopped) RUNTIME_RESTORE_STOPPED=0; return 0 ;;
+      running)
+        [ "$DAEMON_STATUS_PID" = "$RUNTIME_STARTED_PID" ] \
+          || { RUNTIME_RESTORE_STOPPED=0; return 0; }
+        aos --principal default stop >/dev/null \
+          || die "could not restore the initially stopped runtime"
+        RUNTIME_RESTORE_STOPPED=0
+        return 0
+        ;;
+    esac
+  fi
+  die "could not validate runtime ownership during restoration"
+}
+
 cleanup() {
   cleanup_status=$?
   if [ "$cleanup_status" -ne 0 ]; then
     mark_transaction_failure
+  fi
+  if [ "$RUNTIME_RESTORE_STOPPED" -eq 1 ]; then
+    # Metadata preflight may need a live daemon even when the caller started
+    # from a stopped runtime. Restore that observable state before removing
+    # transaction state, including on a rejected preflight.
+    if query_daemon_status; then
+      if [ "$DAEMON_STATUS_STATE" = running ] \
+        && [ "$DAEMON_STATUS_PID" = "$RUNTIME_STARTED_PID" ]; then
+        aos --principal default stop >/dev/null 2>&1 || \
+          say "aos-oracles: warning: could not restore the initially stopped runtime"
+      elif [ "$DAEMON_STATUS_STATE" = running ]; then
+        say "aos-oracles: leaving a concurrently-owned runtime running"
+      fi
+    else
+      say "aos-oracles: warning: could not validate runtime ownership during cleanup"
+    fi
+    RUNTIME_RESTORE_STOPPED=0
   fi
   release_install_lock
   if [ "$ROLLBACK_AOS_HOME" -eq 1 ]; then
@@ -549,7 +589,21 @@ select_hosts() {
   printf '%s\n' "$selected"
 }
 
-daemon_is_live() {
+parse_daemon_status() {
+  # The status producer emits this exact object shape. Require every field so
+  # nested, duplicate, unknown, or trailing data cannot masquerade as liveness.
+  compact=$(tr -d '[:space:]' < "$1") || return 2
+  [ -n "$compact" ] || return 2
+  printf '%s\n' "$compact" \
+    | grep -Eq '^\{"state":"(running|stopped)","pid":[0-9]+,"uptime_secs":[0-9]+,"runtime_version":"[^"\\]*","ephemeral":(true|false),"connected_clients":[0-9]+,"loaded_capsules":\[[^][]*\]\}$' \
+    || return 2
+  state=$(printf '%s' "$compact" | sed -n 's/^{"state":"\([^"]*\)".*/\1/p')
+  pid=$(printf '%s' "$compact" | sed -n 's/.*"pid":\([0-9][0-9]*\),.*/\1/p')
+  [ -n "$state" ] && [ -n "$pid" ] || return 2
+  printf '%s %s\n' "$state" "$pid"
+}
+
+query_daemon_status() {
   status_output="$WORK/daemon-status.json"
   status_error="$WORK/daemon-status.err"
   status_code=0
@@ -565,10 +619,43 @@ daemon_is_live() {
     then
       return 2
     fi
-    status_detail=$(tail -n 1 "$status_error" 2>/dev/null || true)
-    die "could not query Unicity CE status${status_detail:+: $status_detail}"
+    DAEMON_STATUS_ERROR_DETAIL=$(tail -n 1 "$status_error" 2>/dev/null || true)
+    return 3
   fi
-  grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"' "$status_output"
+  daemon_record=$(parse_daemon_status "$status_output") || return 4
+  DAEMON_STATUS_STATE=${daemon_record%% *}
+  DAEMON_STATUS_PID=${daemon_record#* }
+}
+
+daemon_is_live() {
+  query_daemon_status || {
+    status_code=$?
+    [ "$status_code" -eq 2 ] && return 2
+    [ "$status_code" -eq 3 ] \
+      && die "could not query Unicity CE status${DAEMON_STATUS_ERROR_DETAIL:+: $DAEMON_STATUS_ERROR_DETAIL}"
+    die "could not parse Unicity CE status as the expected running|stopped object"
+  }
+  daemon_state=$DAEMON_STATUS_STATE
+  case "$daemon_state" in
+    running) return 0 ;;
+    stopped) return 1 ;;
+    *) die "could not parse Unicity CE status as a single running|stopped state" ;;
+  esac
+}
+
+start_runtime_for_preflight() {
+  say "Starting Unicity CE in its product runtime workspace..."
+  aos --principal default start >/dev/null \
+    || die "could not start the runtime in its product workspace"
+  if daemon_is_live; then
+    RUNTIME_STARTED_PID=$DAEMON_STATUS_PID
+    return 0
+  else
+    status_code=$?
+  fi
+  [ "$status_code" -eq 1 ] \
+    || die "could not verify the active product runtime workspace"
+  die "Unicity CE did not become reachable after starting the runtime"
 }
 
 enter_product_workspace() {
@@ -586,7 +673,10 @@ repair_runtime_workspace_selection() {
   else
     status_code=$?
     case "$status_code" in
-      1) return 0 ;;
+      1)
+        RUNTIME_RESTORE_STOPPED=1
+        start_runtime_for_preflight
+        ;;
       2)
         # `aos status` can report the workspace mismatch before it can emit a
         # status document. That diagnostic is authoritative: stop the stale
@@ -594,7 +684,7 @@ repair_runtime_workspace_selection() {
         say "Restarting Unicity CE in its product runtime workspace..."
         aos --principal default stop >/dev/null \
           || die "could not stop the runtime using a stale workspace selection"
-        return 0
+        start_runtime_for_preflight
         ;;
       *) die "could not verify the active product runtime workspace" ;;
     esac
@@ -612,6 +702,7 @@ repair_runtime_workspace_selection() {
   say "Restarting Unicity CE in its product runtime workspace..."
   aos --principal default stop >/dev/null \
     || die "could not stop the runtime using a stale workspace selection"
+  start_runtime_for_preflight
 }
 
 ensure_base() {
@@ -636,8 +727,7 @@ ensure_base() {
       status_code=$?
       [ "$status_code" -eq 1 ] \
         || die "could not verify the active product runtime workspace"
-      say "Starting Unicity CE..."
-      aos --principal default start >/dev/null
+      start_runtime_for_preflight
     fi
     if daemon_is_live; then
       :
@@ -1604,4 +1694,5 @@ for host in $hosts; do
   write_receipt "$host" "$(principal_for "$host")" "$STAGED_PACK"
 done
 
+restore_runtime_state
 say "Unicity AOS oracle installation complete. Start a new host session to load the plugin."

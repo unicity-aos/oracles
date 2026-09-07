@@ -122,11 +122,15 @@ aos_resolve_apply() {
 aos_runtime_target() {
   _art_os=$(uname -s 2>/dev/null) || return 1
   _art_arch=$(uname -m 2>/dev/null) || return 1
+  _art_libc=gnu
+  if [ "$_art_os" = Linux ] && ldd --version 2>&1 | grep -qi musl; then
+    _art_libc=musl
+  fi
   case "$_art_os/$_art_arch" in
     Darwin/arm64|Darwin/aarch64) printf 'aarch64-apple-darwin' ;;
     Darwin/x86_64) printf 'x86_64-apple-darwin' ;;
-    Linux/aarch64|Linux/arm64) printf 'aarch64-unknown-linux-gnu' ;;
-    Linux/x86_64|Linux/amd64) printf 'x86_64-unknown-linux-gnu' ;;
+    Linux/aarch64|Linux/arm64) printf 'aarch64-unknown-linux-%s' "$_art_libc" ;;
+    Linux/x86_64|Linux/amd64) printf 'x86_64-unknown-linux-%s' "$_art_libc" ;;
     *) return 1 ;;
   esac
 }

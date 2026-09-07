@@ -459,7 +459,32 @@ def exercise_transport_failure(root: Path) -> None:
     assert not (home / "extensions/oracles/codex/Pack.lock").exists()
 
 
+def check_runtime_target_detection() -> None:
+    """Exercise production detection, including musl ldd's nonzero version exit."""
+    with tempfile.TemporaryDirectory() as directory:
+        fake_bin = Path(directory)
+        for system, machine, libc, expected in (
+            ("Linux", "aarch64", "musl", "aarch64-unknown-linux-musl"),
+            ("Linux", "x86_64", "musl", "x86_64-unknown-linux-musl"),
+            ("Linux", "aarch64", "GNU libc", "aarch64-unknown-linux-gnu"),
+            ("Linux", "x86_64", "GNU libc", "x86_64-unknown-linux-gnu"),
+            ("Darwin", "arm64", "musl", "aarch64-apple-darwin"),
+            ("Darwin", "x86_64", "musl", "x86_64-apple-darwin"),
+        ):
+            write_executable(fake_bin / "uname", "#!/bin/sh\n"
+                             f'case "$1" in -s) echo "{system}";; -m) echo "{machine}";; esac\n')
+            write_executable(fake_bin / "ldd", f"#!/bin/sh\necho '{libc}' >&2\nexit 1\n")
+            result = subprocess.run(
+                ["/bin/sh", "-c", '. "$1"; aos_runtime_target', "target-test",
+                 str(PLUGIN / "bin/lib-aos-resolve.sh")],
+                env={"PATH": f"{fake_bin}:/usr/bin:/bin"},
+                capture_output=True, text=True, check=True,
+            )
+            assert result.stdout == expected, (system, machine, libc, result)
+
+
 def main() -> None:
+    check_runtime_target_detection()
     assert SERVER["command"] == "/bin/sh"
     assert SERVER["args"][0] == "-c"
     assert "CODEX_PLUGIN_ROOT" in SERVER["args"][1]

@@ -168,7 +168,8 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         'pwd -P >> "$TEST_AOS_CWD_LOG"\n'
         'if [ "${1:-}" = --version ]; then printf "%s\\n" "Unicity AOS 2026.9.0"; exit 0; fi\n'
         'case " $* " in\n'
-        '  *" capsule show aos-mcp --agent codex-code "*) exit 0 ;;\n'
+        '  " --principal default start ") touch "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started"; exit 0 ;;\n'
+        '  *" capsule show aos-mcp --agent codex-code "*) [ -f "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started" ] || exit 94; exit 0 ;;\n'
         '  *) exit 92 ;;\n'
         "esac\n"
         "AOS\n"
@@ -230,6 +231,7 @@ def exercise_hook_adapter(root: Path) -> None:
         "#!/bin/sh\n"
         "set -eu\n"
         'case " $* " in\n'
+        '  " --principal default start ") exit 0 ;;\n'
         '  *" capsule show aos-mcp --agent codex-code "*)\n'
         '    printf "%s\\n" '
         '"capsule \'aos-mcp\' is not installed for agent \'codex-code\'" >&2\n'

@@ -149,6 +149,7 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
         "#!/bin/sh\n"
         "set -eu\n"
         'printf "%s\\n" "$*" >> "$TEST_HOOK_ARGS"\n'
+        '[ "$*" != "--principal default start" ] || exit 0\n'
         'if [ "${TEST_HOOK_TRANSPORT_FAILURE:-0}" = 1 ]; then\n'
         '  printf "%s\\n" '
         '"error: daemon transport failed while reading capsule metadata" >&2\n'
@@ -203,9 +204,10 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
 
     invocations = args_log.read_text().splitlines()
     hook_invocations = [
-        line for line in invocations if line.startswith("--principal")
+        line for line in invocations if line.startswith("--principal") and " hook " in line
     ]
-    assert len(invocations) == 4 and len(hook_invocations) == 2, invocations
+    assert invocations.count('--principal default start') == 1, invocations
+    assert len(invocations) == 5 and len(hook_invocations) == 2, invocations
     assert invocations.count(f"capsule show aos-mcp --agent {host}-code") == 2
     expected = (
         f"--principal {spec['principal']} hook --host {host} "
@@ -260,9 +262,9 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
     assert (
         "daemon transport failed while reading capsule metadata" in transport.stderr
     )
-    assert Path(transport_environment["TEST_HOOK_ARGS"]).read_text().strip() == (
-        f"capsule show aos-mcp --agent {host}-code"
-    )
+    assert Path(transport_environment["TEST_HOOK_ARGS"]).read_text().splitlines() == [
+        '--principal default start', f"capsule show aos-mcp --agent {host}-code"
+    ]
     assert not Path(transport_environment["TEST_HOOK_CWD"]).exists()
     assert not transport_plugin_data.exists()
     assert not (home / "cache").exists()

@@ -143,6 +143,15 @@ printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
 }
 
 capsule_ready() {
+  # Metadata is daemon-backed. Restore the product runtime before querying it;
+  # the host project remains MCP/event context, not the daemon workspace.
+  if [ -d "${AOS_HOME:-$HOME/.aos}/runtime" ]; then
+    aos_enter_product_workspace || exit 93
+    if [ "${AOS_PREFLIGHT_STARTED:-0}" != 1 ]; then
+      "$AOS" --principal default start >&2 || exit 93
+      AOS_PREFLIGHT_STARTED=1
+    fi
+  fi
   capsule_output=""
   capsule_status=0
   capsule_output=$("$AOS" capsule show aos-mcp --agent codex-code 2>&1) ||

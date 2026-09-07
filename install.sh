@@ -46,6 +46,11 @@ PRIOR_PACK_LOCK_BACKUP=""
 PRIOR_PACK_LOCK_MODE=""
 COMMITTED_HOSTS=""
 CAPSULE_RECORD_FOUND=0
+RUNTIME_RESTORE_STOPPED=0
+RUNTIME_STARTED_PID=""
+DAEMON_STATUS_STATE=""
+DAEMON_STATUS_PID=""
+DAEMON_STATUS_ERROR_DETAIL=""
 
 say() { printf '%s\n' "$*"; }
 die() { say "aos-oracles: $*" >&2; exit 1; }
@@ -80,10 +85,45 @@ mark_host_committed() {
   esac
 }
 
+restore_runtime_state() {
+  [ "$RUNTIME_RESTORE_STOPPED" -eq 1 ] || return 0
+  if query_daemon_status; then
+    case "$DAEMON_STATUS_STATE" in
+      stopped) RUNTIME_RESTORE_STOPPED=0; return 0 ;;
+      running)
+        [ "$DAEMON_STATUS_PID" = "$RUNTIME_STARTED_PID" ] \
+          || { RUNTIME_RESTORE_STOPPED=0; return 0; }
+        aos --principal default stop >/dev/null \
+          || die "could not restore the initially stopped runtime"
+        RUNTIME_RESTORE_STOPPED=0
+        return 0
+        ;;
+    esac
+  fi
+  die "could not validate runtime ownership during restoration"
+}
+
 cleanup() {
   cleanup_status=$?
   if [ "$cleanup_status" -ne 0 ]; then
     mark_transaction_failure
+  fi
+  if [ "$RUNTIME_RESTORE_STOPPED" -eq 1 ]; then
+    # Metadata preflight may need a live daemon even when the caller started
+    # from a stopped runtime. Restore that observable state before removing
+    # transaction state, including on a rejected preflight.
+    if query_daemon_status; then
+      if [ "$DAEMON_STATUS_STATE" = running ] \
+        && [ "$DAEMON_STATUS_PID" = "$RUNTIME_STARTED_PID" ]; then
+        aos --principal default stop >/dev/null 2>&1 || \
+          say "aos-oracles: warning: could not restore the initially stopped runtime"
+      elif [ "$DAEMON_STATUS_STATE" = running ]; then
+        say "aos-oracles: leaving a concurrently-owned runtime running"
+      fi
+    else
+      say "aos-oracles: warning: could not validate runtime ownership during cleanup"
+    fi
+    RUNTIME_RESTORE_STOPPED=0
   fi
   release_install_lock
   if [ "$ROLLBACK_AOS_HOME" -eq 1 ]; then
@@ -293,6 +333,17 @@ ensure_b3sum() {
 
 blake3_file() {
   "$B3SUM" "$1" | awk '{print $1}'
+}
+
+release_capsule_wasm_blake3() {
+  rcw_archive=$1
+  rcw_name=$2
+  rcw_member=$(printf '%s\n' "$rcw_name" | tr '-' '_')
+  rcw_output="$WORK/release-$rcw_name.wasm"
+  [ -n "$B3SUM" ] || die "b3sum is required to authenticate AOS capsule '$rcw_name'"
+  tar -xOf "$rcw_archive" "$rcw_member.wasm" >"$rcw_output" \
+    || die "AOS capsule '$rcw_name' has no readable WASM member"
+  blake3_file "$rcw_output"
 }
 
 acquire_install_lock() {
@@ -549,10 +600,73 @@ select_hosts() {
   printf '%s\n' "$selected"
 }
 
+parse_daemon_status() {
+  # The status producer emits this exact object shape. Require every field so
+  # nested, duplicate, unknown, or trailing data cannot masquerade as liveness.
+  compact=$(tr -d '[:space:]' < "$1") || return 2
+  [ -n "$compact" ] || return 2
+  printf '%s\n' "$compact" \
+    | grep -Eq '^\{"state":"(running|stopped)","pid":[0-9]+,"uptime_secs":[0-9]+,"runtime_version":"[^"\\]*","ephemeral":(true|false),"connected_clients":[0-9]+,"loaded_capsules":\[[^][]*\]\}$' \
+    || return 2
+  state=$(printf '%s' "$compact" | sed -n 's/^{"state":"\([^"]*\)".*/\1/p')
+  pid=$(printf '%s' "$compact" | sed -n 's/.*"pid":\([0-9][0-9]*\),.*/\1/p')
+  [ -n "$state" ] && [ -n "$pid" ] || return 2
+  printf '%s %s\n' "$state" "$pid"
+}
+
+query_daemon_status() {
+  status_output="$WORK/daemon-status.json"
+  status_error="$WORK/daemon-status.err"
+  status_code=0
+  aos status --json >"$status_output" 2>"$status_error" || status_code=$?
+  if [ "$status_code" -ne 0 ]; then
+    # AOS reports a running daemon from a different project/layout as an
+    # explicit diagnostic instead of JSON status. Preserve that distinction so
+    # the caller can restart it through the canonical product workspace. Every
+    # other status failure is an unreadable runtime, not proof that it is
+    # stopped, and must remain fail-closed.
+    if grep -Fq 'running daemon belongs to another project or workspace layout' \
+      "$status_error" "$status_output"
+    then
+      return 2
+    fi
+    DAEMON_STATUS_ERROR_DETAIL=$(tail -n 1 "$status_error" 2>/dev/null || true)
+    return 3
+  fi
+  daemon_record=$(parse_daemon_status "$status_output") || return 4
+  DAEMON_STATUS_STATE=${daemon_record%% *}
+  DAEMON_STATUS_PID=${daemon_record#* }
+}
+
 daemon_is_live() {
-  status=$(aos status --json 2>/dev/null || true)
-  printf '%s' "$status" \
-    | grep -Eq '"state"[[:space:]]*:[[:space:]]*"running"'
+  query_daemon_status || {
+    status_code=$?
+    [ "$status_code" -eq 2 ] && return 2
+    [ "$status_code" -eq 3 ] \
+      && die "could not query Unicity CE status${DAEMON_STATUS_ERROR_DETAIL:+: $DAEMON_STATUS_ERROR_DETAIL}"
+    die "could not parse Unicity CE status as the expected running|stopped object"
+  }
+  daemon_state=$DAEMON_STATUS_STATE
+  case "$daemon_state" in
+    running) return 0 ;;
+    stopped) return 1 ;;
+    *) die "could not parse Unicity CE status as a single running|stopped state" ;;
+  esac
+}
+
+start_runtime_for_preflight() {
+  say "Starting Unicity CE in its product runtime workspace..."
+  aos --principal default start >/dev/null \
+    || die "could not start the runtime in its product workspace"
+  if daemon_is_live; then
+    RUNTIME_STARTED_PID=$DAEMON_STATUS_PID
+    return 0
+  else
+    status_code=$?
+  fi
+  [ "$status_code" -eq 1 ] \
+    || die "could not verify the active product runtime workspace"
+  die "Unicity CE did not become reachable after starting the runtime"
 }
 
 enter_product_workspace() {
@@ -565,7 +679,27 @@ enter_product_workspace() {
 }
 
 repair_runtime_workspace_selection() {
-  daemon_is_live || return 0
+  if daemon_is_live; then
+    :
+  else
+    status_code=$?
+    case "$status_code" in
+      1)
+        RUNTIME_RESTORE_STOPPED=1
+        start_runtime_for_preflight
+        ;;
+      2)
+        # `aos status` can report the workspace mismatch before it can emit a
+        # status document. That diagnostic is authoritative: stop the stale
+        # daemon now, while still refusing to mutate for unrelated errors.
+        say "Restarting Unicity CE in its product runtime workspace..."
+        aos --principal default stop >/dev/null \
+          || die "could not stop the runtime using a stale workspace selection"
+        start_runtime_for_preflight
+        ;;
+      *) die "could not verify the active product runtime workspace" ;;
+    esac
+  fi
   probe_error="$WORK/runtime-workspace-probe.err"
   if aos --principal default ps --format json >/dev/null 2>"$probe_error"; then
     rm -f "$probe_error"
@@ -579,11 +713,18 @@ repair_runtime_workspace_selection() {
   say "Restarting Unicity CE in its product runtime workspace..."
   aos --principal default stop >/dev/null \
     || die "could not stop the runtime using a stale workspace selection"
+  start_runtime_for_preflight
 }
 
 ensure_base() {
-  daemon_was_live=1
-  if ! daemon_is_live; then daemon_was_live=0; fi
+  if daemon_is_live; then
+    daemon_was_live=1
+  else
+    status_code=$?
+    [ "$status_code" -eq 1 ] \
+      || die "could not verify the active product runtime workspace"
+    daemon_was_live=0
+  fi
   if [ "$daemon_was_live" -eq 0 ]; then
     # The AOS-owned init command is the only supported bootstrap authority. It
     # applies the authenticated release manifest as one OperatorDistribution;
@@ -591,12 +732,22 @@ ensure_base() {
     # caller-approved installs.
     aos --principal default init --yes </dev/null \
       || die "could not apply the signed Unicity AOS operator distribution"
-    if ! daemon_is_live; then
-      say "Starting Unicity CE..."
-      aos --principal default start >/dev/null
+    if daemon_is_live; then
+      :
+    else
+      status_code=$?
+      [ "$status_code" -eq 1 ] \
+        || die "could not verify the active product runtime workspace"
+      start_runtime_for_preflight
     fi
-    daemon_is_live \
-      || die "Unicity CE did not become reachable after the runtime reported readiness"
+    if daemon_is_live; then
+      :
+    else
+      status_code=$?
+      [ "$status_code" -eq 1 ] \
+        || die "could not verify the active product runtime workspace"
+      die "Unicity CE did not become reachable after the runtime reported readiness"
+    fi
   fi
 }
 
@@ -717,10 +868,10 @@ load_capsule_record() {
   CAPSULE_UPDATED_AT=""
   cr_error="$WORK/capsule-show-$cr_principal-$cr_capsule.err"
   cr_status=0
-  # The global principal authenticates the IPC request. Keep the matching
-  # --agent label so the human-readable absent diagnostic remains scoped to
-  # the same principal; a display label alone does not authorize the query.
-  cr_record=$(aos --principal "$cr_principal" capsule show "$cr_capsule" \
+  # The booted default principal authenticates the IPC request. The agent label
+  # selects the metadata projection; host principals are not authenticated or
+  # created until after this preflight.
+  cr_record=$(aos --principal default capsule show "$cr_capsule" \
     --agent "$cr_principal" --format toml 2>"$cr_error") || cr_status=$?
   if [ "$cr_status" -ne 0 ]; then
     # AOS marks an absent capsule with status 1 and this documented
@@ -1205,22 +1356,27 @@ resolve_aos_capsules() {
     [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
     aos_release_has_capsule "$rac_name" "$rac_release" || continue
     rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    rac_release_hash=$(release_capsule_wasm_blake3 "$rac_artifact" "$rac_name")
     rac_expected_host_hash=$(binding_hash "$CURRENT_PACK_BINDINGS" "$rac_name" 2>/dev/null || true)
     rac_host_hash=""
     if load_capsule_record "$rac_principal" "$rac_name"; then
-      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
-        || die "AOS capsule dependency '$rac_name' for $rac_principal is outside the signed operator distribution"
+      [ -n "$CAPSULE_SOURCE" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal has no registry source"
       printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
         || die "AOS capsule dependency '$rac_name' for $rac_principal has an invalid identity hash"
+      [ "$CAPSULE_HASH" = "$rac_release_hash" ] \
+        || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
       rac_host_hash=$CAPSULE_HASH
     elif [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
       die "AOS capsule dependency '$rac_name' for $rac_principal has a malformed identity"
     fi
     if load_capsule_record default "$rac_name"; then
-      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
-        || die "default AOS capsule dependency '$rac_name' is outside the signed operator distribution"
+      [ -n "$CAPSULE_SOURCE" ] \
+        || die "default AOS capsule dependency '$rac_name' has no registry source"
       printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
         || die "default AOS capsule dependency '$rac_name' has an invalid identity hash"
+      [ "$CAPSULE_HASH" = "$rac_release_hash" ] \
+        || die "default AOS capsule dependency '$rac_name' differs from the signed operator distribution"
       rac_default_hash=$CAPSULE_HASH
       if load_capsule_record "$rac_principal" "$rac_name"; then
         [ "$CAPSULE_HASH" = "$rac_default_hash" ] \
@@ -1253,8 +1409,9 @@ resolve_aos_capsules() {
       continue
     fi
     rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    rac_release_hash=$(release_capsule_wasm_blake3 "$rac_artifact" "$rac_name")
     if ! load_capsule_record default "$rac_name" \
-      || [ "$CAPSULE_SOURCE" != "$rac_artifact" ]
+      || [ "$CAPSULE_HASH" != "$rac_release_hash" ]
     then
       rac_apply=1
     fi
@@ -1277,15 +1434,18 @@ resolve_aos_capsules() {
       continue
     fi
     rac_artifact="$rac_release/capsules/$rac_name.capsule"
+    rac_release_hash=$(release_capsule_wasm_blake3 "$rac_artifact" "$rac_name")
     load_capsule_record default "$rac_name" \
       || die "signed AOS distribution has no readable identity for '$rac_name'"
-    [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+    [ -n "$CAPSULE_SOURCE" ] \
+      || die "signed AOS distribution capsule '$rac_name' does not resolve to the active release"
+    [ "$CAPSULE_HASH" = "$rac_release_hash" ] \
       || die "signed AOS distribution capsule '$rac_name' does not resolve to the active release"
     rac_hash=$CAPSULE_HASH
     printf '%s %s\n' "$rac_name" "$rac_hash" >> "$RESOLVED_AOS_IDENTITIES"
     printf '%s\n' "$rac_name" >> "$RESOLVED_AOS_CAPSULES"
     if load_capsule_record "$rac_principal" "$rac_name"; then
-      [ "$CAPSULE_SOURCE" = "$rac_artifact" ] \
+      [ -n "$CAPSULE_SOURCE" ] \
         && [ "$CAPSULE_HASH" = "$rac_hash" ] \
         || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
     fi
@@ -1376,10 +1536,9 @@ install_pack() {
   while read -r capsule expected_hash capsule_extra; do
     [ -n "$capsule" ] || continue
     [ -z "${capsule_extra:-}" ] || die "invalid resolved AOS capsule identity"
-    expected_source="$AOS_HOME_DIR/releases/$ACTIVE_AOS_VERSION/capsules/$capsule.capsule"
     load_capsule_record "$principal" "$capsule" \
       || die "AOS capsule grant '$capsule' has no readable identity for $principal"
-    [ "$CAPSULE_SOURCE" = "$expected_source" ] \
+    [ -n "$CAPSULE_SOURCE" ] \
       && [ "$CAPSULE_HASH" = "$expected_hash" ] \
       || die "AOS capsule grant '$capsule' for $principal differs from the signed operator distribution"
   done < "$RESOLVED_AOS_IDENTITIES"
@@ -1431,11 +1590,12 @@ reconcile_obsolete_bindings() {
 
 install_plugin() {
   host=$1
+  plugin_root="$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION"
   case "$host" in
     claude)
       have claude || die "Claude Code is not installed"
       claude plugin marketplace remove unicity-aos-oracles >/dev/null 2>&1 || true
-      claude plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
+      claude plugin marketplace add "$plugin_root" >/dev/null
       claude plugin install unicity-aos@unicity-aos-oracles >/dev/null
       ;;
     codex)
@@ -1444,15 +1604,15 @@ install_plugin() {
         | awk '$1 == "unicity-aos-oracles" { found = 1 } END { exit !found }'
       then
         codex plugin marketplace remove unicity-aos-oracles >/dev/null 2>&1 || true
-        codex plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
+        codex plugin marketplace add "$plugin_root" >/dev/null
       else
-        codex plugin marketplace add "$PLUGIN_SNAPSHOT" >/dev/null
+        codex plugin marketplace add "$plugin_root" >/dev/null
       fi
       codex plugin add unicity-aos@unicity-aos-oracles >/dev/null
       ;;
     grok)
       have grok || die "Grok Build is not installed"
-      grok plugin install "$PLUGIN_SNAPSHOT/plugins/grok" --trust >/dev/null
+      grok plugin install "$plugin_root/plugins/grok" --trust >/dev/null
       ;;
   esac
   say "✓ $host marketplace plugin installed"
@@ -1535,9 +1695,9 @@ stage_release_metadata
 ensure_aos
 if [ "$PLUGINS_ONLY" -eq 1 ]; then
   prepare_plugin_snapshot
+  activate_plugin_snapshot
   for host in $hosts; do
     install_plugin "$host"
-    activate_plugin_snapshot
     mark_host_committed "$host"
   done
   say "Unicity AOS plugin installation complete. Start a new host session to provision its oracle pack."
@@ -1546,12 +1706,13 @@ fi
 for host in $hosts; do
   install_pack "$host"
   prepare_plugin_snapshot
+  activate_plugin_snapshot
   if [ "$SKIP_HOST_PLUGIN" -eq 0 ]; then
     install_plugin "$host"
   fi
-  activate_plugin_snapshot
   reconcile_obsolete_bindings "$(principal_for "$host")"
   write_receipt "$host" "$(principal_for "$host")" "$STAGED_PACK"
 done
 
+restore_runtime_state
 say "Unicity AOS oracle installation complete. Start a new host session to load the plugin."

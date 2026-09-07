@@ -57,8 +57,13 @@ name = "aos-forge"
 source = "capsules/aos-forge.capsule"
 EOF
 for capsule in aos-cli aos-mcp aos-fs aos-openai-compat aos-skills aos-forge; do
+  capsule_stage="$work/product-capsule-$capsule"
+  mkdir -p "$capsule_stage"
+  capsule_member=$(printf '%s\n' "$capsule" | tr '-' '_')
   printf 'signed product fixture for %s\n' "$capsule" \
-    > "$product_assets/capsules/$capsule.capsule"
+    > "$capsule_stage/$capsule_member.wasm"
+  COPYFILE_DISABLE=1 tar -czf "$product_assets/capsules/$capsule.capsule" \
+    -C "$capsule_stage" "$capsule_member.wasm"
 done
 
 write_fixture_checksums() {
@@ -103,11 +108,37 @@ if [ -n "${AOS_VAR_OPENAI_API_KEY:-}" ]; then
 fi
 case " $* " in
   *" status "*)
-    if [ -f "$AOS_HOME/runtime-running" ]; then
-      printf '{"state":"running"}\n'
-    else
-      printf '{"state":"stopped"}\n'
+    if [ "${TEST_STATUS_FAILURE:-0}" -ne 0 ]; then
+      printf '%s\n' 'error: daemon status transport failed' >&2
+      exit 93
     fi
+    if [ "${TEST_STATUS_WORKSPACE:-0}" -ne 0 ] \
+      && [ -f "$AOS_HOME/runtime-running" ] \
+      && [ ! -e "$TEST_STATE/status-workspace-seen" ]
+    then
+      : > "$TEST_STATE/status-workspace-seen"
+      printf '%s\n' 'error: running daemon belongs to another project or workspace layout' >&2
+      exit 1
+    fi
+    case "${TEST_STATUS_SHAPE:-}" in
+      empty) exit 0 ;;
+      malformed) printf '%s\n' 'not-json' ;;
+      unknown) printf '%s\n' '{"state":"paused"}' ;;
+      nested) printf '%s\n' '{"details":{"state":"running"}}' ;;
+      duplicate) printf '%s\n' '{"state":"running","state":"stopped"}' ;;
+      trailing) printf '%s\n' '{"state":"running","pid":4242,"uptime_secs":3,"runtime_version":"0.10.4","ephemeral":false,"connected_clients":0,"loaded_capsules":[]}garbage' ;;
+      *)
+        status_pid=${TEST_DAEMON_PID:-4242}
+        if [ -f "$AOS_HOME/runtime-pid" ]; then
+          status_pid=$(sed -n '1p' "$AOS_HOME/runtime-pid")
+        fi
+        if [ -f "$AOS_HOME/runtime-running" ]; then
+          printf '{"state":"running","pid":%s,"uptime_secs":3,"runtime_version":"0.10.4","ephemeral":false,"connected_clients":0,"loaded_capsules":[]}\n' "$status_pid"
+        else
+          printf '{"state":"stopped","pid":0,"uptime_secs":0,"runtime_version":"0.10.4","ephemeral":false,"connected_clients":0,"loaded_capsules":[]}\n'
+        fi
+        ;;
+    esac
     ;;
   *" ps --format json "*)
     if [ "${TEST_PS_FAILURE:-0}" -ne 0 ]; then
@@ -123,6 +154,7 @@ case " $* " in
   *" start "*)
     mkdir -p "$AOS_HOME"
     : > "$AOS_HOME/runtime-running"
+    printf '%s\n' "${TEST_DAEMON_PID:-4242}" > "$AOS_HOME/runtime-pid"
     ;;
   *" stop "*)
     rm -f "$AOS_HOME/runtime-running"
@@ -144,6 +176,15 @@ case " $* " in
     : > "$TEST_STATE/agent-$principal"
     ;;
   *" capsule show "*)
+    if [ ! -f "$AOS_HOME/runtime-running" ]; then
+      printf '%s\n' 'error: capsule metadata requires a running daemon' >&2
+      exit 96
+    fi
+    if [ -n "${TEST_RUNTIME_PID_SWITCH:-}" ] \
+      && [ ! -e "$TEST_STATE/runtime-pid-switched" ]; then
+      : > "$TEST_STATE/runtime-pid-switched"
+      printf '%s\n' "$TEST_RUNTIME_PID_SWITCH" > "$AOS_HOME/runtime-pid"
+    fi
     if [ "${TEST_CAPSULE_SHOW_FAILURE:-0}" -ne 0 ]; then
       printf '%s\n' 'error: daemon transport failed while reading capsule metadata' >&2
       exit 93
@@ -167,19 +208,17 @@ case " $* " in
       if [ "$previous" = --agent ]; then principal=$argument; fi
       previous=$argument
     done
-    # The agent option is only a matching display label. The fake daemon uses
-    # the global principal as the authenticated identity and rejects the old
-    # label-only form (or a P/Q mismatch) so parent revisions fail this test.
+    # The global principal is the authenticated identity. The agent label
+    # selects the projection being inspected.
     [ -n "$authenticated_principal" ] || {
       printf '%s\n' 'capsule show requires a global --principal' >&2
       exit 94
     }
-    [ "$authenticated_principal" = "$principal" ] || {
-      printf 'capsule show principal mismatch: %s vs %s\n' \
-        "$authenticated_principal" "$principal" >&2
+    [ "$authenticated_principal" = default ] || {
+      printf 'capsule show must authenticate as default: %s\n' \
+        "$authenticated_principal" >&2
       exit 95
     }
-    principal=$authenticated_principal
     record="$TEST_STATE/installed-$principal-$capsule"
     if [ ! -f "$record" ]; then
       printf "capsule '%s' is not installed for agent '%s'\n" \
@@ -250,7 +289,8 @@ case " $* " in
     while IFS= read -r asset; do
       capsule=${asset%.capsule}
       source="$release/capsules/$asset"
-      hash=$(shasum -a 256 "$source" | awk '{print $1}')
+      member=$(printf '%s\n' "$capsule" | tr '-' '_')
+      hash=$(tar -xOf "$source" "$member.wasm" | b3sum | awk '{print $1}')
       printf '%s\n%s\n%s\n%s\n' "$hash" "$source" \
         '2026-09-01T00:00:00+00:00' '2026-09-01T00:00:00+00:00' \
         > "$TEST_STATE/installed-default-$capsule"
@@ -277,8 +317,13 @@ EOF
 cat > "$fake_bin/b3sum" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-digest=$(shasum -a 256 "$1" | awk '{print $1}')
-printf '%s  %s\n' "$digest" "$1"
+if (( $# == 0 )); then
+  digest=$(shasum -a 256 | awk '{print $1}')
+  printf '%s  -\n' "$digest"
+else
+  digest=$(shasum -a 256 "$1" | awk '{print $1}')
+  printf '%s  %s\n' "$digest" "$1"
+fi
 EOF
 
 cat > "$fake_bin/codex" <<'EOF'
@@ -290,6 +335,9 @@ printf '\n' >> "$TEST_LOG"
 if [ -n "${TEST_PLUGIN_STATE:-}" ]; then
   mkdir -p "$(dirname "$TEST_PLUGIN_STATE")"
   : > "$TEST_PLUGIN_STATE"
+fi
+if [ "${1:-}" = plugin ] && [ "${2:-}" = marketplace ] && [ "${3:-}" = add ]; then
+  printf '%s\n' "${4:-}" > "$TEST_STATE/codex-marketplace-root"
 fi
 [ "${TEST_FAIL_PLUGIN:-0}" -eq 0 ] || exit 70
 EOF
@@ -445,7 +493,8 @@ plugin_only_start=$(wc -l < "$TEST_LOG")
 AOS_HOME="$plugin_only_home" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
 tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
-grep -Eq '^codex plugin marketplace add /.*/plugin-stage$' "$work/plugin-only.log"
+grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/0\.3\.0$' \
+  "$work/plugin-only.log"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
 if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
   echo "plugin-only installation provisioned AOS or another host" >&2
@@ -475,6 +524,9 @@ codex_start=$(wc -l < "$TEST_LOG")
 
 "$repo_root/install.sh" --host codex --yes --no-install-aos
 
+codex_marketplace_root=$(cat "$TEST_STATE/codex-marketplace-root")
+[ "$codex_marketplace_root" = "$AOS_HOME/extensions/oracles/plugins/0.3.0" ]
+[ -d "$codex_marketplace_root" ]
 tail -n "+$((codex_start + 1))" "$TEST_LOG" > "$work/codex-only.log"
 cmp "$work/claude-before" "$AOS_HOME/extensions/oracles/claude/private-state"
 if grep -Eq '^(claude|grok) ' "$work/codex-only.log" \
@@ -490,25 +542,39 @@ cmp "$assets/codex.toml" "$lock"
 test ! -e "$home/.astrid"
 test ! -e "$AOS_HOME/runtime/bin"
 grep -Fq 'aos status --json' "$TEST_LOG"
-# Capsule metadata is authenticated by the global principal, not merely by an
-# agent display label. Every query must put the principal before the command
-# and carry the same value in its optional --agent label.
-capsule_query_pattern='^aos --principal (default|claude-code|codex-code|grok-code) capsule show [A-Za-z0-9][A-Za-z0-9._-]* --agent (default|claude-code|codex-code|grok-code) --format toml$'
+# Capsule metadata is authenticated by the booted default principal, while the
+# agent label selects the projection being inspected.
+capsule_query_pattern='^aos --principal default capsule show [A-Za-z0-9][A-Za-z0-9._-]* --agent (default|claude-code|codex-code|grok-code) --format toml$'
 capsule_queries=$(grep -Ec "$capsule_query_pattern" "$TEST_LOG")
 [ "$capsule_queries" -gt 0 ]
 if grep -Eq '^aos capsule show ' "$TEST_LOG"; then
   echo "capsule metadata query omitted global --principal" >&2
   exit 1
 fi
-while read -r _query _flag query_principal _capsule _show _name _agent_flag label_principal _format _toml; do
-  [ "$query_principal" = "$label_principal" ]
+while read -r _query _flag _query_principal _capsule _show _name _agent_flag label_principal _format _toml; do
+  [ -n "$label_principal" ]
 done < <(grep -E "$capsule_query_pattern" "$TEST_LOG")
 grep -Fq 'aos --principal default init --yes' "$TEST_LOG"
 [ "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG")" -eq 1 ]
-if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
-  echo "oracle installer stopped a runtime it does not exclusively own" >&2
-  exit 1
-fi
+grep -Fq 'aos --principal default start' "$TEST_LOG"
+grep -Fq 'aos --principal default stop' "$TEST_LOG"
+first_start=$(grep -n 'aos --principal default start' "$work/codex-only.log" | head -n1 | cut -d: -f1)
+first_capsule_query=$(grep -n ' capsule show ' "$work/codex-only.log" | head -n1 | cut -d: -f1)
+first_stop=$(grep -n 'aos --principal default stop' "$work/codex-only.log" | head -n1 | cut -d: -f1)
+test "$first_start" -lt "$first_capsule_query"
+test "$first_capsule_query" -lt "$first_stop"
+test ! -e "$AOS_HOME/runtime-running"
+
+# If another owner takes over after preflight, restoration must not stop that
+# process merely because this invocation started the prior daemon.
+concurrent_home="$home/concurrent-runtime/.aos"
+concurrent_state="$work/concurrent-runtime-state"
+mkdir -p "$concurrent_state"
+TEST_STATE="$concurrent_state" AOS_HOME="$concurrent_home" \
+  TEST_RUNTIME_PID_SWITCH=9999 "$repo_root/install.sh" \
+  --host codex --yes --no-install-aos
+test -f "$concurrent_home/runtime-running"
+test "$(sed -n '1p' "$concurrent_home/runtime-pid")" = 9999
 if grep -Fq 'aos --principal default status' "$TEST_LOG"; then
   echo "installer used the principal-scoped status probe" >&2
   exit 1
@@ -530,7 +596,7 @@ fi
 grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-skills' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-forge' "$TEST_LOG"
-grep -Eq '^codex plugin marketplace add /.*/plugin-stage$' "$TEST_LOG"
+grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/0\.3\.0$' "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
 test -d "$AOS_HOME/extensions/oracles/plugins/0.3.0"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
@@ -789,13 +855,14 @@ test -f "$minimal_home/extensions/oracles/codex/Pack.lock"
 
 first_lock=$(shasum -a 256 "$lock" | awk '{print $1}')
 init_count=$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG" || true)
+repeat_start=$(wc -l < "$TEST_LOG")
 "$repo_root/install.sh" --host codex --yes --no-install-aos
 test "$first_lock" = "$(shasum -a 256 "$lock" | awk '{print $1}')"
 test "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG" || true)" -eq "$init_count"
-if grep -Fq 'aos --principal default stop' "$TEST_LOG"; then
-  echo "repeat oracle install stopped the shared runtime" >&2
-  exit 1
-fi
+tail -n "+$((repeat_start + 1))" "$TEST_LOG" > "$work/repeat-install.log"
+grep -Fq 'aos --principal default start' "$work/repeat-install.log"
+grep -Fq 'aos --principal default stop' "$work/repeat-install.log"
+test ! -e "$AOS_HOME/runtime-running"
 
 # A daemon selected by an older host plugin from another project is stopped
 # through the recovery command and restarted in the product-owned workspace.
@@ -827,6 +894,87 @@ if grep -Fq 'aos --principal default stop' "$work/failed-workspace-probe.log"; t
   echo "unrelated runtime probe failure stopped the runtime" >&2
   exit 1
 fi
+
+# The status command itself can report a running daemon from another project
+# before it can emit JSON. The installer must treat that exact diagnostic as a
+# stale workspace selection, stop the daemon, and continue in the product
+# workspace; a status error must not be silently treated as stopped.
+status_workspace_home="$home/status-workspace/.aos"
+status_workspace_state="$work/status-workspace-state"
+mkdir -p "$status_workspace_state" "$status_workspace_home"
+: > "$status_workspace_home/runtime-running"
+status_workspace_start=$(wc -l < "$TEST_LOG")
+TEST_STATE="$status_workspace_state" AOS_HOME="$status_workspace_home" \
+  TEST_STATUS_WORKSPACE=1 "$repo_root/install.sh" --host codex --yes --no-install-aos
+tail -n "+$((status_workspace_start + 1))" "$TEST_LOG" \
+  > "$work/status-workspace.log"
+grep -Fq 'aos status --json' "$work/status-workspace.log"
+grep -Fq 'aos --principal default stop' "$work/status-workspace.log"
+grep -Fq 'aos --principal default init --yes' "$work/status-workspace.log"
+status_probe=$(grep -n 'aos status --json' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
+status_stop=$(grep -n 'aos --principal default stop' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
+status_init=$(grep -n 'aos --principal default init --yes' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
+status_start=$(grep -n 'aos --principal default start' "$work/status-workspace.log" | head -n1 | cut -d: -f1)
+test "$status_probe" -lt "$status_stop"
+test "$status_stop" -lt "$status_start"
+test "$status_start" -lt "$status_init"
+test -f "$status_workspace_state/default-initialized"
+test -f "$status_workspace_state/agent-codex-code"
+test -f "$status_workspace_home/extensions/oracles/codex/Pack.lock"
+test -f "$status_workspace_home/runtime-running"
+
+# An unrelated status failure is not evidence that the daemon is stopped. It
+# must fail closed without stopping the runtime or beginning first-boot state.
+status_failure_home="$home/status-failure/.aos"
+status_failure_state="$work/status-failure-state"
+mkdir -p "$status_failure_state" "$status_failure_home"
+: > "$status_failure_home/runtime-running"
+status_failure_start=$(wc -l < "$TEST_LOG")
+if TEST_STATE="$status_failure_state" AOS_HOME="$status_failure_home" \
+  TEST_STATUS_FAILURE=1 "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/status-failure.out" 2>&1
+then
+  echo "unrelated status failure was treated as a successful runtime query" >&2
+  exit 1
+fi
+grep -Fq 'could not query Unicity CE status: error: daemon status transport failed' \
+  "$work/status-failure.out"
+tail -n "+$((status_failure_start + 1))" "$TEST_LOG" \
+  > "$work/status-failure.log"
+if grep -Fq 'aos --principal default stop' "$work/status-failure.log" \
+  || grep -Fq 'aos --principal default init --yes' "$work/status-failure.log"
+then
+  echo "unrelated status failure mutated or stopped the runtime" >&2
+  exit 1
+fi
+test -f "$status_failure_home/runtime-running"
+test ! -e "$status_failure_state/default-initialized"
+
+# A successful status response must be a well-formed object with exactly one
+# supported top-level state. Malformed, empty, unknown, nested, and duplicate
+# state fields fail before any start/stop/init mutation.
+for status_shape in empty malformed unknown nested duplicate trailing; do
+  strict_home="$home/status-strict-$status_shape/.aos"
+  strict_state="$work/status-strict-$status_shape-state"
+  mkdir -p "$strict_state" "$strict_home"
+  strict_start=$(wc -l < "$TEST_LOG")
+  if TEST_STATE="$strict_state" AOS_HOME="$strict_home" \
+    TEST_STATUS_SHAPE="$status_shape" \
+    "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    >"$work/status-strict-$status_shape.out" 2>&1
+  then
+    echo "status shape $status_shape was accepted" >&2
+    exit 1
+  fi
+  tail -n "+$((strict_start + 1))" "$TEST_LOG" \
+    > "$work/status-strict-$status_shape.log"
+  if grep -Eq 'aos --principal default (start|stop|init --yes)' \
+    "$work/status-strict-$status_shape.log"; then
+    echo "status shape $status_shape mutated runtime state" >&2
+    exit 1
+  fi
+  test ! -e "$strict_home/runtime-running"
+done
 
 distribution=$(grep -n 'aos --principal default init --yes' "$TEST_LOG" | head -n1 | cut -d: -f1)
 create=$(grep -n 'agent create codex-code' "$TEST_LOG" | head -n1 | cut -d: -f1)
@@ -877,7 +1025,7 @@ grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.
 grep -Fq -- '--add-capsule aos-skills' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-grep -Eq '^claude plugin marketplace add /.*/plugin-stage$' "$TEST_LOG"
+grep -Eq '^claude plugin marketplace add /.*/extensions/oracles/plugins/0\.3\.0$' "$TEST_LOG"
 if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
   echo "external Claude plugin installed an AOS-managed workload adapter" >&2
   exit 1
@@ -1341,7 +1489,8 @@ printf '%s\n' \
   aos-forge.capsule \
   > "$legacy_home/releases/2026.1.1/capsule-assets.txt"
 
-product_mcp_hash=$(shasum -a 256 "$product_assets/capsules/aos-mcp.capsule" | awk '{print $1}')
+product_mcp_hash=$(tar -xOf "$product_assets/capsules/aos-mcp.capsule" aos_mcp.wasm \
+  | b3sum | awk '{print $1}')
 write_test_capsule "$legacy_state" codex-code aos-mcp \
   "$product_mcp_hash" \
   "$legacy_home/releases/2026.9.0/capsules/aos-mcp.capsule" \

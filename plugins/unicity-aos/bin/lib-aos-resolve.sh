@@ -292,10 +292,6 @@ PY
     echo "aos-resolve: active AOS release is missing its bundled Astrid CLI" >&2
     return 1
   }
-  [ -f "$_aos_release_statement" ] && [ ! -L "$_aos_release_statement" ] || {
-    echo "aos-resolve: active AOS release has no regular signed executable statement" >&2
-    return 1
-  }
   grep -Fqx 'id = "unicity-ce"' "$_aos_distro" \
     && grep -Fqx "version = \"$_aos_version\"" "$_aos_distro" || {
       echo "aos-resolve: active AOS distribution identity does not match its release" >&2
@@ -310,14 +306,28 @@ PY
       return 1
     }
 
-  _aos_expected_runtime=0.11.0
+  _aos_expected_runtime=$(awk -F ' = ' '
+    /^\[runtime\]$/ { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && $1 == "version" { value = $2; gsub(/"/, "", value); print value }
+  ' "$_aos_compat")
+  _aos_expected_tag=$(awk -F ' = ' '
+    /^\[runtime\]$/ { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && $1 == "tag" { value = $2; gsub(/"/, "", value); print value }
+  ' "$_aos_compat")
+  _aos_expected_identity=$(awk -F ' = ' '
+    /^\[runtime\]$/ { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && $1 == "release-workflow-identity" { value = $2; gsub(/"/, "", value); print value }
+  ' "$_aos_compat")
   grep -Fqx 'repository = "astrid-runtime/astrid"' "$_aos_compat" \
-    && grep -Fqx "version = \"$_aos_expected_runtime\"" "$_aos_compat" \
-    && grep -Fqx "tag = \"v$_aos_expected_runtime\"" "$_aos_compat" \
+    && printf '%s\n' "$_aos_expected_runtime" | grep -Eq '^[0-9][A-Za-z0-9._-]*$' \
+    && [ -n "$_aos_expected_tag" ] \
     && grep -Fqx "version-requirement = \"=$_aos_expected_runtime\"" "$_aos_compat" \
-    && grep -Fqx "release-workflow-identity = \"https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v$_aos_expected_runtime\"" "$_aos_compat" \
+    && [ -n "$_aos_expected_identity" ] \
     && grep -Fqx 'release-ready = true' "$_aos_compat" || {
-      echo "aos-resolve: Oracle receipt does not authorize a released Astrid $_aos_expected_runtime" >&2
+      echo "aos-resolve: Oracle receipt does not authorize a released Astrid runtime" >&2
       return 1
     }
 
@@ -330,93 +340,38 @@ PY
     echo "aos-resolve: unsupported host platform for runtime authentication" >&2
     return 1
   }
-  _aos_executable_digests=$(awk \
-    -v product_version="$_aos_version" -v target="$_aos_runtime_target" '
-    function valid_digest(value) {
-      if (length(value) != 64) return 0
-      return value ~ /^[0-9a-f]+$/
-    }
-    function valid_target(value) {
-      return value == "aarch64-apple-darwin" || \
-             value == "x86_64-apple-darwin" || \
-             value == "aarch64-unknown-linux-gnu" || \
-             value == "x86_64-unknown-linux-gnu"
-    }
-    function valid_path(value) {
-      return value == "runtime/bin/astrid" || \
-             value == "runtime/bin/astrid-daemon"
-    }
-    function finish_record() {
-      if (!inside_record) return
-      pair_key = record_target SUBSEP record_path
-      if (record_target == "" || record_path == "" || !valid_digest(record_blake3) || !valid_digest(record_sha256) || fields != 4)
-        fail("signed executable record has invalid fields or digests")
-      if (!valid_target(record_target))
-        fail("signed executable statement has an unsupported target")
-      if (!valid_path(record_path))
-        fail("signed executable statement has an unsupported executable path")
-      if (pair_seen[pair_key]++)
-        fail("duplicate executable record for target and path")
-      total_records++
-      if (record_target == target && record_path == "runtime/bin/astrid") {
-        if (matched++) fail("duplicate executable record for this host and path")
-        match_blake3 = record_blake3
-        match_sha256 = record_sha256
-      }
-      inside_record = 0; fields = 0
-      split("", seen)
-      record_target = record_path = record_blake3 = record_sha256 = ""
-    }
-    function fail(message) {
-      print "aos-resolve: " message > "/dev/stderr"
-      exit 1
-    }
-    /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
-    /^\[\[executables\]\]$/ {
-      finish_record(); inside_record = 1; next
-    }
-    /^\[/ { finish_record(); next }
-    inside_record {
-      if ($0 !~ /^(target|path|blake3|sha256) = "[^"]*"$/) fail("invalid executable record field")
-      key = $1; value = $0
-      sub(/^[^"]*"/, "", value); sub(/"$/, "", value)
-      if (seen[key SUBSEP inside_record]++) fail("duplicate executable record field")
-      if (key == "target") record_target = value
-      else if (key == "path") record_path = value
-      else if (key == "blake3") record_blake3 = value
-      else record_sha256 = value
-      fields++; next
-    }
-    /^schema-version = 2$/ { schema = 1; next }
-    /^product = "unicity-aos-ce"$/ { product = 1; next }
-    {
-      if ($0 ~ /^version = "[^"]*"$/) {
-        value = $0; sub(/^version = "/, "", value); sub(/"$/, "", value)
-        version = value
-      }
-      next
-    }
-    END {
-      finish_record()
-      if (!schema) fail("signed executable statement must use schema-version 2")
-      if (!product || version != product_version) fail("signed executable statement product identity mismatch")
-      if (total_records != 8) fail("signed executable statement must contain exactly eight executable records")
-      delete unused_pair
-      unused_pair["aarch64-apple-darwin" SUBSEP "runtime/bin/astrid"] = 1
-      unused_pair["aarch64-apple-darwin" SUBSEP "runtime/bin/astrid-daemon"] = 1
-      unused_pair["x86_64-apple-darwin" SUBSEP "runtime/bin/astrid"] = 1
-      unused_pair["x86_64-apple-darwin" SUBSEP "runtime/bin/astrid-daemon"] = 1
-      unused_pair["aarch64-unknown-linux-gnu" SUBSEP "runtime/bin/astrid"] = 1
-      unused_pair["aarch64-unknown-linux-gnu" SUBSEP "runtime/bin/astrid-daemon"] = 1
-      unused_pair["x86_64-unknown-linux-gnu" SUBSEP "runtime/bin/astrid"] = 1
-      unused_pair["x86_64-unknown-linux-gnu" SUBSEP "runtime/bin/astrid-daemon"] = 1
-      for (unused_key in unused_pair) {
-        if (!(unused_key in pair_seen)) fail("signed executable statement is missing a GNU/Darwin executable record")
-      }
-      if (!matched) fail("signed executable statement does not authorize this Astrid path")
-      print match_blake3, match_sha256
-    }
-    ' "$_aos_release_statement") || return 1
+  _aos_executable_digests=$(python3 - \
+    "$_aos_manifest" "$_aos_version" "$_aos_runtime_target" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+path, product_version, target = sys.argv[1:]
+try:
+    manifest = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+except (OSError, UnicodeError, json.JSONDecodeError) as error:
+    raise SystemExit(f"aos-resolve: invalid active AOS release manifest: {error}")
+if manifest.get("schema_version") != 2:
+    raise SystemExit("aos-resolve: unsupported active AOS release manifest schema")
+if (
+    manifest.get("product", {}).get("name") != "Unicity AOS Community Edition"
+    or manifest.get("product", {}).get("version") != product_version
+    or manifest.get("target") != target
+):
+    raise SystemExit("aos-resolve: active AOS manifest product or target mismatch")
+record = manifest.get("release_files", {}).get("runtime/bin/astrid")
+if not isinstance(record, dict) or set(record) != {"blake3", "mode", "sha256"}:
+    raise SystemExit("aos-resolve: active AOS manifest lacks an exact Astrid inventory record")
+if (
+    re.fullmatch(r"[0-9a-f]{64}", record.get("blake3", "")) is None
+    or re.fullmatch(r"[0-9a-f]{64}", record.get("sha256", "")) is None
+    or record.get("mode") != 0o755
+):
+    raise SystemExit("aos-resolve: active AOS manifest Astrid inventory record is invalid")
+print(record["blake3"], record["sha256"])
+PY
+  ) || return 1
   read -r _aos_expected_blake3 _aos_expected_sha256 <<EOF
 $_aos_executable_digests
 EOF
@@ -425,12 +380,13 @@ EOF
     *) echo "aos-resolve: active AOS release lacks a unique signed Astrid executable record" >&2; return 1 ;;
   esac
 
-  python3 - "$_aos_manifest" "$_aos_version" "$_aos_expected_runtime" <<'PY' || return 1
+  python3 - "$_aos_manifest" "$_aos_version" "$_aos_expected_runtime" \
+    "$_aos_expected_tag" "$_aos_expected_identity" <<'PY' || return 1
 import json
 import pathlib
 import sys
 
-path, product_version, runtime_version = sys.argv[1:]
+path, product_version, runtime_version, expected_tag, expected_identity = sys.argv[1:]
 try:
     manifest = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
 except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -458,7 +414,7 @@ if runtime.get("repository") != "astrid-runtime/astrid" or runtime.get("version"
 target = manifest.get("target")
 if not isinstance(target, str) or not target:
     raise SystemExit("aos-resolve: active AOS manifest has no target identity")
-if runtime.get("tag") != f"v{runtime_version}":
+if runtime.get("tag") != expected_tag:
     raise SystemExit("aos-resolve: active AOS manifest runtime tag mismatch")
 if runtime.get("asset") != f"astrid-{runtime_version}-{target}.tar.gz":
     raise SystemExit("aos-resolve: active AOS manifest runtime asset mismatch")
@@ -470,10 +426,6 @@ if (
     or any(character not in "0123456789abcdef" for character in digest[7:])
 ):
     raise SystemExit("aos-resolve: active AOS manifest runtime digest is invalid")
-expected_identity = (
-    "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml"
-    f"@refs/tags/v{runtime_version}"
-)
 if runtime.get("release_workflow_identity") != expected_identity:
     raise SystemExit("aos-resolve: active AOS manifest runtime signer mismatch")
 PY

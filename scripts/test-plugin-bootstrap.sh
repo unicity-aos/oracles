@@ -30,7 +30,7 @@ done
 [ "$host" = codex ] || exit 91
 release="$AOS_HOME/releases/2026.9.0"
 receipt_root="$AOS_HOME/extensions/oracles/codex"
-receipt="$receipt_root/releases/0.3.0"
+receipt="$receipt_root/releases/2026.9.0"
 case "$(uname -s)/$(uname -m)" in
   Darwin/arm64|Darwin/aarch64) fixture_target=aarch64-apple-darwin ;;
   Darwin/x86_64) fixture_target=x86_64-apple-darwin ;;
@@ -39,14 +39,14 @@ case "$(uname -s)/$(uname -m)" in
   *) exit 89 ;;
 esac
 mkdir -p "$AOS_HOME/bin" "$release/runtime/bin" "$receipt"
-printf '%s\n' 'version = "0.3.0"' > "$receipt/Pack.lock"
+printf '%s\n' 'version = "2026.9.0"' > "$receipt/Pack.lock"
 cat > "$receipt/Receipt.toml" <<'RECEIPT'
 schema-version = 1
-oracle-version = "0.3.0"
+oracle-version = "2026.9.0"
 host = "codex"
 principal = "codex-code"
 source = "release"
-plugin-snapshot = "../../../plugins/0.3.0"
+plugin-snapshot = "../../../plugins/2026.9.0"
 plugin-blake3 = "0000000000000000000000000000000000000000000000000000000000000000"
 RECEIPT
 cat > "$receipt/runtime-compatibility.toml" <<'COMPAT'
@@ -182,7 +182,7 @@ esac
 AOS
 chmod 700 "$AOS_HOME/bin/aos" "$release/runtime/bin/astrid" \
   "$release/runtime/bin/astrid-daemon"
-ln -s "releases/0.3.0" "$receipt_root/current"
+ln -s "releases/2026.9.0" "$receipt_root/current"
 ln -s "current/Pack.lock" "$receipt_root/Pack.lock"
 EOF
 chmod 700 "$fake_installer"
@@ -234,7 +234,7 @@ PY
 grep -Fq -- '--host codex' "$log"
 grep -Fq -- '--skip-host-plugin' "$log"
 grep -Fq -- '--yes' "$log"
-grep -Fq -- '--oracle-version 0.3.0' "$log"
+grep -Fq -- '--oracle-version 2026.9.0' "$log"
 if grep -Eq -- '--host (claude|grok)' "$log"; then
   echo "Codex bootstrap attempted to install another host" >&2
   exit 1

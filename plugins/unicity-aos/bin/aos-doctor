@@ -117,7 +117,7 @@ capsule_ready() {
   if [ -d "${AOS_HOME:-$HOME/.aos}/runtime" ]; then
     aos_enter_product_workspace || exit 93
     if [ "${AOS_PREFLIGHT_STARTED:-0}" != 1 ]; then
-      "$AOS" --principal default start >&2 || exit 93
+      "$AOS" --principal default start --ephemeral >&2 || exit 93
       AOS_PREFLIGHT_STARTED=1
     fi
   fi

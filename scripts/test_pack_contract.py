@@ -53,9 +53,9 @@ class PackContractTests(unittest.TestCase):
             (ROOT / "release" / "runtime-compatibility.toml").read_text()
         )["runtime"]
         self.assertEqual(value["repository"], "astrid-runtime/astrid")
-        self.assertEqual(value["version"], "0.11.0")
-        self.assertEqual(value["tag"], "v0.11.0")
-        self.assertEqual(value["version-requirement"], "=0.11.0")
+        self.assertEqual(value["version"], "2026.9.0")
+        self.assertEqual(value["tag"], "v2026.9.0")
+        self.assertEqual(value["version-requirement"], "=2026.9.0")
         self.assertFalse(value["release-ready"])
 
     def test_packs_do_not_redeclare_the_ce_distribution(self) -> None:

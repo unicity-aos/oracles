@@ -141,13 +141,16 @@ jobs:
           set -euo pipefail
           marker="<!-- aos-oracles-source:${GITHUB_SHA} -->"
           if [ "$REUSE_RELEASE_DRAFT" != true ]; then
+            notes="release/notes/${GITHUB_REF_NAME#v}.md"
+            test -s "$notes"
+            printf '%s\n\n' "$marker" > "$RUNNER_TEMP/oracle-release-notes.md"
+            cat "$notes" >> "$RUNNER_TEMP/oracle-release-notes.md"
             gh release create "$GITHUB_REF_NAME" \
               --verify-tag \
               --target "$GITHUB_SHA" \
               --draft \
               --title "Unicity AOS Oracles ${GITHUB_REF_NAME#v}" \
-              --generate-notes \
-              --notes "$marker"
+              --notes-file "$RUNNER_TEMP/oracle-release-notes.md"
           fi
 
           gh release upload "$GITHUB_REF_NAME" artifacts/* --clobber

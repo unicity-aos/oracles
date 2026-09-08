@@ -52,6 +52,15 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             'gh release create "$GITHUB_REF_NAME" artifacts/*', self.workflow
         )
 
+    def test_release_uses_curated_notes_and_preserves_source_marker(self) -> None:
+        self.assertNotIn("--generate-notes", self.workflow)
+        self.assertIn('test -s "$notes"', self.workflow)
+        self.assertIn('--notes-file "$RUNNER_TEMP/oracle-release-notes.md"', self.workflow)
+        self.assertIn('printf \'%s\\n\\n\' "$marker"', self.workflow)
+        version = (ROOT / "release/oracle-version").read_text().strip()
+        notes = (ROOT / "release/notes" / f"{version}.md").read_text()
+        self.assertIn("Changes since the published 0.2.6", notes)
+
     def test_draft_reuse_is_bound_to_tag_and_source_commit(self) -> None:
         self.assertIn("--json isDraft --jq .isDraft", self.workflow)
         self.assertIn("--json tagName --jq .tagName", self.workflow)

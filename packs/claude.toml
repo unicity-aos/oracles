@@ -3,7 +3,7 @@ schema-version = 1
 [pack]
 id = "claude-oracle"
 name = "Unicity AOS for Claude Code"
-version = "0.3.0"
+version = "2026.9.0"
 host = "claude"
 principal = "claude-code"
 description = "Claude Code integration for Unicity AOS."

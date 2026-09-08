@@ -1,5 +1,8 @@
 # Unicity AOS Oracles
 
+Releases use [year.month.patch versioning](release/VERSIONING.md) starting with
+2026.9.0.
+
 [![CI](https://github.com/unicity-aos/oracles/actions/workflows/ci.yml/badge.svg)](https://github.com/unicity-aos/oracles/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 

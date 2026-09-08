@@ -29,7 +29,7 @@ class PackContractTests(unittest.TestCase):
             pack = value["pack"]
             self.assertEqual(pack["host"], host)
             self.assertEqual(pack["principal"], f"{host}-code")
-            self.assertEqual(pack["version"], "0.3.0")
+            self.assertEqual(pack["version"], "2026.9.0")
             self.assertEqual(pack["aos-version"], ">=2026.9.0")
             capsules = value.get("capsule", [])
             self.assertEqual([item["name"] for item in capsules], expected)
@@ -43,6 +43,7 @@ class PackContractTests(unittest.TestCase):
 
     def test_plugin_snapshot_is_bound_to_the_pack_release(self) -> None:
         release = (ROOT / "release" / "oracle-version").read_text().strip()
+        self.assertEqual(release, "2026.9.0")
         self.assertRegex(release, r"^[0-9]+\.[0-9]+\.[0-9]+$")
         for host in ("claude", "grok", "unicity-aos"):
             marker = (ROOT / "plugins" / host / ".aos-oracle-version")
@@ -53,9 +54,9 @@ class PackContractTests(unittest.TestCase):
             (ROOT / "release" / "runtime-compatibility.toml").read_text()
         )["runtime"]
         self.assertEqual(value["repository"], "astrid-runtime/astrid")
-        self.assertEqual(value["version"], "0.11.0")
-        self.assertEqual(value["tag"], "v0.11.0")
-        self.assertEqual(value["version-requirement"], "=0.11.0")
+        self.assertEqual(value["version"], "2026.9.0")
+        self.assertEqual(value["tag"], "v2026.9.0")
+        self.assertEqual(value["version-requirement"], "=2026.9.0")
         self.assertFalse(value["release-ready"])
 
     def test_packs_do_not_redeclare_the_ce_distribution(self) -> None:

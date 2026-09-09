@@ -234,7 +234,7 @@ def exercise_hook_adapter(root: Path) -> None:
         '  " --principal default start --ephemeral ") exit 0 ;;\n'
         '  *" capsule show aos-mcp --agent codex-code "*)\n'
         '    printf "%s\\n" '
-        '"capsule \'aos-mcp\' is not installed for agent \'codex-code\'" >&2\n'
+        '"✗ capsule \'aos-mcp\' is not installed for agent \'codex-code\'" >&2\n'
         "    exit 1\n"
         "    ;;\n"
         "esac\n"

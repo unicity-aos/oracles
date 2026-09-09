@@ -878,7 +878,8 @@ load_capsule_record() {
     # diagnostic. Any other failure can mean unreadable or truncated state,
     # and must stop before workspace selection or default first-boot mutation.
     if [ "$cr_status" -eq 1 ] \
-      && grep -Fqx "capsule '$cr_capsule' is not installed for agent '$cr_principal'" "$cr_error"
+      && { [ "$(cat "$cr_error")" = "capsule '$cr_capsule' is not installed for agent '$cr_principal'" ] \
+        || [ "$(cat "$cr_error")" = "✗ capsule '$cr_capsule' is not installed for agent '$cr_principal'" ]; }
     then
       rm -f "$cr_error"
       return 1

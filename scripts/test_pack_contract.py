@@ -49,7 +49,7 @@ class PackContractTests(unittest.TestCase):
             marker = (ROOT / "plugins" / host / ".aos-oracle-version")
             self.assertEqual(marker.read_text().strip(), release)
 
-    def test_unpublished_runtime_compatibility_fails_closed(self) -> None:
+    def test_published_runtime_compatibility_is_exact(self) -> None:
         value = tomllib.loads(
             (ROOT / "release" / "runtime-compatibility.toml").read_text()
         )["runtime"]
@@ -57,7 +57,7 @@ class PackContractTests(unittest.TestCase):
         self.assertEqual(value["version"], "2026.9.0")
         self.assertEqual(value["tag"], "v2026.9.0")
         self.assertEqual(value["version-requirement"], "=2026.9.0")
-        self.assertFalse(value["release-ready"])
+        self.assertTrue(value["release-ready"])
 
     def test_packs_do_not_redeclare_the_ce_distribution(self) -> None:
         for path in sorted((ROOT / "packs").glob("*.toml")):

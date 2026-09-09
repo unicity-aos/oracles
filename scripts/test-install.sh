@@ -221,7 +221,7 @@ case " $* " in
     }
     record="$TEST_STATE/installed-$principal-$capsule"
     if [ ! -f "$record" ]; then
-      printf "capsule '%s' is not installed for agent '%s'\n" \
+      printf "✗ capsule '%s' is not installed for agent '%s'\n" \
         "$capsule" "$principal" >&2
       exit 1
     fi

@@ -197,7 +197,8 @@ capsule_ready() {
     capsule_status=$?
   [ "$capsule_status" -eq 0 ] && return 0
   if [ "$capsule_status" -eq 1 ] \
-    && [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent '${AOS_HOST}-code'" ]
+    && { [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent '${AOS_HOST}-code'" ] \
+      || [ "$capsule_output" = "✗ capsule 'aos-mcp' is not installed for agent '${AOS_HOST}-code'" ]; }
   then
     return 1
   fi

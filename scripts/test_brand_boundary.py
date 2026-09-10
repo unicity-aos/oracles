@@ -48,10 +48,9 @@ class BrandBoundaryTests(unittest.TestCase):
             self.assertEqual(set(load_json(path)["mcpServers"]), {"aos"})
 
         codex_mcp = load_json("plugins/unicity-aos/.mcp.json")["mcpServers"]["aos"]
-        self.assertEqual(codex_mcp["command"], "/bin/sh")
+        self.assertEqual(codex_mcp["command"], "python3")
         self.assertNotIn("cwd", codex_mcp)
-        self.assertEqual(codex_mcp["args"][0], "-c")
-        self.assertIn("CODEX_PLUGIN_ROOT", codex_mcp["args"][1])
+        self.assertEqual(codex_mcp["args"], ["${PLUGIN_ROOT}/bin/aos-mcp-start", "--principal", "codex-code"])
         self.assertEqual(codex_mcp["startup_timeout_sec"], 20)
         self.assertEqual(
             codex_mcp["env_vars"],

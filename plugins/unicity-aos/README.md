@@ -18,6 +18,14 @@ On installation, Codex reads `.codex-plugin/plugin.json` and discovers:
   no mutable-runtime or ambient-PATH fallback; and
 - session and tool hooks under `hooks/hooks.json`.
 
+The Oracle installer configures the absolute `aos-mcp-start` path before adding
+the Codex marketplace plugin. Legacy Codex MCP configuration does not expand
+plugin-root placeholders or supply a plugin-root environment variable. The
+configured command keeps the session's working directory, answers initialization
+before provisioning completes, and exposes `aos_setup_status` while setup runs.
+For a local checkout, run this plugin's `install.sh` before enabling it; do not
+register the unconfigured template directly.
+
 Skill metadata is available for routing. Codex reads a skill's complete
 `SKILL.md` only when the user names it or the request matches its description.
 The MCP server independently exposes the tool surface granted to `codex-code` as

@@ -98,12 +98,21 @@ class SetupTests(unittest.TestCase):
         plugin = root / host
         (plugin / "bin").mkdir(parents=True)
         shutil.copyfile(SOURCE, plugin / "bin/aos-mcp-start")
+        if host == "unicity-aos":
+            shutil.copyfile(ROOT / "plugins" / host / "bin/aos-configure-mcp",
+                            plugin / "bin/aos-configure-mcp")
+            shutil.copyfile(ROOT / "plugins" / host / ".mcp.json", plugin / ".mcp.json")
+            subprocess.run([sys.executable, str(plugin / "bin/aos-configure-mcp")], check=True)
         launcher = plugin / "bin/aos-up"
         launcher.write_text(FAKE)
         launcher.chmod(0o700)
         server = json.loads((ROOT / "plugins" / host / ".mcp.json").read_text())["mcpServers"]["aos"]
         env = dict(os.environ, FIXTURE_ROOT=str(root), CODEX_PLUGIN_ROOT=str(plugin),
                    PLUGIN_ROOT=str(plugin), CLAUDE_PLUGIN_ROOT=str(plugin), GROK_PLUGIN_ROOT=str(plugin))
+        if host == "unicity-aos":
+            server = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["aos"]
+            for name in ("CODEX_PLUGIN_ROOT", "PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "GROK_PLUGIN_ROOT", "AOS_PLUGIN_ROOT"):
+                env.pop(name, None)
         def expand(value):
             for name in ("CODEX_PLUGIN_ROOT", "CLAUDE_PLUGIN_ROOT", "GROK_PLUGIN_ROOT"):
                 value = value.replace("${" + name + "}", str(plugin))

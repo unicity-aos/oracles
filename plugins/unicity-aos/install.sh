@@ -59,45 +59,8 @@ if ! aos_resolve_apply; then
   exit 1
 fi
 
-json_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
+python3 "$root/bin/aos-configure-mcp" --aos "$AOS"
 
-write_mcp_config() {
-  plugin="$1"
-  escaped_aos="$(json_escape "$AOS")"
-  tmp="$plugin/.mcp.json.tmp.$$"
-  cat >"$tmp" <<EOF
-{
-  "mcpServers": {
-    "aos": {
-      "command": "/bin/sh",
-      "args": [
-        "-c",
-        "root=\${CODEX_PLUGIN_ROOT:-\${PLUGIN_ROOT:-}}; [ -n \"\$root\" ] || { echo 'aos: Codex plugin root is unavailable' >&2; exit 127; }; exec python3 \"\$root/bin/aos-mcp-start\" --principal codex-code",
-        "aos"
-      ],
-      "startup_timeout_sec": 20,
-      "env_vars": [
-        "AOS_HOME",
-        "AOS_BIN",
-        "AOS_BIN_ROOT",
-        "ASTRID_SESSION_ID",
-        "ASTRID_WORKSPACE",
-        "AOS_HOST_WORKSPACE",
-        "CODEX_WORKSPACE"
-      ],
-      "env": {
-        "AOS_BIN": "$escaped_aos"
-      }
-    }
-  }
-}
-EOF
-  mv "$tmp" "$plugin/.mcp.json"
-}
-
-write_mcp_config "$root"
 echo "Unicity AOS configured with $AOS"
 
 if [ "$skip_codex_install" = "0" ]; then

@@ -80,7 +80,7 @@ def resolve_active(
 
 
 def runtime_manifest(
-    product_version: str = "2026.9.0", runtime_version: str = "0.11.0"
+    product_version: str = "2026.9.1", runtime_version: str = "0.11.0"
 ) -> str:
     target = RUNTIME_TARGET
     return json.dumps(
@@ -138,28 +138,28 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         "#!/bin/sh\n"
         "set -eu\n"
         'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
-        '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 2026.9.0" ] '
+        '[ "$*" = "--host codex --skip-host-plugin --yes --oracle-version 2026.9.1" ] '
         '|| { printf "%s\\n" "unexpected installer arguments: $*" >&2; exit 91; }\n'
-        'release="$AOS_HOME/releases/2026.9.0"\n'
+        'release="$AOS_HOME/releases/2026.9.1"\n'
         'receipt_root="$AOS_HOME/extensions/oracles/codex"\n'
-        'receipt="$receipt_root/releases/2026.9.0"\n'
+        'receipt="$receipt_root/releases/2026.9.1"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/runtime/bin" "$release/runtime/bin" "$receipt"\n'
         'rm -f "$AOS_HOME/runtime/preflight-started"\n'
-        'printf "%s\\n" \'version = "2026.9.0"\' > "$receipt/Pack.lock"\n'
+        'printf "%s\\n" \'version = "2026.9.1"\' > "$receipt/Pack.lock"\n'
         'cat > "$receipt/Receipt.toml" <<\'RECEIPT\'\n'
         'schema-version = 1\n'
-        'oracle-version = "2026.9.0"\n'
+        'oracle-version = "2026.9.1"\n'
         'host = "codex"\n'
         'principal = "codex-code"\n'
         'source = "release"\n'
-        'plugin-snapshot = "../../../plugins/2026.9.0"\n'
+        'plugin-snapshot = "../../../plugins/2026.9.1"\n'
         'plugin-blake3 = "0000000000000000000000000000000000000000000000000000000000000000"\n'
         'RECEIPT\n'
         'cat > "$receipt/runtime-compatibility.toml" <<\'COMPAT\'\n'
         f"{ready_compatibility()}"
         "COMPAT\n"
         'cat > "$release/Distro.toml" <<\'DISTRO\'\n'
-        'schema-version = 1\n\n[distro]\nid = "unicity-ce"\nversion = "2026.9.0"\n'
+        'schema-version = 1\n\n[distro]\nid = "unicity-ce"\nversion = "2026.9.1"\n'
         "DISTRO\n"
         'cat > "$release/release-manifest.json" <<\'MANIFEST\'\n'
         f"{runtime_manifest()}"
@@ -169,7 +169,7 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         "set -eu\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
         'pwd -P >> "$TEST_AOS_CWD_LOG"\n'
-        'if [ "${1:-}" = --version ]; then printf "%s\\n" "Unicity AOS 2026.9.0"; exit 0; fi\n'
+        'if [ "${1:-}" = --version ]; then printf "%s\\n" "Unicity AOS 2026.9.1"; exit 0; fi\n'
         'case " $* " in\n'
         '  " --principal default start --ephemeral ") touch "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started"; exit 0 ;;\n'
         '  *" capsule show aos-mcp --agent codex-code "*) [ -f "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started" ] || exit 94; exit 0 ;;\n'
@@ -215,7 +215,7 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         "}\n"
         "pathlib.Path(path).write_text(json.dumps(manifest, indent=2) + \"\\n\")\n"
         "PY\n"
-        'ln -s "releases/2026.9.0" "$receipt_root/current"\n'
+        'ln -s "releases/2026.9.1" "$receipt_root/current"\n'
         'ln -s "current/Pack.lock" "$receipt_root/Pack.lock"\n',
     )
 
@@ -559,7 +559,7 @@ def main() -> None:
         assert first.stderr == "", first.stderr
         assert first.stdout.strip() in {"mcp-ready", ""}, first.stdout
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 2026.9.0"
+            "--host codex --skip-host-plugin --yes --oracle-version 2026.9.1"
         ]
         attach = [line for line in astrid_log.read_text().splitlines() if "mcp attach" in line]
         assert attach == [
@@ -577,7 +577,7 @@ def main() -> None:
         second = launch(environment, host_workspace)
         assert second.returncode == 0, (second.returncode, second.stdout, second.stderr)
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 2026.9.0"
+            "--host codex --skip-host-plugin --yes --oracle-version 2026.9.1"
         ], "ready startup unexpectedly re-entered provisioning"
 
         # A provisioned default home must survive a relaunch whose environment
@@ -592,7 +592,7 @@ def main() -> None:
             default_home.stderr,
         )
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --yes --oracle-version 2026.9.0"
+            "--host codex --skip-host-plugin --yes --oracle-version 2026.9.1"
         ], "default-home relaunch unexpectedly re-entered provisioning"
 
         # The equals form is dispatch, not a raw-AOS escape hatch. It must use
@@ -753,7 +753,7 @@ def main() -> None:
         )
 
         resolved = resolve_active(environment)
-        expected_runtime = home / "releases/2026.9.0/runtime/bin/astrid"
+        expected_runtime = home / "releases/2026.9.1/runtime/bin/astrid"
         assert resolved.returncode == 0, (resolved.stdout, resolved.stderr)
         assert resolved.stdout.strip() == str(expected_runtime)
 
@@ -782,7 +782,7 @@ def main() -> None:
                 f'ASTRID="{expected_runtime}"; export ASTRID; '
                 f'_aos_active_runtime_path="{expected_runtime}"; '
                 f'_aos_home="{home}"; '
-                f'_aos_release="{home / "releases/2026.9.0"}"; '
+                f'_aos_release="{home / "releases/2026.9.1"}"; '
                 f'_aos_expected_blake3="{expected_digests[0]}"; '
                 f'_aos_expected_sha256="{expected_digests[1]}"; '
                 "export _aos_expected_blake3 _aos_expected_sha256; "
@@ -809,7 +809,7 @@ def main() -> None:
                 'ASTRID="/bin/sh"; export ASTRID; '
                 f'_aos_active_runtime_path="{expected_runtime}"; '
                 f'_aos_home="{home}"; '
-                f'_aos_release="{home / "releases/2026.9.0"}"; '
+                f'_aos_release="{home / "releases/2026.9.1"}"; '
                 f'_aos_expected_blake3="{expected_digests[0]}"; '
                 f'_aos_expected_sha256="{expected_digests[1]}"; '
                 "export _aos_active_runtime_path _aos_home _aos_release "
@@ -829,7 +829,7 @@ def main() -> None:
 
         # The package manifest's executable inventory is the byte authority.
         # A missing, malformed, or non-executable Astrid record fails closed.
-        manifest = home / "releases/2026.9.0/release-manifest.json"
+        manifest = home / "releases/2026.9.1/release-manifest.json"
         manifest_text = manifest.read_text()
         original_manifest = json.loads(manifest_text)
         original_record = original_manifest["release_files"]["runtime/bin/astrid"]
@@ -856,7 +856,7 @@ def main() -> None:
         assert "Astrid inventory record is invalid" in rejected.stderr
         manifest.write_text(manifest_text)
 
-        daemon_runtime = home / "releases/2026.9.0/runtime/bin/astrid-daemon"
+        daemon_runtime = home / "releases/2026.9.1/runtime/bin/astrid-daemon"
         daemon_bytes = daemon_runtime.read_bytes()
         daemon_runtime.unlink()
         accepted = resolve_active(environment)
@@ -982,7 +982,7 @@ def main() -> None:
 
         receipt = home / "extensions/oracles/codex/current/Receipt.toml"
         receipt_text = receipt.read_text()
-        receipt.write_text(receipt_text.replace('oracle-version = "2026.9.0"', 'oracle-version = "0.2.6"'))
+        receipt.write_text(receipt_text.replace('oracle-version = "2026.9.1"', 'oracle-version = "0.2.6"'))
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
         assert "receipt identity does not match this plugin" in rejected.stderr

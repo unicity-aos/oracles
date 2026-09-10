@@ -59,7 +59,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn('printf \'%s\\n\\n\' "$marker"', self.workflow)
         version = (ROOT / "release/oracle-version").read_text().strip()
         notes = (ROOT / "release/notes" / f"{version}.md").read_text()
-        self.assertIn("Changes since the published 0.2.6", notes)
+        self.assertIn("Changes since the published 2026.9.0", notes)
 
     def test_draft_reuse_is_bound_to_tag_and_source_commit(self) -> None:
         self.assertIn("--json isDraft --jq .isDraft", self.workflow)

@@ -30,7 +30,7 @@ schema-version = 1
 
 [distro]
 id = "unicity-ce"
-version = "2026.9.0"
+version = "2026.9.1"
 
 [[capsule]]
 name = "aos-cli"
@@ -89,10 +89,10 @@ cat > "$fake_bin/aos" <<'EOF'
 set -euo pipefail
 if [ "${1:-}" = --version ]; then
   if [ -z "${TEST_NO_PRODUCT_INSTALL:-}" ]; then
-    mkdir -p "$AOS_HOME/releases/2026.9.0"
-    cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.9.0/"
+    mkdir -p "$AOS_HOME/releases/2026.9.1"
+    cp -R "$TEST_PRODUCT_ASSETS/." "$AOS_HOME/releases/2026.9.1/"
   fi
-  printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.9.0}"
+  printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.9.1}"
   exit 0
 fi
 printf 'aos' >> "$TEST_LOG"
@@ -283,7 +283,7 @@ case " $* " in
     done
     ;;
   *" init "*)
-    version=${TEST_AOS_VERSION:-2026.9.0}
+    version=${TEST_AOS_VERSION:-2026.9.1}
     release="$AOS_HOME/releases/$version"
     [ -f "$release/capsule-assets.txt" ] || exit 92
     while IFS= read -r asset; do
@@ -493,7 +493,7 @@ plugin_only_start=$(wc -l < "$TEST_LOG")
 AOS_HOME="$plugin_only_home" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
 tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
-grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.0$' \
+grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.1$' \
   "$work/plugin-only.log"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
 if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
@@ -513,7 +513,7 @@ sed 's#  #  ./#' "$assets/BLAKE3SUMS.txt" > "$prefixed_assets/BLAKE3SUMS.txt"
 prefixed_home="$home/prefixed-checksums/.aos"
 AOS_HOME="$prefixed_home" AOS_ORACLE_ASSETS="$prefixed_assets" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
-test -d "$prefixed_home/extensions/oracles/plugins/2026.9.0"
+test -d "$prefixed_home/extensions/oracles/plugins/2026.9.1"
 
 # An existing unrelated host pack is private state. Installing Codex must not
 # inspect, rewrite, remove, or provision Claude/Grok.
@@ -525,7 +525,7 @@ codex_start=$(wc -l < "$TEST_LOG")
 "$repo_root/install.sh" --host codex --yes --no-install-aos
 
 codex_marketplace_root=$(cat "$TEST_STATE/codex-marketplace-root")
-[ "$codex_marketplace_root" = "$AOS_HOME/extensions/oracles/plugins/2026.9.0" ]
+[ "$codex_marketplace_root" = "$AOS_HOME/extensions/oracles/plugins/2026.9.1" ]
 [ -d "$codex_marketplace_root" ]
 tail -n "+$((codex_start + 1))" "$TEST_LOG" > "$work/codex-only.log"
 cmp "$work/claude-before" "$AOS_HOME/extensions/oracles/claude/private-state"
@@ -596,9 +596,9 @@ fi
 grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-skills' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-forge' "$TEST_LOG"
-grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.0$' "$TEST_LOG"
+grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.1$' "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-test -d "$AOS_HOME/extensions/oracles/plugins/2026.9.0"
+test -d "$AOS_HOME/extensions/oracles/plugins/2026.9.1"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
 test -f "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
@@ -724,7 +724,7 @@ test ! -e "$local_skills_state/agent-codex-code"
 test ! -e "$local_skills_state/installed-codex-code-aos-mcp"
 test ! -e "$local_skills_home/runtime"
 test ! -e "$local_skills_home/runtime/etc/profiles/default.toml"
-test ! -e "$local_skills_home/extensions/oracles/plugins/2026.9.0"
+test ! -e "$local_skills_home/extensions/oracles/plugins/2026.9.1"
 test "$(sed -n '2p' "$local_skills_state/installed-codex-code-aos-skills")" \
   = /tmp/user/aos-skills.capsule
 
@@ -752,7 +752,7 @@ test ! -e "$malformed_identity_state/default-initialized"
 test ! -e "$malformed_identity_state/agent-codex-code"
 test ! -e "$malformed_identity_state/granted-codex-code-aos-skills"
 test ! -e "$malformed_identity_home/runtime"
-test ! -e "$malformed_identity_home/extensions/oracles/plugins/2026.9.0"
+test ! -e "$malformed_identity_home/extensions/oracles/plugins/2026.9.1"
 test ! -e "$malformed_identity_home/extensions/oracles/codex/current"
 
 # A failed read is not proof of absence. Even with no prior capsule record,
@@ -782,7 +782,7 @@ test ! -e "$unreadable_show_state/default-initialized"
 test ! -e "$unreadable_show_state/agent-codex-code"
 test ! -e "$unreadable_show_state/granted-codex-code-aos-mcp"
 test ! -e "$unreadable_show_home/runtime"
-test ! -e "$unreadable_show_home/extensions/oracles/plugins/2026.9.0"
+test ! -e "$unreadable_show_home/extensions/oracles/plugins/2026.9.1"
 test ! -e "$unreadable_show_home/extensions/oracles/codex/current"
 test ! -e "$unreadable_show_home/extensions/oracles/codex/Pack.lock"
 
@@ -791,7 +791,7 @@ test ! -e "$unreadable_show_home/extensions/oracles/codex/Pack.lock"
 # principal creation, grants, snapshot activation, or any receipt state.
 identity_mismatch_home="$home/identity-mismatch/.aos"
 identity_mismatch_state="$work/identity-mismatch-state"
-identity_release="$identity_mismatch_home/releases/2026.9.0"
+identity_release="$identity_mismatch_home/releases/2026.9.1"
 identity_artifact="$identity_release/capsules/aos-mcp.capsule"
 mkdir -p "$identity_mismatch_state" "$identity_release/capsules"
 cp -R "$product_assets/." "$identity_release/"
@@ -822,7 +822,7 @@ test ! -e "$identity_mismatch_state/agent-codex-code"
 test ! -e "$identity_mismatch_state/granted-codex-code-aos-mcp"
 test -d "$identity_mismatch_home/runtime"
 test ! -e "$identity_mismatch_home/runtime/etc/profiles/default.toml"
-test ! -e "$identity_mismatch_home/extensions/oracles/plugins/2026.9.0"
+test ! -e "$identity_mismatch_home/extensions/oracles/plugins/2026.9.1"
 test ! -e "$identity_mismatch_home/extensions/oracles/codex/current"
 
 # Local development may stage only the selected host, provided every staged
@@ -1025,7 +1025,7 @@ grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.
 grep -Fq -- '--add-capsule aos-skills' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-grep -Eq '^claude plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.0$' "$TEST_LOG"
+grep -Eq '^claude plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.1$' "$TEST_LOG"
 if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
   echo "external Claude plugin installed an AOS-managed workload adapter" >&2
   exit 1
@@ -1110,7 +1110,7 @@ then
   exit 1
 fi
 test "$(readlink "$prior_plugin_home/extensions/oracles/codex/current")" = releases/0.2.6
-test ! -e "$prior_plugin_home/extensions/oracles/codex/releases/2026.9.0"
+test ! -e "$prior_plugin_home/extensions/oracles/codex/releases/2026.9.1"
 test "$(shasum -a 256 "$prior_receipt/Receipt.toml" | awk '{print $1}')" \
   = "$prior_receipt_hash"
 grep -Fxq 'authenticated prior generation' "$prior_receipt/prior-marker"
@@ -1174,12 +1174,12 @@ then
   echo "second host failure unexpectedly completed the multi-host install" >&2
   exit 1
 fi
-shared_snapshot="$multi_host_home/extensions/oracles/plugins/2026.9.0"
+shared_snapshot="$multi_host_home/extensions/oracles/plugins/2026.9.1"
 test -f "$shared_snapshot/plugins/claude/bin/aos-up"
 test -f "$shared_snapshot/plugins/unicity-aos/.aos-oracle-version"
-codex_receipt="$multi_host_home/extensions/oracles/codex/releases/2026.9.0"
+codex_receipt="$multi_host_home/extensions/oracles/codex/releases/2026.9.1"
 test -f "$codex_receipt/Pack.lock"
-test "$(readlink "$multi_host_home/extensions/oracles/codex/current")" = releases/2026.9.0
+test "$(readlink "$multi_host_home/extensions/oracles/codex/current")" = releases/2026.9.1
 grok_pack_lock="$multi_host_home/extensions/oracles/grok/Pack.lock"
 test -f "$grok_pack_lock"
 test ! -L "$grok_pack_lock"
@@ -1198,7 +1198,7 @@ if [ "$pack_lock_mode" != 604 ]; then
   exit 1
 fi
 test "$(readlink "$multi_host_home/extensions/oracles/grok/current")" = releases/0.2.8
-test ! -e "$multi_host_home/extensions/oracles/grok/releases/2026.9.0"
+test ! -e "$multi_host_home/extensions/oracles/grok/releases/2026.9.1"
 test ! -e "$multi_host_home/extensions/oracles/.install.lock"
 
 # Local development assets cannot inherit a Sigstore bundle from an older
@@ -1353,7 +1353,7 @@ test "$(wc -l < "$TEST_LOG")" -eq "$plugin_destination_log_start"
 receipt_link_home="$home/destination-receipt-link/.aos"
 receipt_escape="$home/destination-receipt-escape"
 mkdir -p "$receipt_link_home/extensions/oracles/codex/releases" "$receipt_escape"
-ln -s "$receipt_escape/2026.9.0" "$receipt_link_home/extensions/oracles/codex/releases/2026.9.0"
+ln -s "$receipt_escape/2026.9.1" "$receipt_link_home/extensions/oracles/codex/releases/2026.9.1"
 destination_state="$work/destination-receipt-state"
 mkdir -p "$destination_state"
 receipt_destination_log_start=$(wc -l < "$TEST_LOG")
@@ -1366,7 +1366,7 @@ then
   exit 1
 fi
 grep -Fq "codex receipt destination is a symlink" "$work/destination-receipt.out"
-test ! -e "$receipt_escape/2026.9.0"
+test ! -e "$receipt_escape/2026.9.1"
 test "$(wc -l < "$TEST_LOG")" -eq "$receipt_destination_log_start"
 
 # A released version directory is immutable. Reruns may reuse identical bytes,
@@ -1376,7 +1376,7 @@ immutable_state="$work/immutable-state"
 mkdir -p "$immutable_state"
 TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-snapshot_manifest="$immutable_home/extensions/oracles/plugins/2026.9.0/.agents/plugins/marketplace.json"
+snapshot_manifest="$immutable_home/extensions/oracles/plugins/2026.9.1/.agents/plugins/marketplace.json"
 printf '\nmodified\n' >> "$snapshot_manifest"
 if TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
@@ -1391,7 +1391,7 @@ receipt_state="$work/immutable-receipt-state"
 mkdir -p "$receipt_state"
 TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-receipt="$receipt_home/extensions/oracles/codex/releases/2026.9.0/Receipt.toml"
+receipt="$receipt_home/extensions/oracles/codex/releases/2026.9.1/Receipt.toml"
 printf '\nmodified = true\n' >> "$receipt"
 if TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
@@ -1493,7 +1493,7 @@ product_mcp_hash=$(tar -xOf "$product_assets/capsules/aos-mcp.capsule" aos_mcp.w
   | b3sum | awk '{print $1}')
 write_test_capsule "$legacy_state" codex-code aos-mcp \
   "$product_mcp_hash" \
-  "$legacy_home/releases/2026.9.0/capsules/aos-mcp.capsule" \
+  "$legacy_home/releases/2026.9.1/capsules/aos-mcp.capsule" \
   2026-07-17T23:13:33+00:00 2026-07-17T23:14:00+00:00
 write_test_capsule "$legacy_state" codex-code codex-install \
   6c510fd2185311dd6de4fd44adb19f9ff19f2251adcad16ff18d859a434e8593 \
@@ -1520,23 +1520,23 @@ for capsule in aos-mcp codex-install codex-runner aos-cli aos-fs user-capsule; d
 done
 
 if TEST_FAIL_PLUGIN=1 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.9.0 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.9.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 2026.9.0
+    --oracle-version 2026.9.1
 then
   echo "legacy repair unexpectedly committed after host plugin failure" >&2
   exit 1
 fi
 test -f "$legacy_state/granted-codex-code-codex-install"
 test -f "$legacy_state/granted-codex-code-aos-cli"
-test ! -e "$legacy_home/extensions/oracles/codex/releases/2026.9.0"
+test ! -e "$legacy_home/extensions/oracles/codex/releases/2026.9.1"
 
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.9.0 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.9.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 2026.9.0
+    --oracle-version 2026.9.1
 test ! -e "$legacy_state/granted-codex-code-codex-install"
 test ! -e "$legacy_state/granted-codex-code-aos-cli"
 test -f "$legacy_state/granted-codex-code-codex-runner"
@@ -1546,11 +1546,11 @@ test -f "$legacy_state/granted-codex-code-aos-mcp"
 test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
   = "$product_mcp_hash"
 test -f "$legacy_state/installed-codex-code-codex-install"
-test -f "$legacy_home/extensions/oracles/codex/releases/2026.9.0/ManagedCapsules.toml"
-test "$(cat "$legacy_home/extensions/oracles/codex/releases/2026.9.0/ManagedCapsules.toml")" \
+test -f "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml"
+test "$(cat "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml")" \
   = 'schema-version = 1'
 if grep -Eq 'codex-(install|runner)|aos-(cli|fs)' \
-  "$legacy_home/extensions/oracles/codex/releases/2026.9.0/ManagedCapsules.toml"
+  "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml"
 then
   echo "new Oracle receipt claimed an obsolete or CE capsule" >&2
   exit 1
@@ -1559,15 +1559,15 @@ fi
 # The immutable current pack receipt remains stable when the user keeps a
 # same-ID superseding implementation.
 receipt_before=$(shasum -a 256 \
-  "$legacy_home/extensions/oracles/codex/releases/2026.9.0/ManagedCapsules.toml" \
+  "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml" \
   | awk '{print $1}')
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
-  TEST_AOS_VERSION=2026.9.0 AOS_HOME="$legacy_home" \
+  TEST_AOS_VERSION=2026.9.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 2026.9.0
+    --oracle-version 2026.9.1
 test "$receipt_before" = "$(shasum -a 256 \
-  "$legacy_home/extensions/oracles/codex/releases/2026.9.0/ManagedCapsules.toml" \
+  "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml" \
   | awk '{print $1}')"
 test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
   = "$product_mcp_hash"

@@ -38,7 +38,7 @@ def runtime_env(executable: str) -> dict[str, str]:
 
 def canonical_release(root: Path, source: str = "/bin/sh") -> str:
     root = root.resolve()
-    executable = root / "releases/2026.9.0/runtime/bin/astrid"
+    executable = root / "releases/2026.9.1/runtime/bin/astrid"
     executable.parent.mkdir(parents=True)
     shutil.copyfile(source, executable)
     executable.chmod(0o700)
@@ -152,7 +152,7 @@ def test_symlinked_release_ancestor_rejected() -> None:
         external_executable = external_bin / "astrid"
         external_executable.write_text("#!/bin/sh\nexit 0\n")
         external_executable.chmod(0o700)
-        release_root = root / "aos/releases/2026.9.0/runtime"
+        release_root = root / "aos/releases/2026.9.1/runtime"
         release_root.mkdir(parents=True)
         (release_root / "bin").symlink_to(external_bin, target_is_directory=True)
         executable = str(release_root / "bin/astrid")
@@ -166,7 +166,7 @@ def test_symlinked_home_ancestor_rejected() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir).resolve()
         real_home = root / "real-home/.aos"
-        release_root = real_home / "releases/2026.9.0/runtime"
+        release_root = real_home / "releases/2026.9.1/runtime"
         release_root.mkdir(parents=True)
         (release_root / "bin").mkdir()
         executable_file = release_root / "bin/astrid"
@@ -174,7 +174,7 @@ def test_symlinked_home_ancestor_rejected() -> None:
         executable_file.chmod(0o700)
         alias_parent = root / "alias-home"
         alias_parent.symlink_to(real_home.parent, target_is_directory=True)
-        executable = str(alias_parent / ".aos/releases/2026.9.0/runtime/bin/astrid")
+        executable = str(alias_parent / ".aos/releases/2026.9.1/runtime/bin/astrid")
         environment = runtime_env(executable)
         environment["AOS_RUNTIME_PATH"] = executable
         assert_rejected(executable, environment, b"release path is not canonical")
@@ -184,7 +184,7 @@ def test_lexically_canceled_symlink_home_rejected() -> None:
     with tempfile.TemporaryDirectory() as temp_dir:
         root = Path(temp_dir).resolve()
         real_home = root / "real-home/.aos"
-        release_root = real_home / "releases/2026.9.0/runtime"
+        release_root = real_home / "releases/2026.9.1/runtime"
         release_root.mkdir(parents=True)
         (release_root / "bin").mkdir()
         executable_file = release_root / "bin/astrid"
@@ -193,10 +193,10 @@ def test_lexically_canceled_symlink_home_rejected() -> None:
         alias_parent = root / "alias-home"
         alias_parent.symlink_to(root, target_is_directory=True)
         canonical_executable = str(
-            real_home / "releases/2026.9.0/runtime/bin/astrid"
+            real_home / "releases/2026.9.1/runtime/bin/astrid"
         )
         executable = str(
-            alias_parent / "../real-home/.aos/releases/2026.9.0/runtime/bin/astrid"
+            alias_parent / "../real-home/.aos/releases/2026.9.1/runtime/bin/astrid"
         )
         environment = runtime_env(canonical_executable)
         environment["AOS_HOME"] = str(alias_parent / "../real-home/.aos")

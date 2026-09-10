@@ -511,7 +511,7 @@ import sys
 plugin = Path(sys.argv[1]) / "extensions/oracles/plugins/2026.9.1/plugins/unicity-aos"
 server = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["aos"]
 assert server["command"] == "python3", server
-assert server["args"] == [str(plugin / "bin/aos-mcp-start"), "--principal", "codex-code"], server
+assert server["args"] == [str(plugin / "bin/aos-codex-mcp"), "--principal", "codex-code"], server
 assert "cwd" not in server, "do not replace the host project with the plugin directory"
 PY
 

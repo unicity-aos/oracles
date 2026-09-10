@@ -3,7 +3,7 @@
     "aos": {
       "command": "python3",
       "args": [
-        "${PLUGIN_ROOT}/bin/aos-mcp-start",
+        "${PLUGIN_ROOT}/bin/aos-codex-mcp",
         "--principal",
         "codex-code"
       ],

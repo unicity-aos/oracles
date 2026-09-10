@@ -110,6 +110,7 @@ class SetupTests(unittest.TestCase):
         (plugin / "bin").mkdir(parents=True)
         shutil.copyfile(SOURCE, plugin / "bin/aos-mcp-start")
         if host == "unicity-aos":
+            shutil.copyfile(ROOT / "plugins" / host / "bin/aos-codex-mcp", plugin / "bin/aos-codex-mcp")
             shutil.copyfile(ROOT / "plugins" / host / "bin/aos-configure-mcp",
                             plugin / "bin/aos-configure-mcp")
             shutil.copyfile(ROOT / "plugins" / host / ".mcp.json", plugin / ".mcp.json")
@@ -144,16 +145,18 @@ class SetupTests(unittest.TestCase):
                         self.assertFalse((root / "release").exists())
                         self.assertEqual(client.status()[0]["state"], "starting")
                         tools = client.request("tools/list")["result"]["tools"]
-                        self.assertEqual([tool["name"] for tool in tools], [adapter.STATUS_NAME])
+                        expected = [adapter.STATUS_NAME, "aos_list_tools", "aos_call_tool"] if host == "unicity-aos" else [adapter.STATUS_NAME]
+                        self.assertEqual([tool["name"] for tool in tools], expected)
                         self.assertIn("error", client.request("tools/call", {"name": "fixture_echo"}))
                         self.assertEqual(client.request("ping")["result"], {})
                         (root / "release").touch()
                         self.assertEqual(client.receive()["method"], "notifications/tools/list_changed")
                         self.assertEqual(client.status()[0]["state"], "ready")
                         tools = client.request("tools/list")["result"]["tools"]
-                        self.assertEqual([tool["name"] for tool in tools], [adapter.STATUS_NAME, "fixture_echo"])
+                        self.assertEqual([tool["name"] for tool in tools], expected if host == "unicity-aos" else [adapter.STATUS_NAME, "fixture_echo"])
                         # Host IDs may equal the adapter's private initialization ID.
-                        reply = client.request("tools/call", {"name": "fixture_echo"}, "aos-initialize")
+                        params = {"name": "aos_call_tool", "arguments": {"name": "fixture_echo", "arguments": {}}} if host == "unicity-aos" else {"name": "fixture_echo"}
+                        reply = client.request("tools/call", params, "aos-initialize")
                         self.assertEqual(reply["result"]["content"][0]["text"], "real backend result")
                         self.assertEqual((root / "starts").read_text(), "start\n")
                     finally:
@@ -171,7 +174,7 @@ class SetupTests(unittest.TestCase):
                 status, reply = client.status()
                 self.assertEqual(status["state"], "failed")
                 self.assertTrue(reply["result"]["isError"])
-                self.assertEqual(len(client.request("tools/list")["result"]["tools"]), 1)
+                self.assertEqual(len(client.request("tools/list")["result"]["tools"]), 3)
             finally:
                 client.close()
 

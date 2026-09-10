@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-mcp-start\" --hook",
+            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-codex-mcp\" --hook",
             "timeout": 5,
             "statusMessage": "Checking Unicity AOS setup status"
           }

@@ -491,7 +491,7 @@ def check_runtime_target_detection() -> None:
 def main() -> None:
     check_runtime_target_detection()
     assert SERVER["command"] == "python3"
-    assert SERVER["args"] == ["${PLUGIN_ROOT}/bin/aos-mcp-start", "--principal", "codex-code"]
+    assert SERVER["args"] == ["${PLUGIN_ROOT}/bin/aos-codex-mcp", "--principal", "codex-code"]
     assert "cwd" not in SERVER
     assert SERVER["startup_timeout_sec"] == 20
     assert SERVER["env_vars"] == [
@@ -1009,7 +1009,7 @@ def main() -> None:
         )
         generated = json.loads((plugin_copy / ".mcp.json").read_text())["mcpServers"]["aos"]
         assert generated["command"] == SERVER["command"]
-        assert generated["args"] == [str(plugin_copy / "bin/aos-mcp-start"), "--principal", "codex-code"]
+        assert generated["args"] == [str(plugin_copy / "bin/aos-codex-mcp"), "--principal", "codex-code"]
         assert "cwd" not in generated
         assert generated["startup_timeout_sec"] == SERVER["startup_timeout_sec"]
         assert generated["env_vars"] == SERVER["env_vars"]

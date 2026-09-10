@@ -693,6 +693,7 @@ def exercise_host(host: str, root: Path) -> None:
     fake_bin = root / host / "fake-bin"
     wait_marker = root / host / "wait-observed"
     wait_gate = root / host / "release-waiter"
+    fake_installer = root / host / "waiting-installer"
     cwd_log = root / host / "aos-cwd"
     args_log = root / host / "aos-args"
     workspace.mkdir(parents=True)
@@ -704,6 +705,13 @@ def exercise_host(host: str, root: Path) -> None:
         ': > "$TEST_WAIT_MARKER"\n'
         'while [ ! -e "$TEST_WAIT_GATE" ]; do /bin/sleep 0.01; done\n',
     )
+    # This fixture supplies readiness externally. Never download a public
+    # installer while testing its deterministic wait gate (slow GitHub I/O
+    # otherwise outlives the five-second assertion on hosted Linux).
+    write_executable(
+        fake_installer,
+        '#!/bin/sh\nwhile [ ! -e "$TEST_WAIT_GATE" ]; do /bin/sleep 0.01; done\n',
+    )
     environment = {
         "HOME": str(root / host / "home"),
         "AOS_HOME": str(home),
@@ -712,6 +720,7 @@ def exercise_host(host: str, root: Path) -> None:
         "PATH": f"{fake_bin}:/usr/bin:/bin",
         "TEST_WAIT_MARKER": str(wait_marker),
         "TEST_WAIT_GATE": str(wait_gate),
+        "AOS_ORACLES_INSTALLER": str(fake_installer),
         "TEST_AOS_CWD": str(cwd_log),
         "TEST_AOS_ARGS": str(args_log),
     }
@@ -851,11 +860,16 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
         'done\n'
         '[ "$host" = "$TEST_EXPECTED_HOST" ]\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/extensions/oracles/$host"\n'
+        'rm -f "$AOS_HOME/runtime/preflight-started"\n'
         'printf "%s\\n" \'version = "2026.9.0"\' > "$AOS_HOME/extensions/oracles/$host/Pack.lock"\n'
         'cat > "$AOS_HOME/bin/aos" <<\'AOS\'\n'
         "#!/bin/sh\n"
         'pwd -P > "$TEST_AOS_CWD"\n'
         'printf "%s\\n" "$*" > "$TEST_AOS_ARGS"\n'
+        'case " $* " in\n'
+        '  *" start --ephemeral "*) touch "$AOS_HOME/runtime/preflight-started"; exit 0 ;;\n'
+        '  *" capsule show "*) [ -f "$AOS_HOME/runtime/preflight-started" ] || exit 94 ;;\n'
+        'esac\n'
         "AOS\n"
         'chmod 700 "$AOS_HOME/bin/aos"\n',
     )
@@ -873,6 +887,15 @@ def exercise_blank_slate_bootstrap(host: str, root: Path) -> None:
         "TEST_AOS_ARGS": str(args_log),
     }
 
+    (home / "runtime").mkdir(parents=True)
+    write_executable(
+        home / "bin/aos",
+        '#!/bin/sh\n'
+        'case " $* " in\n'
+        '  *" start --ephemeral "*) touch "$AOS_HOME/runtime/preflight-started"; exit 0 ;;\n'
+        '  *) printf "%s\\n" "capsule \'aos-mcp\' is not installed for agent \'$AOS_HOST-code\'"; exit 1 ;;\n'
+        'esac\n',
+    )
     process = launch(host, workspace, environment)
     assert_success(process)
     invocation = installer_log.read_text().strip()

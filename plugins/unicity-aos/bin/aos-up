@@ -208,6 +208,9 @@ ensure_codex() {
       --oracle-version "$ORACLE_VERSION" \
       </dev/null >"$BOOTSTRAP_LOG" 2>&1
     then
+      # Installation may retire the daemon it used. Readiness must restore
+      # the committed runtime, not reuse our pre-install startup observation.
+      AOS_PREFLIGHT_STARTED=0
       if codex_ready; then
         cleanup_bootstrap_log
         return 0

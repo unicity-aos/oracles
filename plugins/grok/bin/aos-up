@@ -388,6 +388,11 @@ printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || { log "plugin snapshot has an invalid Oracle release identity"; exit 1; }
 
 host_ready() {
+  if [ -n "$BOOTSTRAP_PID" ]; then
+    # Do not query a runtime while the installer is changing/retiring it.
+    kill -0 "$BOOTSTRAP_PID" 2>/dev/null && return 1
+    AOS_PREFLIGHT_STARTED=0
+  fi
   if ! aos_resolve_apply 2>/dev/null; then
     return 1
   fi

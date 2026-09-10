@@ -118,7 +118,9 @@ jobs:
           python3 scripts/test_preflight_notices.py
 
       - name: Verify nonblocking MCP setup and same-connection readiness
-        run: python3 scripts/test_mcp_setup_status.py
+        run: |
+          python3 scripts/test_mcp_setup_status.py
+          python3 scripts/test_codex_catalog.py
 
       - name: Verify Unicity AOS Codex plugin
         run: |
@@ -126,7 +128,7 @@ jobs:
           jq -e '
             .mcpServers.aos.command == "python3" and
             (.mcpServers.aos | has("cwd") | not) and
-            .mcpServers.aos.args[0] == "${PLUGIN_ROOT}/bin/aos-mcp-start" and
+            .mcpServers.aos.args[0] == "${PLUGIN_ROOT}/bin/aos-codex-mcp" and
             .mcpServers.aos.startup_timeout_sec == 20
           ' plugins/unicity-aos/.mcp.json
           python3 scripts/test_codex_mcp_startup.py

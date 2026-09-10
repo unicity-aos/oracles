@@ -10,7 +10,7 @@ def configure(plugin, aos=None, installed_root=None):
     config = json.loads(config_path.read_text())
     server = config["mcpServers"]["aos"]
     server["command"] = "python3"
-    server["args"] = [str((installed_root or plugin) / "bin/aos-mcp-start"), "--principal", "codex-code"]
+    server["args"] = [str((installed_root or plugin) / "bin/aos-codex-mcp"), "--principal", "codex-code"]
     # Preserve the host session's cwd; it identifies the actual project.
     server.pop("cwd", None)
     if aos is not None:

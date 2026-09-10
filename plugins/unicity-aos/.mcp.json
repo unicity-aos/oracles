@@ -1,11 +1,11 @@
 {
   "mcpServers": {
     "aos": {
-      "command": "/bin/sh",
+      "command": "python3",
       "args": [
-        "-c",
-        "root=${CODEX_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}; [ -n \"$root\" ] || { echo 'aos: Codex plugin root is unavailable' >&2; exit 127; }; exec python3 \"$root/bin/aos-mcp-start\" --principal codex-code",
-        "aos"
+        "${PLUGIN_ROOT}/bin/aos-codex-mcp",
+        "--principal",
+        "codex-code"
       ],
       "startup_timeout_sec": 20,
       "env_vars": [

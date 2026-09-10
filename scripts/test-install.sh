@@ -221,6 +221,7 @@ case " $* " in
     }
     record="$TEST_STATE/installed-$principal-$capsule"
     if [ ! -f "$record" ]; then
+      printf '%s\n' '! Update available: v2026.9.1 → v2026.9.0. Run `astrid update` to upgrade.' >&2
       printf "✗ capsule '%s' is not installed for agent '%s'\n" \
         "$capsule" "$principal" >&2
       exit 1
@@ -503,6 +504,16 @@ fi
 test ! -e "$plugin_only_home/runtime"
 test ! -e "$plugin_only_home/extensions/oracles/codex/Pack.lock"
 test ! -e "$plugin_only_home/extensions/oracles/.install.lock"
+python3 - "$plugin_only_home" <<'PY'
+import json
+from pathlib import Path
+import sys
+plugin = Path(sys.argv[1]) / "extensions/oracles/plugins/2026.9.1/plugins/unicity-aos"
+server = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["aos"]
+assert server["command"] == "python3", server
+assert server["args"] == [str(plugin / "bin/aos-codex-mcp"), "--principal", "codex-code"], server
+assert "cwd" not in server, "do not replace the host project with the plugin directory"
+PY
 
 # b3sum prefixes glob-expanded paths with ./ in release builds. The signed
 # manifest parser accepts that exact producer form while still validating the

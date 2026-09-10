@@ -18,6 +18,31 @@ On installation, Codex reads `.codex-plugin/plugin.json` and discovers:
   no mutable-runtime or ambient-PATH fallback; and
 - session and tool hooks under `hooks/hooks.json`.
 
+The Oracle installer configures the absolute `aos-codex-mcp` path before adding
+the Codex marketplace plugin. Legacy Codex MCP configuration does not expand
+plugin-root placeholders or supply a plugin-root environment variable. The
+configured command keeps the session's working directory, answers initialization
+before provisioning completes, and exposes `aos_setup_status` while setup runs.
+For a local checkout, run this plugin's `install.sh` before enabling it; do not
+register the unconfigured template directly.
+
+### Dynamic tools in Codex
+
+Codex's cached MCP catalog currently ignores tool-list changes. This plugin
+therefore exposes three stable tools immediately: `aos_setup_status`,
+`aos_list_tools`, and `aos_call_tool`. Discovery returns the real backend's
+principal-scoped tool definitions and pagination cursor; invocation forwards
+to the same authenticated connection, with unchanged runtime authorization.
+Invocation is conservatively advertised as potentially destructive rather than
+claiming every underlying tool is read-only.
+
+Catalog-change notifications trigger bounded background discovery. Brief,
+deduplicated notices ride on successful AOS responses; they do not wake idle
+agents, require polling, or inject new named tools into Codex. A slow notice
+fetch does not hold up the original response. Installing this adapter requires
+one new MCP connection; subsequent capsule changes do not require reconnects.
+Claude and Grok retain their existing native dynamic tool catalogs.
+
 Skill metadata is available for routing. Codex reads a skill's complete
 `SKILL.md` only when the user names it or the request matches its description.
 The MCP server independently exposes the tool surface granted to `codex-code` as

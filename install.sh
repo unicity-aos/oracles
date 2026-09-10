@@ -874,12 +874,15 @@ load_capsule_record() {
   cr_record=$(aos --principal default capsule show "$cr_capsule" \
     --agent "$cr_principal" --format toml 2>"$cr_error") || cr_status=$?
   if [ "$cr_status" -ne 0 ]; then
+    # Keep unknown diagnostics fatal, but do not mistake a cached update notice
+    # accompanying the exact absent-capsule error for a transport failure.
+    cr_diagnostic=$(sed '/^! Update available: v[0-9][0-9.]* → v[0-9][0-9.]*\. Run `astrid update` to upgrade\.$/d' "$cr_error")
     # AOS marks an absent capsule with status 1 and this documented
     # diagnostic. Any other failure can mean unreadable or truncated state,
     # and must stop before workspace selection or default first-boot mutation.
     if [ "$cr_status" -eq 1 ] \
-      && { [ "$(cat "$cr_error")" = "capsule '$cr_capsule' is not installed for agent '$cr_principal'" ] \
-        || [ "$(cat "$cr_error")" = "✗ capsule '$cr_capsule' is not installed for agent '$cr_principal'" ]; }
+      && { [ "$cr_diagnostic" = "capsule '$cr_capsule' is not installed for agent '$cr_principal'" ] \
+        || [ "$cr_diagnostic" = "✗ capsule '$cr_capsule' is not installed for agent '$cr_principal'" ]; }
     then
       rm -f "$cr_error"
       return 1
@@ -1186,6 +1189,10 @@ prepare_plugin_snapshot() {
       || die "plugin snapshot is missing a regular $required"
   done
   PLUGIN_SNAPSHOT="$stage"
+  # Bind installation-local configuration before exact snapshot comparison, so
+  # repeat installs compare the same configured bytes instead of the template.
+  python3 "$stage/plugins/unicity-aos/bin/aos-configure-mcp" \
+    --installed-root "$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION/plugins/unicity-aos"
 }
 
 capture_receipt_rollback_state() {

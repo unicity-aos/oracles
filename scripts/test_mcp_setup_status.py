@@ -76,11 +76,12 @@ class Client:
             if message.get("id") == identity:
                 return message
 
-    def initialize(self):
-        result = self.request("initialize", {"protocolVersion": "2025-11-25", "capabilities": {},
+    def initialize(self, version="2025-11-25"):
+        result = self.request("initialize", {"protocolVersion": version, "capabilities": {},
                                              "clientInfo": {"name": "test", "version": "1"}})
         assert result["result"]["capabilities"]["tools"]["listChanged"]
         self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+        return result
 
     def status(self):
         reply = self.request("tools/call", {"name": adapter.STATUS_NAME, "arguments": {}})
@@ -94,6 +95,16 @@ class Client:
 
 
 class SetupTests(unittest.TestCase):
+    def test_legacy_proposals_negotiate_a_backend_supported_version(self):
+        for version in ("2024-11-05", "2025-03-26", "2025-06-18"):
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as raw:
+                client = self.fixture(Path(raw), "unicity-aos")
+                try:
+                    reply = client.initialize(version)
+                    self.assertEqual(reply["result"]["protocolVersion"], "2025-11-25")
+                finally:
+                    client.close()
+
     def fixture(self, root, host, framed=False):
         plugin = root / host
         (plugin / "bin").mkdir(parents=True)

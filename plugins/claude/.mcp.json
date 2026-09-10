@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "aos": {
-      "command": "${CLAUDE_PLUGIN_ROOT}/bin/aos-up",
-      "args": ["--principal", "${user_config.principal}"],
+      "command": "python3",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/bin/aos-mcp-start", "--principal", "${user_config.principal}"],
       "env": {}
     }
   }

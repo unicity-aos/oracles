@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "aos": {
-      "command": "${GROK_PLUGIN_ROOT}/bin/aos-up",
-      "args": ["--principal", "grok-code"],
+      "command": "python3",
+      "args": ["${GROK_PLUGIN_ROOT}/bin/aos-mcp-start", "--principal", "grok-code"],
       "env": {}
     }
   }

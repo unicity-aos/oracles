@@ -43,7 +43,9 @@ def launch(
     env["CODEX_PLUGIN_ROOT"] = str(plugin)
     env["PLUGIN_ROOT"] = str(plugin)
     return subprocess.run(
-        [SERVER["command"], *SERVER["args"]],
+        # These tests exercise the verified backend launcher directly. The
+        # configured nonblocking MCP entrypoint has real-wire tests separately.
+        [str(plugin / "bin/aos-up"), "--principal", "codex-code"],
         cwd=cwd,
         env=env,
         text=True,

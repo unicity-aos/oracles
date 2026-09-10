@@ -115,6 +115,9 @@ jobs:
       - name: Verify Claude and Grok MCP startup readiness
         run: python3 scripts/test_host_mcp_startup.py
 
+      - name: Verify nonblocking MCP setup and same-connection readiness
+        run: python3 scripts/test_mcp_setup_status.py
+
       - name: Verify Unicity AOS Codex plugin
         run: |
           set -euo pipefail

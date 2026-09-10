@@ -74,7 +74,7 @@ write_mcp_config() {
       "command": "/bin/sh",
       "args": [
         "-c",
-        "root=\${CODEX_PLUGIN_ROOT:-\${PLUGIN_ROOT:-}}; [ -n \"\$root\" ] || { echo 'aos: Codex plugin root is unavailable' >&2; exit 127; }; exec \"\$root/bin/aos-up\" --principal codex-code",
+        "root=\${CODEX_PLUGIN_ROOT:-\${PLUGIN_ROOT:-}}; [ -n \"\$root\" ] || { echo 'aos: Codex plugin root is unavailable' >&2; exit 127; }; exec python3 \"\$root/bin/aos-mcp-start\" --principal codex-code",
         "aos"
       ],
       "startup_timeout_sec": 20,

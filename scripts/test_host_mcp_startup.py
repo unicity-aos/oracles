@@ -107,11 +107,11 @@ def launch(
     server = json.loads((ROOT / f"plugins/{host}/.mcp.json").read_text())[
         "mcpServers"
     ]["aos"]
-    command = server["command"].replace(
-        f"${{{HOSTS[host]['root_var']}}}", str(ROOT / f"plugins/{host}")
-    )
+    # Backend installer/identity tests remain direct; the configured adapter
+    # is exercised with real MCP messages in test_mcp_setup_status.py.
+    command = str(ROOT / f"plugins/{host}/bin/aos-up")
     return subprocess.Popen(
-        [command, *server["args"]],
+        [command, *server["args"][1:]],
         cwd=workspace,
         env=environment,
         text=True,

@@ -43,7 +43,9 @@ def launch(
     env["CODEX_PLUGIN_ROOT"] = str(plugin)
     env["PLUGIN_ROOT"] = str(plugin)
     return subprocess.run(
-        [SERVER["command"], *SERVER["args"]],
+        # These tests exercise the verified backend launcher directly. The
+        # configured nonblocking MCP entrypoint has real-wire tests separately.
+        [str(plugin / "bin/aos-up"), "--principal", "codex-code"],
         cwd=cwd,
         env=env,
         text=True,
@@ -142,6 +144,7 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         'receipt_root="$AOS_HOME/extensions/oracles/codex"\n'
         'receipt="$receipt_root/releases/2026.9.0"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/runtime/bin" "$release/runtime/bin" "$receipt"\n'
+        'rm -f "$AOS_HOME/runtime/preflight-started"\n'
         'printf "%s\\n" \'version = "2026.9.0"\' > "$receipt/Pack.lock"\n'
         'cat > "$receipt/Receipt.toml" <<\'RECEIPT\'\n'
         'schema-version = 1\n'
@@ -538,6 +541,18 @@ def main() -> None:
             "TEST_LEGACY_RUNTIME_USED": str(legacy_used),
             "TMPDIR": str(root),
         }
+
+        # An existing base is started before provisioning. The installer
+        # retires it; the launcher must start it again before metadata reads.
+        (home / "runtime").mkdir(parents=True)
+        write_executable(
+            home / "bin/aos",
+            '#!/bin/sh\n'
+            'case " $* " in\n'
+            '  *" start --ephemeral "*) touch "$AOS_HOME/runtime/preflight-started"; exit 0 ;;\n'
+            '  *) printf "%s\\n" "capsule \'aos-mcp\' is not installed for agent \'codex-code\'"; exit 1 ;;\n'
+            'esac\n',
+        )
 
         first = launch(environment, host_workspace)
         assert first.returncode == 0, (first.returncode, first.stdout, first.stderr)

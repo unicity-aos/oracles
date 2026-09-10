@@ -5,9 +5,9 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${GROK_PLUGIN_ROOT}\"/bin/aos-doctor --format hook",
-            "timeout": 300,
-            "statusMessage": "Setting up Unicity AOS for Grok"
+            "command": "python3 \"${GROK_PLUGIN_ROOT}/bin/aos-mcp-start\" --hook",
+            "timeout": 5,
+            "statusMessage": "Checking Unicity AOS setup status"
           }
         ]
       },

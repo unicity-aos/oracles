@@ -26,7 +26,7 @@ MIRROR_HOSTS="claude grok"
 
 # Shared scripts to vendor into every mirrored host plugin. Host-specific
 # scripts such as status lines are deliberately absent from this list.
-SHARED="aos-up aos-doctor aos-install aos-update-check lib-aos-resolve.sh"
+SHARED="aos-up aos-doctor aos-install aos-update-check lib-aos-resolve.sh aos-mcp-start"
 
 for host in $MIRROR_HOSTS; do
   hb="$ROOT/plugins/$host/bin"
@@ -50,7 +50,7 @@ for host in claude grok unicity-aos; do
 done
 
 if [ -d "$ROOT/plugins/unicity-aos/bin" ]; then
-  for f in aos-install aos-update-check; do
+  for f in aos-install aos-update-check aos-mcp-start; do
     cp "$COMMON/$f" "$ROOT/plugins/unicity-aos/bin/$f"
     chmod 755 "$ROOT/plugins/unicity-aos/bin/$f"
   done

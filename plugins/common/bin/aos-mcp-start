@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Keep host MCP responsive while the ordinary verified launcher provisions AOS.
+
+This adapter owns only connection readiness. aos-up still owns installation,
+principal validation, signed-runtime verification, and the real MCP transport.
+No runtime tools are claimed until that transport completes initialization.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import queue
+import signal
+import subprocess
+import sys
+import threading
+
+
+STATUS_NAME = "aos_setup_status"
+STATUS_TOOL = {
+    "name": STATUS_NAME,
+    "description": "Report whether AOS setup is starting, ready, or failed. Retry while starting; runtime tools appear when ready.",
+    "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28")
+MAX_MESSAGE = 16 * 1024 * 1024
+
+
+def read_message(stream):
+    line = stream.readline(MAX_MESSAGE + 1)
+    if not line:
+        return None, None
+    if len(line) > MAX_MESSAGE:
+        raise ValueError("MCP message too large")
+    mode = "json-line"
+    if line.lower().startswith(b"content-length:"):
+        size = int(line.split(b":", 1)[1].strip())
+        if not 0 <= size <= MAX_MESSAGE:
+            raise ValueError("invalid MCP content length")
+        header_bytes = len(line)
+        while True:
+            header = stream.readline(8193)
+            header_bytes += len(header)
+            if not header or header_bytes > 8192:
+                raise ValueError("invalid MCP headers")
+            if header in (b"\n", b"\r\n"):
+                break
+        line = stream.read(size)
+        if len(line) != size:
+            raise ValueError("truncated MCP message")
+        mode = "content-length"
+    message = json.loads(line)
+    if not isinstance(message, dict):
+        raise ValueError("MCP message must be an object")
+    return mode, message
+
+
+def read_events(stream, source, events):
+    try:
+        while True:
+            mode, message = read_message(stream)
+            if message is None:
+                break
+            events.put((source, mode, message))
+    except (OSError, ValueError) as error:
+        print(f"aos-mcp-start: {source}: {error}", file=sys.stderr)
+    finally:
+        events.put((source, None, None))
+
+
+class Connection:
+    def __init__(self, command):
+        self.command = command
+        self.events = queue.Queue()
+        self.child = None
+        self.mode = "json-line"
+        self.state = "starting"
+        self.detail = "AOS setup is in progress. Continue other work and check aos_setup_status; tools appear automatically."
+        self.initialized = False
+        self.host_initialized = False
+        self.pending = {}
+        self.serial = 0
+        self.version = None
+
+    def send(self, message):
+        payload = json.dumps(message, separators=(",", ":")).encode()
+        if self.mode == "content-length":
+            sys.stdout.buffer.write(f"Content-Length: {len(payload)}\r\n\r\n".encode() + payload)
+        else:
+            sys.stdout.buffer.write(payload + b"\n")
+        sys.stdout.buffer.flush()
+
+    def result(self, request, result):
+        self.send({"jsonrpc": "2.0", "id": request["id"], "result": result})
+
+    def error(self, request, text, code=-32000):
+        self.send({"jsonrpc": "2.0", "id": request["id"], "error": {"code": code, "message": text}})
+
+    def to_child(self, message):
+        try:
+            self.child.stdin.write(json.dumps(message).encode() + b"\n")
+            self.child.stdin.flush()
+        except (OSError, ValueError):
+            self.fail("AOS connection closed. Check launcher diagnostics and reconnect to retry.")
+
+    def changed(self):
+        if self.host_initialized:
+            self.send({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+
+    def fail(self, detail):
+        self.state, self.detail = "failed", detail
+        for request in self.pending.values():
+            self.error(request, detail)
+        self.pending.clear()
+        self.changed()
+
+    def start(self, request):
+        params = dict(request.get("params", {}))
+        proposed = params.get("protocolVersion")
+        self.version = proposed if proposed in VERSIONS else "2025-11-25"
+        params["protocolVersion"] = self.version
+        self.initialized = True
+        self.result(request, {
+            "protocolVersion": self.version,
+            "capabilities": {"tools": {"listChanged": True}},
+            "serverInfo": {"name": "aos", "version": "1.0.0"},
+            "instructions": "AOS may still be provisioning. Use aos_setup_status; runtime tools become available on this connection when ready.",
+        })
+        try:
+            # Own only this launcher process group; never signal other daemons.
+            self.child = subprocess.Popen(self.command, stdin=subprocess.PIPE,
+                                          stdout=subprocess.PIPE, start_new_session=True)
+        except OSError as error:
+            self.fail(f"Could not start AOS: {error}")
+            return
+        threading.Thread(target=read_events, args=(self.child.stdout, "child", self.events), daemon=True).start()
+        self.to_child({"jsonrpc": "2.0", "id": "aos-initialize", "method": "initialize", "params": params})
+
+    def host(self, message):
+        method = message.get("method")
+        if method == "initialize" and "id" in message:
+            if self.initialized:
+                self.error(message, "Already initialized", -32600)
+            else:
+                self.start(message)
+            return
+        if not self.initialized:
+            if "id" in message:
+                self.error(message, "Initialize first", -32002)
+            return
+        if method == "notifications/initialized":
+            self.host_initialized = True
+            if self.state != "starting":
+                self.changed()
+            return
+        if method == "ping" and "id" in message:
+            self.result(message, {})
+            return
+        if method == "tools/call" and message.get("params", {}).get("name") == STATUS_NAME:
+            self.result(message, {"resultType": "complete", "content": [{"type": "text", "text": json.dumps({"state": self.state, "message": self.detail})}],
+                                  "isError": self.state == "failed"})
+            return
+        if self.state != "ready":
+            if method == "tools/list" and "id" in message:
+                self.result(message, {"tools": [STATUS_TOOL]})
+            elif "id" in message and method:
+                self.error(message, self.detail)
+            return
+        if method and "id" in message:
+            # Remap client request IDs, including the private initialize ID.
+            self.serial += 1
+            child_id = f"aos-request-{self.serial}"
+            self.pending[child_id] = message
+            self.to_child(dict(message, id=child_id))
+        elif method == "notifications/cancelled":
+            params = dict(message.get("params", {}))
+            for child_id, request in self.pending.items():
+                if request["id"] == params.get("requestId"):
+                    self.to_child(dict(message, params=dict(params, requestId=child_id)))
+                    break
+        else:
+            self.to_child(message)
+
+    def backend(self, message):
+        if message.get("id") == "aos-initialize" and not message.get("method"):
+            result = message.get("result", {})
+            if "error" in message or result.get("protocolVersion") != self.version:
+                self.fail("AOS initialization failed or negotiated an incompatible protocol. Check launcher diagnostics.")
+                return
+            if not isinstance(result.get("capabilities", {}).get("tools"), dict):
+                self.fail("AOS initialized without tool support.")
+                return
+            self.to_child({"jsonrpc": "2.0", "method": "notifications/initialized"})
+            if self.state == "failed":
+                return
+            self.state, self.detail = "ready", "AOS is ready. Runtime tools are available on this connection."
+            self.changed()
+            return
+        if message.get("method"):
+            self.send(message)
+            return
+        request = self.pending.pop(message.get("id"), None)
+        if request is None:
+            return
+        if request["method"] == "tools/list" and "result" in message:
+            result = dict(message["result"])
+            result["tools"] = [STATUS_TOOL] + result.get("tools", [])
+            message = dict(message, result=result)
+        self.send(dict(message, id=request["id"]))
+
+    def close(self):
+        if self.child is None:
+            return
+        try:
+            self.child.stdin.close()
+        except (OSError, ValueError):
+            pass
+        try:
+            self.child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            # Includes a still-running installer, not unrelated runtime processes.
+            try:
+                os.killpg(self.child.pid, signal.SIGTERM)
+                self.child.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.child.pid, signal.SIGKILL)
+                self.child.wait()
+            except ProcessLookupError:
+                self.child.wait()
+
+    def run(self):
+        threading.Thread(target=read_events, args=(sys.stdin.buffer, "host", self.events), daemon=True).start()
+        try:
+            while True:
+                source, mode, message = self.events.get()
+                if source == "host":
+                    if message is None:
+                        return 0
+                    self.mode = mode
+                    self.host(message)
+                elif message is None:
+                    self.fail("AOS setup or connection failed. Check MCP launcher diagnostics; reconnect to retry.")
+                else:
+                    self.backend(message)
+        finally:
+            self.close()
+
+
+def main():
+    if sys.argv[1:] == ["--hook"]:
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext":
+            "AOS setup is managed by its MCP connection without blocking this session. Check aos_setup_status for starting, ready, or failed; do not assume tools are ready yet."}}), flush=True)
+        return 0
+    return Connection([str(Path(__file__).resolve().with_name("aos-up")), *sys.argv[1:]]).run()
+
+
+if __name__ == "__main__":
+    # Reader threads use host pipes; don't race CPython buffered-I/O finalization.
+    def interrupted(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupted)
+    signal.signal(signal.SIGHUP, interrupted)
+    try:
+        code = main()
+    except (BrokenPipeError, KeyboardInterrupt):
+        code = 0
+    except Exception as error:
+        print(f"aos-mcp-start: {error}", file=sys.stderr)
+        code = 1
+    os._exit(code)

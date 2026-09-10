@@ -36,6 +36,14 @@ installs the exact signed oracle pack, grants that principal only its selected
 AOS services, and installs the host marketplace plugin. It writes product state
 under `~/.aos`; it never imports or changes a standalone `~/.astrid` tree.
 
+On first connection, MCP answers immediately while AOS provisioning runs.
+The `aos_setup_status` tool reports `starting`, `ready`, or `failed`. You can
+continue other work during setup; the connection announces the runtime tools
+when they become available, without a host restart. Setup failures remain
+visible through that tool and the host's MCP diagnostics; reconnect to retry
+after correcting the failure. SessionStart reports this setup path without
+waiting for downloads. Direct `aos-doctor` remains an explicit diagnostic.
+
 ## Host packs
 
 Oracle packs are additive components, not replacement operating-system

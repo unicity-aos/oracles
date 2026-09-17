@@ -546,8 +546,12 @@ validate_runtime_compatibility_document() {
     || die "signed runtime compatibility document identity does not match its Astrid floor"
   [ "$rt_ready" = "true" ] \
     || die "signed runtime compatibility document is not release-ready"
+  # Authenticated documents may be a published minimum or a historical exact
+  # pin. The requirement floor must equal this document's version; new Oracle
+  # publishes remain gated to >= by the release workflow.
   [ "$rt_requirement" = ">=$rt_version" ] \
-    || die "signed runtime compatibility document is not a published minimum"
+    || [ "$rt_requirement" = "=$rt_version" ] \
+    || die "signed runtime compatibility document requirement does not match its Astrid floor"
 }
 
 ensure_aos() {

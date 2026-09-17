@@ -2,6 +2,10 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ORACLE_VERSION=$(sed -n '1p' "$repo_root/release/oracle-version")
+printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+  || { echo "invalid release/oracle-version: $ORACLE_VERSION" >&2; exit 1; }
+ORACLE_VERSION_RE=${ORACLE_VERSION//./\\.}
 work=$(mktemp -d)
 work=$(cd "$work" && pwd -P)
 trap 'rm -rf "$work"' EXIT
@@ -238,6 +242,72 @@ case " $* " in
       printf 'updated_at = "%s"\n' "$updated"
     fi
     ;;
+  *" distro apply "*)
+    principal=default
+    yes=0
+    capsules=""
+    previous=""
+    for argument in "$@"; do
+      if [ "$previous" = --principal ]; then principal=$argument; fi
+      case "$argument" in
+        --yes|-y) yes=1 ;;
+      esac
+      if [ "$previous" = --capsule ]; then
+        if [ -z "$argument" ]; then
+          printf '%s\n' 'error: capsule name must not be empty' >&2
+          exit 2
+        fi
+        case " $capsules " in
+          *" $argument "*)
+            printf 'error: distro apply --capsule '\''%s'\'' was specified more than once\n' \
+              "$argument" >&2
+            exit 2
+            ;;
+        esac
+        capsules="$capsules $argument"
+      fi
+      previous=$argument
+    done
+    if [ "$yes" -ne 1 ]; then
+      printf '%s\n' "error: aos distro apply requires '--yes'" >&2
+      exit 2
+    fi
+    if [ -z "${capsules## }" ]; then
+      printf '%s\n' 'error: stub refuses unfiltered distro apply' >&2
+      exit 1
+    fi
+    if [ ! -f "$AOS_HOME/runtime-running" ]; then
+      mkdir -p "$AOS_HOME"
+      : > "$AOS_HOME/runtime-running"
+    fi
+    version=${TEST_AOS_VERSION:-2026.9.1}
+    for capsule in $capsules; do
+      record="$TEST_STATE/installed-$principal-$capsule"
+      if [ ! -f "$record" ]; then
+        printf 'error: distro apply --capsule '\''%s'\'' is not already installed; filtered apply refreshes existing members only\n' \
+          "$capsule" >&2
+        exit 1
+      fi
+      if [ "${TEST_FAIL_DISTRO_CAPSULE:-}" = "$capsule" ]; then
+        printf 'error: filtered distro apply incomplete for %s\n' "$capsule" >&2
+        exit 1
+      fi
+      source="$AOS_HOME/releases/$version/capsules/$capsule.capsule"
+      if [ ! -f "$source" ] && [ -n "${TEST_PRODUCT_ASSETS:-}" ]; then
+        source="$TEST_PRODUCT_ASSETS/capsules/$capsule.capsule"
+      fi
+      member=$(printf '%s\n' "$capsule" | tr '-' '_')
+      hash=$(tar -xOf "$source" "$member.wasm" | b3sum | awk '{print $1}')
+      if ! printf '%s\n' "$hash" | grep -Eq '^[0-9a-f]{64}$'; then
+        printf 'error: signed AOS distribution has no trusted identity for '\''%s'\''\n' \
+          "$capsule" >&2
+        exit 1
+      fi
+      installed=$(sed -n '3p' "$record")
+      printf '%s\n%s\n%s\n%s\n' "$hash" "$source" "$installed" \
+        '2026-09-17T00:00:00+00:00' > "$record"
+    done
+    ;;
   *" capsule install "*)
     principal=default
     previous=""
@@ -248,14 +318,31 @@ case " $* " in
     source=${*: -1}
     if [ "$source" = --yes ]; then source=${*: -2:1}; fi
     capsule=$(basename "$source" .capsule)
-    case "$capsule" in
-      aos-mcp) hash=a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e ;;
-      claude-install) hash=b5dd4e2beb234163419088187a87603a42284805de6e288b5450b712e24dfd2f ;;
-      claude-runner) hash=19adab7d37a9be54a0a1866349594461f8116c65612134c124aae94fa79c3c63 ;;
-      codex-install) hash=6c510fd2185311dd6de4fd44adb19f9ff19f2251adcad16ff18d859a434e8593 ;;
-      codex-runner) hash=0b9473ccba844bce95fff41126c620107f71d630ee0e1d0dd23e5a542613642c ;;
-      *) hash=$(shasum -a 256 "$source" | awk '{print $1}') ;;
-    esac
+    if [ "$principal" != default ]; then
+      case "$capsule" in
+        aos-mcp|aos-skills|aos-forge|aos-cli|aos-fs|aos-openai-compat)
+          printf 'Capsule %s 0.1.0 is signed by another runtime.\n' "$capsule" >&2
+          printf '%s\n' 'Approve this exact install once? [y/N]' >&2
+          printf '%s\n' 'error: capsule install authority was not approved' >&2
+          exit 1
+          ;;
+      esac
+    fi
+    member=$(printf '%s\n' "$capsule" | tr '-' '_')
+    hash=""
+    if tar -tf "$source" "$member.wasm" >/dev/null 2>&1; then
+      hash=$(tar -xOf "$source" "$member.wasm" | b3sum | awk '{print $1}')
+    fi
+    if ! printf '%s\n' "$hash" | grep -Eq '^[0-9a-f]{64}$'; then
+      case "$capsule" in
+        aos-mcp) hash=a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e ;;
+        claude-install) hash=b5dd4e2beb234163419088187a87603a42284805de6e288b5450b712e24dfd2f ;;
+        claude-runner) hash=19adab7d37a9be54a0a1866349594461f8116c65612134c124aae94fa79c3c63 ;;
+        codex-install) hash=6c510fd2185311dd6de4fd44adb19f9ff19f2251adcad16ff18d859a434e8593 ;;
+        codex-runner) hash=0b9473ccba844bce95fff41126c620107f71d630ee0e1d0dd23e5a542613642c ;;
+        *) hash=$(shasum -a 256 "$source" | awk '{print $1}') ;;
+      esac
+    fi
     printf '%s\n%s\n%s\n%s\n' "$hash" "$source" \
       '2026-07-17T23:13:33+00:00' '2026-07-17T23:13:33+00:00' \
       > "$TEST_STATE/installed-$principal-$capsule"
@@ -493,7 +580,7 @@ plugin_only_start=$(wc -l < "$TEST_LOG")
 AOS_HOME="$plugin_only_home" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
 tail -n "+$((plugin_only_start + 1))" "$TEST_LOG" > "$work/plugin-only.log"
-grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.1$' \
+grep -Eq "^codex plugin marketplace add /.*/extensions/oracles/plugins/${ORACLE_VERSION_RE}$" \
   "$work/plugin-only.log"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$work/plugin-only.log"
 if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
@@ -513,7 +600,7 @@ sed 's#  #  ./#' "$assets/BLAKE3SUMS.txt" > "$prefixed_assets/BLAKE3SUMS.txt"
 prefixed_home="$home/prefixed-checksums/.aos"
 AOS_HOME="$prefixed_home" AOS_ORACLE_ASSETS="$prefixed_assets" \
   "$repo_root/install.sh" --plugins-only --host codex --yes --no-install-aos
-test -d "$prefixed_home/extensions/oracles/plugins/2026.9.1"
+test -d "$prefixed_home/extensions/oracles/plugins/$ORACLE_VERSION"
 
 # An existing unrelated host pack is private state. Installing Codex must not
 # inspect, rewrite, remove, or provision Claude/Grok.
@@ -525,7 +612,7 @@ codex_start=$(wc -l < "$TEST_LOG")
 "$repo_root/install.sh" --host codex --yes --no-install-aos
 
 codex_marketplace_root=$(cat "$TEST_STATE/codex-marketplace-root")
-[ "$codex_marketplace_root" = "$AOS_HOME/extensions/oracles/plugins/2026.9.1" ]
+[ "$codex_marketplace_root" = "$AOS_HOME/extensions/oracles/plugins/$ORACLE_VERSION" ]
 [ -d "$codex_marketplace_root" ]
 tail -n "+$((codex_start + 1))" "$TEST_LOG" > "$work/codex-only.log"
 cmp "$work/claude-before" "$AOS_HOME/extensions/oracles/claude/private-state"
@@ -579,7 +666,7 @@ if grep -Fq 'aos --principal default status' "$TEST_LOG"; then
   echo "installer used the principal-scoped status probe" >&2
   exit 1
 fi
-if grep -Eq '^aos .* capsule install( |$)' "$TEST_LOG"; then
+if grep -Eq '^aos .* (capsule install|distro apply)( |$)' "$TEST_LOG"; then
   echo "oracle host provisioning bypassed the signed operator distribution" >&2
   exit 1
 fi
@@ -596,9 +683,9 @@ fi
 grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-skills' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-forge' "$TEST_LOG"
-grep -Eq '^codex plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.1$' "$TEST_LOG"
+grep -Eq "^codex plugin marketplace add /.*/extensions/oracles/plugins/${ORACLE_VERSION_RE}$" "$TEST_LOG"
 grep -Fq 'codex plugin add unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-test -d "$AOS_HOME/extensions/oracles/plugins/2026.9.1"
+test -d "$AOS_HOME/extensions/oracles/plugins/$ORACLE_VERSION"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
 test -f "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
@@ -686,7 +773,7 @@ then
   exit 1
 fi
 tail -n "+$((without_skills_start + 1))" "$TEST_LOG" > "$work/without-skills.log"
-if grep -Eq '^aos .* init( |$)|capsule install .*/aos-mcp\.capsule|^codex ' "$work/without-skills.log"; then
+if grep -Eq '^aos .* init( |$)|capsule install .*/aos-mcp\.capsule|distro apply|^codex ' "$work/without-skills.log"; then
   echo "required AOS dependency failure mutated the Oracle pack or host plugin" >&2
   exit 1
 fi
@@ -724,7 +811,7 @@ test ! -e "$local_skills_state/agent-codex-code"
 test ! -e "$local_skills_state/installed-codex-code-aos-mcp"
 test ! -e "$local_skills_home/runtime"
 test ! -e "$local_skills_home/runtime/etc/profiles/default.toml"
-test ! -e "$local_skills_home/extensions/oracles/plugins/2026.9.1"
+test ! -e "$local_skills_home/extensions/oracles/plugins/$ORACLE_VERSION"
 test "$(sed -n '2p' "$local_skills_state/installed-codex-code-aos-skills")" \
   = /tmp/user/aos-skills.capsule
 
@@ -752,7 +839,7 @@ test ! -e "$malformed_identity_state/default-initialized"
 test ! -e "$malformed_identity_state/agent-codex-code"
 test ! -e "$malformed_identity_state/granted-codex-code-aos-skills"
 test ! -e "$malformed_identity_home/runtime"
-test ! -e "$malformed_identity_home/extensions/oracles/plugins/2026.9.1"
+test ! -e "$malformed_identity_home/extensions/oracles/plugins/$ORACLE_VERSION"
 test ! -e "$malformed_identity_home/extensions/oracles/codex/current"
 
 # A failed read is not proof of absence. Even with no prior capsule record,
@@ -782,7 +869,7 @@ test ! -e "$unreadable_show_state/default-initialized"
 test ! -e "$unreadable_show_state/agent-codex-code"
 test ! -e "$unreadable_show_state/granted-codex-code-aos-mcp"
 test ! -e "$unreadable_show_home/runtime"
-test ! -e "$unreadable_show_home/extensions/oracles/plugins/2026.9.1"
+test ! -e "$unreadable_show_home/extensions/oracles/plugins/$ORACLE_VERSION"
 test ! -e "$unreadable_show_home/extensions/oracles/codex/current"
 test ! -e "$unreadable_show_home/extensions/oracles/codex/Pack.lock"
 
@@ -822,11 +909,460 @@ test ! -e "$identity_mismatch_state/agent-codex-code"
 test ! -e "$identity_mismatch_state/granted-codex-code-aos-mcp"
 test -d "$identity_mismatch_home/runtime"
 test ! -e "$identity_mismatch_home/runtime/etc/profiles/default.toml"
-test ! -e "$identity_mismatch_home/extensions/oracles/plugins/2026.9.1"
+test ! -e "$identity_mismatch_home/extensions/oracles/plugins/$ORACLE_VERSION"
 test ! -e "$identity_mismatch_home/extensions/oracles/codex/current"
 
-# Local development may stage only the selected host, provided every staged
-# byte has a strict checksum entry.
+# A prior Oracle-managed AOS dependency may move onto the current signed
+# distro. The actual host hash must equal the authenticated ManagedCapsules
+# record; a receipt does not authorize foreign same-ID bytes, and grant must
+# not preserve the stale managed package.
+managed_mcp_hash=a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e
+product_mcp_hash=$(tar -xOf "$product_assets/capsules/aos-mcp.capsule" aos_mcp.wasm \
+  | b3sum | awk '{print $1}')
+product_skills_hash=$(tar -xOf "$product_assets/capsules/aos-skills.capsule" aos_skills.wasm \
+  | b3sum | awk '{print $1}')
+product_forge_hash=$(tar -xOf "$product_assets/capsules/aos-forge.capsule" aos_forge.wasm \
+  | b3sum | awk '{print $1}')
+[ "$product_mcp_hash" != "$managed_mcp_hash" ]
+prior_ce_version=2026.1.3
+prior_ce_assets="$work/prior-ce-assets"
+mkdir -p "$prior_ce_assets/capsules"
+for capsule in aos-skills aos-forge; do
+  capsule_stage="$work/prior-ce-capsule-$capsule"
+  mkdir -p "$capsule_stage"
+  capsule_member=$(printf '%s\n' "$capsule" | tr '-' '_')
+  printf 'prior unicity-ce %s fixture for %s\n' "$prior_ce_version" "$capsule" \
+    > "$capsule_stage/$capsule_member.wasm"
+  COPYFILE_DISABLE=1 tar -czf "$prior_ce_assets/capsules/$capsule.capsule" \
+    -C "$capsule_stage" "$capsule_member.wasm"
+done
+prior_skills_hash=$(tar -xOf "$prior_ce_assets/capsules/aos-skills.capsule" aos_skills.wasm \
+  | b3sum | awk '{print $1}')
+prior_forge_hash=$(tar -xOf "$prior_ce_assets/capsules/aos-forge.capsule" aos_forge.wasm \
+  | b3sum | awk '{print $1}')
+[ "$prior_skills_hash" != "$product_skills_hash" ]
+[ "$prior_forge_hash" != "$product_forge_hash" ]
+plant_prior_ce_release() {
+  plant_home=$1
+  plant_release="$plant_home/releases/$prior_ce_version"
+  mkdir -p "$plant_release/capsules"
+  cat > "$plant_release/Distro.toml" <<EOF
+schema-version = 1
+
+[distro]
+id = "unicity-ce"
+version = "$prior_ce_version"
+
+[[capsule]]
+name = "aos-skills"
+source = "capsules/aos-skills.capsule"
+
+[[capsule]]
+name = "aos-forge"
+source = "capsules/aos-forge.capsule"
+EOF
+  printf '%s\n' aos-skills.capsule aos-forge.capsule > "$plant_release/capsule-assets.txt"
+  cp "$prior_ce_assets/capsules/aos-skills.capsule" "$plant_release/capsules/"
+  cp "$prior_ce_assets/capsules/aos-forge.capsule" "$plant_release/capsules/"
+}
+plant_current_ce_release() {
+  plant_home=$1
+  plant_release="$plant_home/releases/2026.9.1"
+  mkdir -p "$plant_release"
+  cp -R "$product_assets/." "$plant_release/"
+}
+plant_prior_managed_aos_mcp() {
+  plant_home=$1
+  plant_host=$2
+  plant_principal=$3
+  plant_receipt="$plant_home/extensions/oracles/$plant_host/releases/0.2.6"
+  mkdir -p "$plant_receipt"
+  cat > "$plant_receipt/Pack.lock" <<EOF
+schema-version = 1
+
+[pack]
+version = "0.2.6"
+host = "$plant_host"
+principal = "$plant_principal"
+
+[[aos-capsule]]
+name = "aos-skills"
+availability = "required"
+
+[[aos-capsule]]
+name = "aos-forge"
+availability = "if-present"
+
+[[capsule]]
+name = "aos-mcp"
+asset = "aos-mcp.capsule"
+wasm-blake3 = "$managed_mcp_hash"
+EOF
+  cat > "$plant_receipt/Receipt.toml" <<EOF
+schema-version = 1
+oracle-version = "0.2.6"
+host = "$plant_host"
+principal = "$plant_principal"
+source = "release"
+EOF
+  cat > "$plant_receipt/ManagedCapsules.toml" <<EOF
+schema-version = 1
+
+[[capsule]]
+name = "aos-mcp"
+wasm-hash = "$managed_mcp_hash"
+EOF
+  ln -sfn releases/0.2.6 "$plant_home/extensions/oracles/$plant_host/current"
+  ln -sfn current/Pack.lock "$plant_home/extensions/oracles/$plant_host/Pack.lock"
+}
+
+for managed_host in claude codex grok; do
+  case "$managed_host" in
+    claude) managed_principal=claude-code ;;
+    codex) managed_principal=codex-code ;;
+    grok) managed_principal=grok-code ;;
+  esac
+  mismatch_state="$work/managed-mismatch-$managed_host-state"
+  mismatch_home="$home/managed-mismatch-$managed_host/.aos"
+  mkdir -p "$mismatch_state" "$mismatch_home"
+  : > "$mismatch_home/runtime-running"
+  : > "$mismatch_state/group-$managed_host"
+  : > "$mismatch_state/agent-$managed_principal"
+  plant_prior_managed_aos_mcp "$mismatch_home" "$managed_host" "$managed_principal"
+  plant_prior_ce_release "$mismatch_home"
+  plant_current_ce_release "$mismatch_home"
+  write_test_capsule "$mismatch_state" "$managed_principal" aos-mcp \
+    2222222222222222222222222222222222222222222222222222222222222222 \
+    "aos://capsule/foreign-aos-mcp" \
+    2026-09-03T00:00:00+00:00 2026-09-03T00:00:00+00:00
+  mismatch_start=$(wc -l < "$TEST_LOG")
+  if TEST_STATE="$mismatch_state" AOS_HOME="$mismatch_home" \
+    "$repo_root/install.sh" --host "$managed_host" --yes --no-install-aos \
+    >"$work/managed-mismatch-$managed_host.out" 2>&1
+  then
+    echo "foreign host hash with a prior managed receipt was accepted for $managed_host" >&2
+    exit 1
+  fi
+  grep -Fq "differs from the signed operator distribution" \
+    "$work/managed-mismatch-$managed_host.out"
+  tail -n "+$((mismatch_start + 1))" "$TEST_LOG" \
+    > "$work/managed-mismatch-$managed_host.log"
+  if grep -Fq 'aos --principal default init --yes' \
+    "$work/managed-mismatch-$managed_host.log"
+  then
+    echo "unmanaged $managed_host capsule mismatch triggered operator-distribution mutation" >&2
+    exit 1
+  fi
+  if grep -Eq 'capsule install|distro apply' "$work/managed-mismatch-$managed_host.log"; then
+    echo "unmanaged $managed_host capsule mismatch installed replacement bytes" >&2
+    exit 1
+  fi
+  test ! -e "$mismatch_state/granted-$managed_principal-aos-mcp"
+  test ! -e "$mismatch_home/extensions/oracles/plugins/$ORACLE_VERSION"
+  test "$(readlink "$mismatch_home/extensions/oracles/$managed_host/current")" \
+    = releases/0.2.6
+  test "$(sed -n '1p' "$mismatch_state/installed-$managed_principal-aos-mcp")" \
+    = 2222222222222222222222222222222222222222222222222222222222222222
+done
+
+for managed_host in claude codex grok; do
+  case "$managed_host" in
+    claude) managed_principal=claude-code ;;
+    codex) managed_principal=codex-code ;;
+    grok) managed_principal=grok-code ;;
+  esac
+  upgrade_state="$work/managed-upgrade-$managed_host-state"
+  upgrade_home="$home/managed-upgrade-$managed_host/.aos"
+  mkdir -p "$upgrade_state" "$upgrade_home"
+  : > "$upgrade_home/runtime-running"
+  : > "$upgrade_state/group-$managed_host"
+  : > "$upgrade_state/agent-$managed_principal"
+  plant_prior_managed_aos_mcp "$upgrade_home" "$managed_host" "$managed_principal"
+  plant_prior_ce_release "$upgrade_home"
+  plant_current_ce_release "$upgrade_home"
+  mkdir -p "$upgrade_home/receipts" \
+    "$upgrade_home/runtime/etc/profiles" \
+    "$upgrade_home/runtime/var"
+  printf 'default-receipt-bytes\n' > "$upgrade_home/receipts/unicity-ce.active.json"
+  printf 'default-profile\n' > "$upgrade_home/runtime/etc/profiles/default.toml"
+  printf 'custom-data\n' > "$upgrade_home/runtime/var/custom.dat"
+  printf 'existing-lock\n' > "$upgrade_home/runtime/Distro.lock"
+  write_test_capsule "$upgrade_state" default aos-mcp \
+    "$product_mcp_hash" \
+    "$upgrade_home/releases/2026.9.1/capsules/aos-mcp.capsule" \
+    2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+  write_test_capsule "$upgrade_state" default aos-skills \
+    "$product_skills_hash" \
+    "$upgrade_home/releases/2026.9.1/capsules/aos-skills.capsule" \
+    2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+  write_test_capsule "$upgrade_state" default aos-forge \
+    "$product_forge_hash" \
+    "$upgrade_home/releases/2026.9.1/capsules/aos-forge.capsule" \
+    2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+  write_test_capsule "$upgrade_state" "$managed_principal" aos-mcp \
+    "$managed_mcp_hash" \
+    "aos://capsule/$managed_mcp_hash" \
+    2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+  write_test_capsule "$upgrade_state" "$managed_principal" aos-skills \
+    "$prior_skills_hash" \
+    "aos://capsule/$prior_skills_hash" \
+    2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+  write_test_capsule "$upgrade_state" "$managed_principal" aos-forge \
+    "$prior_forge_hash" \
+    "aos://capsule/$prior_forge_hash" \
+    2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+  : > "$upgrade_state/granted-$managed_principal-aos-mcp"
+  : > "$upgrade_state/granted-$managed_principal-aos-skills"
+  : > "$upgrade_state/granted-$managed_principal-aos-forge"
+  upgrade_start=$(wc -l < "$TEST_LOG")
+  TEST_STATE="$upgrade_state" AOS_HOME="$upgrade_home" \
+    "$repo_root/install.sh" --host "$managed_host" --yes --no-install-aos
+  tail -n "+$((upgrade_start + 1))" "$TEST_LOG" \
+    > "$work/managed-upgrade-$managed_host.log"
+  if grep -Fq 'aos --principal default init --yes' \
+    "$work/managed-upgrade-$managed_host.log"
+  then
+    echo "current default $managed_host distro was re-applied during managed upgrade" >&2
+    exit 1
+  fi
+  grep -Eq "distro apply --yes --capsule aos-mcp" \
+    "$work/managed-upgrade-$managed_host.log"
+  grep -Eq "distro apply --yes --capsule aos-skills" \
+    "$work/managed-upgrade-$managed_host.log"
+  grep -Eq "distro apply --yes --capsule aos-forge" \
+    "$work/managed-upgrade-$managed_host.log"
+  if grep -Eq 'capsule install .*/aos-(mcp|skills|forge)\.capsule' \
+    "$work/managed-upgrade-$managed_host.log"
+  then
+    echo "managed $managed_host upgrade used host-principal capsule install" >&2
+    exit 1
+  fi
+  test "$(sed -n '1p' "$upgrade_state/installed-$managed_principal-aos-mcp")" \
+    = "$product_mcp_hash"
+  test "$(sed -n '1p' "$upgrade_state/installed-$managed_principal-aos-skills")" \
+    = "$product_skills_hash"
+  test "$(sed -n '1p' "$upgrade_state/installed-$managed_principal-aos-forge")" \
+    = "$product_forge_hash"
+  test "$(sed -n '1p' "$upgrade_state/installed-default-aos-mcp")" \
+    = "$product_mcp_hash"
+  test "$(sed -n '1p' "$upgrade_state/installed-default-aos-skills")" \
+    = "$product_skills_hash"
+  test -f "$upgrade_state/granted-$managed_principal-aos-mcp"
+  test -f "$upgrade_state/granted-$managed_principal-aos-skills"
+  test -f "$upgrade_state/granted-$managed_principal-aos-forge"
+  test -f "$upgrade_home/runtime-running"
+  test "$(cat "$upgrade_home/receipts/unicity-ce.active.json")" = default-receipt-bytes
+  test "$(cat "$upgrade_home/runtime/etc/profiles/default.toml")" = default-profile
+  test "$(cat "$upgrade_home/runtime/var/custom.dat")" = custom-data
+  test "$(cat "$upgrade_home/runtime/Distro.lock")" = existing-lock
+  test "$(sed -n '3p' "$upgrade_state/installed-$managed_principal-aos-mcp")" \
+    = '2026-07-17T23:13:33+00:00'
+  test -f "$upgrade_home/extensions/oracles/$managed_host/releases/$ORACLE_VERSION/Receipt.toml"
+  test "$(readlink "$upgrade_home/extensions/oracles/$managed_host/current")" \
+    = "releases/$ORACLE_VERSION"
+done
+
+# Host-principal capsule install of a signed distro member is ForeignRuntime.
+foreign_install_state="$work/foreign-install-state"
+foreign_install_home="$home/foreign-install/.aos"
+mkdir -p "$foreign_install_state" "$foreign_install_home/releases/2026.9.1/capsules"
+: > "$foreign_install_home/runtime-running"
+cp "$product_assets/capsules/aos-mcp.capsule" \
+  "$foreign_install_home/releases/2026.9.1/capsules/"
+if TEST_STATE="$foreign_install_state" AOS_HOME="$foreign_install_home" \
+  aos --principal claude-code capsule install \
+  "$foreign_install_home/releases/2026.9.1/capsules/aos-mcp.capsule" \
+  >"$work/foreign-install.out" 2>&1
+then
+  echo "host-principal capsule install of aos-mcp was accepted" >&2
+  exit 1
+fi
+grep -Fq 'signed by another runtime' "$work/foreign-install.out"
+grep -Fq 'capsule install authority was not approved' "$work/foreign-install.out"
+test ! -e "$foreign_install_state/installed-claude-code-aos-mcp"
+
+# A later named refresh failure must exit nonzero without uninstalling grants
+# or rewriting default identities.
+partial_state="$work/managed-partial-codex-state"
+partial_home="$home/managed-partial-codex/.aos"
+mkdir -p "$partial_state" "$partial_home"
+: > "$partial_home/runtime-running"
+: > "$partial_state/group-codex"
+: > "$partial_state/agent-codex-code"
+plant_prior_managed_aos_mcp "$partial_home" codex codex-code
+plant_prior_ce_release "$partial_home"
+plant_current_ce_release "$partial_home"
+write_test_capsule "$partial_state" default aos-mcp \
+  "$product_mcp_hash" \
+  "$partial_home/releases/2026.9.1/capsules/aos-mcp.capsule" \
+  2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+write_test_capsule "$partial_state" default aos-skills \
+  "$product_skills_hash" \
+  "$partial_home/releases/2026.9.1/capsules/aos-skills.capsule" \
+  2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+write_test_capsule "$partial_state" default aos-forge \
+  "$product_forge_hash" \
+  "$partial_home/releases/2026.9.1/capsules/aos-forge.capsule" \
+  2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+write_test_capsule "$partial_state" codex-code aos-mcp \
+  "$managed_mcp_hash" \
+  "aos://capsule/$managed_mcp_hash" \
+  2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+write_test_capsule "$partial_state" codex-code aos-skills \
+  "$prior_skills_hash" \
+  "aos://capsule/$prior_skills_hash" \
+  2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+write_test_capsule "$partial_state" codex-code aos-forge \
+  "$prior_forge_hash" \
+  "aos://capsule/$prior_forge_hash" \
+  2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+: > "$partial_state/granted-codex-code-aos-mcp"
+: > "$partial_state/granted-codex-code-aos-skills"
+: > "$partial_state/granted-codex-code-aos-forge"
+if TEST_STATE="$partial_state" AOS_HOME="$partial_home" \
+  TEST_FAIL_DISTRO_CAPSULE=aos-skills \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/managed-partial-codex.out" 2>&1
+then
+  echo "partial managed refresh was reported successful" >&2
+  exit 1
+fi
+test "$(sed -n '1p' "$partial_state/installed-codex-code-aos-mcp")" = "$product_mcp_hash"
+test "$(sed -n '1p' "$partial_state/installed-codex-code-aos-skills")" = "$prior_skills_hash"
+test "$(sed -n '1p' "$partial_state/installed-codex-code-aos-forge")" = "$prior_forge_hash"
+test "$(sed -n '1p' "$partial_state/installed-default-aos-mcp")" = "$product_mcp_hash"
+test -f "$partial_state/granted-codex-code-aos-mcp"
+test -f "$partial_state/granted-codex-code-aos-skills"
+test -f "$partial_state/granted-codex-code-aos-forge"
+test ! -e "$partial_home/extensions/oracles/plugins/$ORACLE_VERSION"
+test "$(readlink "$partial_home/extensions/oracles/codex/current")" = releases/0.2.6
+
+
+for managed_host in claude codex grok; do
+  case "$managed_host" in
+    claude) managed_principal=claude-code ;;
+    codex) managed_principal=codex-code ;;
+    grok) managed_principal=grok-code ;;
+  esac
+  mismatch_state="$work/managed-skills-mismatch-$managed_host-state"
+  mismatch_home="$home/managed-skills-mismatch-$managed_host/.aos"
+  mkdir -p "$mismatch_state" "$mismatch_home"
+  : > "$mismatch_home/runtime-running"
+  : > "$mismatch_state/group-$managed_host"
+  : > "$mismatch_state/agent-$managed_principal"
+  plant_prior_managed_aos_mcp "$mismatch_home" "$managed_host" "$managed_principal"
+  plant_prior_ce_release "$mismatch_home"
+  plant_current_ce_release "$mismatch_home"
+  write_test_capsule "$mismatch_state" default aos-mcp \
+    "$product_mcp_hash" \
+    "$mismatch_home/releases/2026.9.1/capsules/aos-mcp.capsule" \
+    2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+  write_test_capsule "$mismatch_state" default aos-skills \
+    "$product_skills_hash" \
+    "$mismatch_home/releases/2026.9.1/capsules/aos-skills.capsule" \
+    2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+  write_test_capsule "$mismatch_state" default aos-forge \
+    "$product_forge_hash" \
+    "$mismatch_home/releases/2026.9.1/capsules/aos-forge.capsule" \
+    2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+  write_test_capsule "$mismatch_state" "$managed_principal" aos-mcp \
+    "$managed_mcp_hash" \
+    "aos://capsule/$managed_mcp_hash" \
+    2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+  write_test_capsule "$mismatch_state" "$managed_principal" aos-skills \
+    3333333333333333333333333333333333333333333333333333333333333333 \
+    "aos://capsule/foreign-aos-skills" \
+    2026-09-03T00:00:00+00:00 2026-09-03T00:00:00+00:00
+  mismatch_start=$(wc -l < "$TEST_LOG")
+  if TEST_STATE="$mismatch_state" AOS_HOME="$mismatch_home" \
+    "$repo_root/install.sh" --host "$managed_host" --yes --no-install-aos \
+    >"$work/managed-skills-mismatch-$managed_host.out" 2>&1
+  then
+    echo "foreign aos-skills hash with a prior managed pack was accepted for $managed_host" >&2
+    exit 1
+  fi
+  grep -Fq "differs from the signed operator distribution" \
+    "$work/managed-skills-mismatch-$managed_host.out"
+  tail -n "+$((mismatch_start + 1))" "$TEST_LOG" \
+    > "$work/managed-skills-mismatch-$managed_host.log"
+  if grep -Fq 'aos --principal default init --yes' \
+    "$work/managed-skills-mismatch-$managed_host.log"
+  then
+    echo "unmanaged $managed_host aos-skills mismatch triggered operator-distribution mutation" >&2
+    exit 1
+  fi
+  if grep -Eq 'capsule install|distro apply' "$work/managed-skills-mismatch-$managed_host.log"; then
+    echo "unmanaged $managed_host aos-skills mismatch installed replacement bytes" >&2
+    exit 1
+  fi
+  test "$(readlink "$mismatch_home/extensions/oracles/$managed_host/current")" \
+    = releases/0.2.6
+  test "$(sed -n '1p' "$mismatch_state/installed-$managed_principal-aos-skills")" \
+    = 3333333333333333333333333333333333333333333333333333333333333333
+  test "$(sed -n '1p' "$mismatch_state/installed-$managed_principal-aos-mcp")" \
+    = "$managed_mcp_hash"
+done
+
+undeclared_state="$work/undeclared-skills-state"
+undeclared_home="$home/undeclared-skills/.aos"
+mkdir -p "$undeclared_state" "$undeclared_home"
+: > "$undeclared_home/runtime-running"
+: > "$undeclared_state/group-codex"
+: > "$undeclared_state/agent-codex-code"
+plant_prior_managed_aos_mcp "$undeclared_home" codex codex-code
+plant_prior_ce_release "$undeclared_home"
+plant_current_ce_release "$undeclared_home"
+cat > "$undeclared_home/extensions/oracles/codex/releases/0.2.6/Pack.lock" <<EOF
+schema-version = 1
+
+[pack]
+version = "0.2.6"
+host = "codex"
+principal = "codex-code"
+
+[[capsule]]
+name = "aos-mcp"
+asset = "aos-mcp.capsule"
+wasm-blake3 = "$managed_mcp_hash"
+EOF
+cat > "$undeclared_home/extensions/oracles/codex/releases/0.2.6/ManagedCapsules.toml" <<EOF
+schema-version = 1
+
+[[capsule]]
+name = "aos-mcp"
+wasm-hash = "$managed_mcp_hash"
+EOF
+write_test_capsule "$undeclared_state" default aos-mcp \
+  "$product_mcp_hash" \
+  "$undeclared_home/releases/2026.9.1/capsules/aos-mcp.capsule" \
+  2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+write_test_capsule "$undeclared_state" default aos-skills \
+  "$product_skills_hash" \
+  "$undeclared_home/releases/2026.9.1/capsules/aos-skills.capsule" \
+  2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+write_test_capsule "$undeclared_state" default aos-forge \
+  "$product_forge_hash" \
+  "$undeclared_home/releases/2026.9.1/capsules/aos-forge.capsule" \
+  2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+write_test_capsule "$undeclared_state" codex-code aos-mcp \
+  "$managed_mcp_hash" \
+  "aos://capsule/$managed_mcp_hash" \
+  2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+write_test_capsule "$undeclared_state" codex-code aos-skills \
+  "$prior_skills_hash" \
+  "aos://capsule/$prior_skills_hash" \
+  2026-07-17T23:13:33+00:00 2026-07-17T23:13:33+00:00
+if TEST_STATE="$undeclared_state" AOS_HOME="$undeclared_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/undeclared-skills.out" 2>&1
+then
+  echo "old distro aos-skills without a previous pack aos-capsule declaration was accepted" >&2
+  exit 1
+fi
+grep -Fq "differs from the signed operator distribution" "$work/undeclared-skills.out"
+test "$(readlink "$undeclared_home/extensions/oracles/codex/current")" = releases/0.2.6
+test "$(sed -n '1p' "$undeclared_state/installed-codex-code-aos-skills")" = "$prior_skills_hash"
+
 minimal_assets="$work/minimal-assets"
 mkdir -p "$minimal_assets"
 for asset in \
@@ -993,7 +1529,7 @@ grok_start=$(wc -l < "$TEST_LOG")
 "$repo_root/install.sh" --host grok --yes --no-install-aos
 tail -n "+$((grok_start + 1))" "$TEST_LOG" > "$work/grok-only.log"
 cmp "$work/grok-before" "$legacy_grok"
-if grep -Eq '^aos .* (init|capsule install)( |$)' "$work/grok-only.log"; then
+if grep -Eq '^aos .* (init|capsule install|distro apply)( |$)' "$work/grok-only.log"; then
   echo "Grok provisioning re-applied or bypassed the operator distribution" >&2
   exit 1
 fi
@@ -1017,7 +1553,7 @@ env -u ANTHROPIC_API_KEY \
   "$repo_root/install.sh" --host claude --yes --no-install-aos
 test -f "$AOS_HOME/extensions/oracles/claude/Pack.lock"
 tail -n "+$((claude_start + 1))" "$TEST_LOG" > "$work/claude-only.log"
-if grep -Eq '^aos .* (init|capsule install)( |$)' "$work/claude-only.log"; then
+if grep -Eq '^aos .* (init|capsule install|distro apply)( |$)' "$work/claude-only.log"; then
   echo "Claude provisioning re-applied or bypassed the operator distribution" >&2
   exit 1
 fi
@@ -1025,7 +1561,7 @@ grep -Fq -- 'agent modify claude-code --add-capsule aos-mcp' "$work/claude-only.
 grep -Fq -- '--add-capsule aos-skills' "$work/claude-only.log"
 grep -Fq -- '--add-capsule aos-forge' "$work/claude-only.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$TEST_LOG"
-grep -Eq '^claude plugin marketplace add /.*/extensions/oracles/plugins/2026\.9\.1$' "$TEST_LOG"
+grep -Eq "^claude plugin marketplace add /.*/extensions/oracles/plugins/${ORACLE_VERSION_RE}$" "$TEST_LOG"
 if grep -Eq 'capsule install .*/claude-(install|runner)\.capsule' "$work/claude-only.log"; then
   echo "external Claude plugin installed an AOS-managed workload adapter" >&2
   exit 1
@@ -1110,7 +1646,7 @@ then
   exit 1
 fi
 test "$(readlink "$prior_plugin_home/extensions/oracles/codex/current")" = releases/0.2.6
-test ! -e "$prior_plugin_home/extensions/oracles/codex/releases/2026.9.1"
+test ! -e "$prior_plugin_home/extensions/oracles/codex/releases/$ORACLE_VERSION"
 test "$(shasum -a 256 "$prior_receipt/Receipt.toml" | awk '{print $1}')" \
   = "$prior_receipt_hash"
 grep -Fxq 'authenticated prior generation' "$prior_receipt/prior-marker"
@@ -1174,12 +1710,12 @@ then
   echo "second host failure unexpectedly completed the multi-host install" >&2
   exit 1
 fi
-shared_snapshot="$multi_host_home/extensions/oracles/plugins/2026.9.1"
+shared_snapshot="$multi_host_home/extensions/oracles/plugins/$ORACLE_VERSION"
 test -f "$shared_snapshot/plugins/claude/bin/aos-up"
 test -f "$shared_snapshot/plugins/unicity-aos/.aos-oracle-version"
-codex_receipt="$multi_host_home/extensions/oracles/codex/releases/2026.9.1"
+codex_receipt="$multi_host_home/extensions/oracles/codex/releases/$ORACLE_VERSION"
 test -f "$codex_receipt/Pack.lock"
-test "$(readlink "$multi_host_home/extensions/oracles/codex/current")" = releases/2026.9.1
+test "$(readlink "$multi_host_home/extensions/oracles/codex/current")" = "releases/$ORACLE_VERSION"
 grok_pack_lock="$multi_host_home/extensions/oracles/grok/Pack.lock"
 test -f "$grok_pack_lock"
 test ! -L "$grok_pack_lock"
@@ -1198,7 +1734,7 @@ if [ "$pack_lock_mode" != 604 ]; then
   exit 1
 fi
 test "$(readlink "$multi_host_home/extensions/oracles/grok/current")" = releases/0.2.8
-test ! -e "$multi_host_home/extensions/oracles/grok/releases/2026.9.1"
+test ! -e "$multi_host_home/extensions/oracles/grok/releases/$ORACLE_VERSION"
 test ! -e "$multi_host_home/extensions/oracles/.install.lock"
 
 # Local development assets cannot inherit a Sigstore bundle from an older
@@ -1220,7 +1756,7 @@ then
   exit 1
 fi
 tail -n "+$((incompatible_start + 1))" "$TEST_LOG" > "$work/incompatible.log"
-if grep -Fq 'capsule install' "$work/incompatible.log"; then
+if grep -Eq 'capsule install|distro apply' "$work/incompatible.log"; then
   echo "incompatible pack installed a capsule" >&2
   exit 1
 fi
@@ -1277,7 +1813,7 @@ then
 fi
 test -f "$historical_home/extensions/oracles/codex/Pack.lock"
 grep -Fq 'version-requirement = "=2026.9.1"' \
-  "$historical_home/extensions/oracles/codex/releases/2026.9.1/runtime-compatibility.toml"
+  "$historical_home/extensions/oracles/codex/releases/$ORACLE_VERSION/runtime-compatibility.toml"
 grep -Fq 'version-requirement = "=2026.9.1"' \
   "$historical_home/extensions/oracles/codex/current/runtime-compatibility.toml"
 
@@ -1418,7 +1954,7 @@ test "$(wc -l < "$TEST_LOG")" -eq "$plugin_destination_log_start"
 receipt_link_home="$home/destination-receipt-link/.aos"
 receipt_escape="$home/destination-receipt-escape"
 mkdir -p "$receipt_link_home/extensions/oracles/codex/releases" "$receipt_escape"
-ln -s "$receipt_escape/2026.9.1" "$receipt_link_home/extensions/oracles/codex/releases/2026.9.1"
+ln -s "$receipt_escape/$ORACLE_VERSION" "$receipt_link_home/extensions/oracles/codex/releases/$ORACLE_VERSION"
 destination_state="$work/destination-receipt-state"
 mkdir -p "$destination_state"
 receipt_destination_log_start=$(wc -l < "$TEST_LOG")
@@ -1431,7 +1967,7 @@ then
   exit 1
 fi
 grep -Fq "codex receipt destination is a symlink" "$work/destination-receipt.out"
-test ! -e "$receipt_escape/2026.9.1"
+test ! -e "$receipt_escape/$ORACLE_VERSION"
 test "$(wc -l < "$TEST_LOG")" -eq "$receipt_destination_log_start"
 
 # A released version directory is immutable. Reruns may reuse identical bytes,
@@ -1441,7 +1977,7 @@ immutable_state="$work/immutable-state"
 mkdir -p "$immutable_state"
 TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-snapshot_manifest="$immutable_home/extensions/oracles/plugins/2026.9.1/.agents/plugins/marketplace.json"
+snapshot_manifest="$immutable_home/extensions/oracles/plugins/$ORACLE_VERSION/.agents/plugins/marketplace.json"
 printf '\nmodified\n' >> "$snapshot_manifest"
 if TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
@@ -1456,7 +1992,7 @@ receipt_state="$work/immutable-receipt-state"
 mkdir -p "$receipt_state"
 TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-receipt="$receipt_home/extensions/oracles/codex/releases/2026.9.1/Receipt.toml"
+receipt="$receipt_home/extensions/oracles/codex/releases/$ORACLE_VERSION/Receipt.toml"
 printf '\nmodified = true\n' >> "$receipt"
 if TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
@@ -1588,20 +2124,20 @@ if TEST_FAIL_PLUGIN=1 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
   TEST_AOS_VERSION=2026.9.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 2026.9.1
+    --oracle-version "$ORACLE_VERSION"
 then
   echo "legacy repair unexpectedly committed after host plugin failure" >&2
   exit 1
 fi
 test -f "$legacy_state/granted-codex-code-codex-install"
 test -f "$legacy_state/granted-codex-code-aos-cli"
-test ! -e "$legacy_home/extensions/oracles/codex/releases/2026.9.1"
+test ! -e "$legacy_home/extensions/oracles/codex/releases/$ORACLE_VERSION"
 
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
   TEST_AOS_VERSION=2026.9.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 2026.9.1
+    --oracle-version "$ORACLE_VERSION"
 test ! -e "$legacy_state/granted-codex-code-codex-install"
 test ! -e "$legacy_state/granted-codex-code-aos-cli"
 test -f "$legacy_state/granted-codex-code-codex-runner"
@@ -1611,11 +2147,11 @@ test -f "$legacy_state/granted-codex-code-aos-mcp"
 test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
   = "$product_mcp_hash"
 test -f "$legacy_state/installed-codex-code-codex-install"
-test -f "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml"
-test "$(cat "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml")" \
+test -f "$legacy_home/extensions/oracles/codex/releases/$ORACLE_VERSION/ManagedCapsules.toml"
+test "$(cat "$legacy_home/extensions/oracles/codex/releases/$ORACLE_VERSION/ManagedCapsules.toml")" \
   = 'schema-version = 1'
 if grep -Eq 'codex-(install|runner)|aos-(cli|fs)' \
-  "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml"
+  "$legacy_home/extensions/oracles/codex/releases/$ORACLE_VERSION/ManagedCapsules.toml"
 then
   echo "new Oracle receipt claimed an obsolete or CE capsule" >&2
   exit 1
@@ -1624,15 +2160,15 @@ fi
 # The immutable current pack receipt remains stable when the user keeps a
 # same-ID superseding implementation.
 receipt_before=$(shasum -a 256 \
-  "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml" \
+  "$legacy_home/extensions/oracles/codex/releases/$ORACLE_VERSION/ManagedCapsules.toml" \
   | awk '{print $1}')
 TEST_STATE="$legacy_state" TEST_LOG="$legacy_log" \
   TEST_AOS_VERSION=2026.9.1 AOS_HOME="$legacy_home" \
   AOS_ORACLE_ASSETS="$upgrade_assets" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
-    --oracle-version 2026.9.1
+    --oracle-version "$ORACLE_VERSION"
 test "$receipt_before" = "$(shasum -a 256 \
-  "$legacy_home/extensions/oracles/codex/releases/2026.9.1/ManagedCapsules.toml" \
+  "$legacy_home/extensions/oracles/codex/releases/$ORACLE_VERSION/ManagedCapsules.toml" \
   | awk '{print $1}')"
 test "$(sed -n '1p' "$legacy_state/installed-codex-code-aos-mcp")" \
   = "$product_mcp_hash"

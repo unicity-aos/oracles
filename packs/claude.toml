@@ -16,6 +16,10 @@ name = "aos-mcp"
 availability = "required"
 
 [[aos-capsule]]
+name = "aos-hook-adapter-oracle"
+availability = "required"
+
+[[aos-capsule]]
 name = "aos-skills"
 availability = "required"
 

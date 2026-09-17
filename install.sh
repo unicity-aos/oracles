@@ -818,6 +818,7 @@ aos_capsules_for() {
     claude|codex|grok)
       printf '%s\n' \
         'aos-mcp required' \
+        'aos-hook-adapter-oracle required' \
         'aos-skills required' \
         'aos-forge if-present'
       ;;

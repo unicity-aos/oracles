@@ -25,6 +25,7 @@ mkdir -p "$product_assets/capsules"
 printf '%s\n' \
   aos-cli.capsule \
   aos-mcp.capsule \
+  aos-hook-adapter-oracle.capsule \
   aos-fs.capsule \
   aos-openai-compat.capsule \
   aos-skills.capsule \
@@ -45,6 +46,10 @@ name = "aos-mcp"
 source = "capsules/aos-mcp.capsule"
 
 [[capsule]]
+name = "aos-hook-adapter-oracle"
+source = "capsules/aos-hook-adapter-oracle.capsule"
+
+[[capsule]]
 name = "aos-fs"
 source = "capsules/aos-fs.capsule"
 
@@ -60,7 +65,7 @@ source = "capsules/aos-skills.capsule"
 name = "aos-forge"
 source = "capsules/aos-forge.capsule"
 EOF
-for capsule in aos-cli aos-mcp aos-fs aos-openai-compat aos-skills aos-forge; do
+for capsule in aos-cli aos-mcp aos-hook-adapter-oracle aos-fs aos-openai-compat aos-skills aos-forge; do
   capsule_stage="$work/product-capsule-$capsule"
   mkdir -p "$capsule_stage"
   capsule_member=$(printf '%s\n' "$capsule" | tr '-' '_')
@@ -320,7 +325,7 @@ case " $* " in
     capsule=$(basename "$source" .capsule)
     if [ "$principal" != default ]; then
       case "$capsule" in
-        aos-mcp|aos-skills|aos-forge|aos-cli|aos-fs|aos-openai-compat)
+        aos-mcp|aos-hook-adapter-oracle|aos-skills|aos-forge|aos-cli|aos-fs|aos-openai-compat)
           printf 'Capsule %s 0.1.0 is signed by another runtime.\n' "$capsule" >&2
           printf '%s\n' 'Approve this exact install once? [y/N]' >&2
           printf '%s\n' 'error: capsule install authority was not approved' >&2
@@ -681,6 +686,7 @@ if grep -Fq -- '--inherit-from' "$TEST_LOG"; then
   exit 1
 fi
 grep -Fq -- '--add-capsule aos-mcp' "$TEST_LOG"
+grep -Fq -- '--add-capsule aos-hook-adapter-oracle' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-skills' "$TEST_LOG"
 grep -Fq -- '--add-capsule aos-forge' "$TEST_LOG"
 grep -Eq "^codex plugin marketplace add /.*/extensions/oracles/plugins/${ORACLE_VERSION_RE}$" "$TEST_LOG"
@@ -696,6 +702,7 @@ test -f "$TEST_STATE/installed-codex-code-aos-mcp"
 test -f "$TEST_STATE/installed-codex-code-aos-skills"
 test -f "$TEST_STATE/installed-codex-code-aos-forge"
 test -f "$TEST_STATE/granted-codex-code-aos-mcp"
+test -f "$TEST_STATE/granted-codex-code-aos-hook-adapter-oracle"
 test -f "$TEST_STATE/granted-codex-code-aos-skills"
 test -f "$TEST_STATE/granted-codex-code-aos-forge"
 test ! -e "$AOS_HOME/extensions/oracles/.install.lock"
@@ -754,22 +761,23 @@ fi
 test -f "$without_forge_state/installed-codex-code-aos-skills"
 test ! -e "$without_forge_state/installed-codex-code-aos-forge"
 
-without_skills_assets="$work/product-without-skills"
-without_skills_state="$work/state-without-skills"
-without_skills_home="$home/without-skills/.aos"
+for required_service in aos-skills aos-hook-adapter-oracle; do
+without_skills_assets="$work/product-without-$required_service"
+without_skills_state="$work/state-without-$required_service"
+without_skills_home="$home/without-$required_service/.aos"
 mkdir -p "$without_skills_state"
 cp -R "$product_assets" "$without_skills_assets"
-rm "$without_skills_assets/capsules/aos-skills.capsule"
-grep -Fvx 'aos-skills.capsule' "$product_assets/capsule-assets.txt" \
+rm "$without_skills_assets/capsules/$required_service.capsule"
+grep -Fvx "$required_service.capsule" "$product_assets/capsule-assets.txt" \
   > "$without_skills_assets/capsule-assets.txt"
-grep -Fv 'aos-skills' "$product_assets/Distro.toml" \
+grep -Fv "$required_service" "$product_assets/Distro.toml" \
   > "$without_skills_assets/Distro.toml"
 without_skills_start=$(wc -l < "$TEST_LOG")
 if TEST_STATE="$without_skills_state" TEST_PRODUCT_ASSETS="$without_skills_assets" \
   AOS_HOME="$without_skills_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 then
-  echo "host pack accepted an AOS release without its required skills service" >&2
+  echo "host pack accepted an AOS release without required $required_service" >&2
   exit 1
 fi
 tail -n "+$((without_skills_start + 1))" "$TEST_LOG" > "$work/without-skills.log"
@@ -778,6 +786,7 @@ if grep -Eq '^aos .* init( |$)|capsule install .*/aos-mcp\.capsule|distro apply|
   exit 1
 fi
 test ! -e "$without_skills_home/extensions/oracles/codex/current"
+done
 
 # A same-ID user capsule is not a valid substitute for the signed AOS service.
 # Reject the transaction before the immutable Oracle receipt or a grant lands.
@@ -918,6 +927,8 @@ test ! -e "$identity_mismatch_home/extensions/oracles/codex/current"
 # not preserve the stale managed package.
 managed_mcp_hash=a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e
 product_mcp_hash=$(tar -xOf "$product_assets/capsules/aos-mcp.capsule" aos_mcp.wasm \
+  | b3sum | awk '{print $1}')
+product_hook_hash=$(tar -xOf "$product_assets/capsules/aos-hook-adapter-oracle.capsule" aos_hook_adapter_oracle.wasm \
   | b3sum | awk '{print $1}')
 product_skills_hash=$(tar -xOf "$product_assets/capsules/aos-skills.capsule" aos_skills.wasm \
   | b3sum | awk '{print $1}')
@@ -1095,6 +1106,10 @@ for managed_host in claude codex grok; do
     "$product_skills_hash" \
     "$upgrade_home/releases/2026.9.1/capsules/aos-skills.capsule" \
     2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+  write_test_capsule "$upgrade_state" default aos-hook-adapter-oracle \
+    "$product_hook_hash" \
+    "$upgrade_home/releases/2026.9.1/capsules/aos-hook-adapter-oracle.capsule" \
+    2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
   write_test_capsule "$upgrade_state" default aos-forge \
     "$product_forge_hash" \
     "$upgrade_home/releases/2026.9.1/capsules/aos-forge.capsule" \
@@ -1148,6 +1163,9 @@ for managed_host in claude codex grok; do
   test "$(sed -n '1p' "$upgrade_state/installed-default-aos-skills")" \
     = "$product_skills_hash"
   test -f "$upgrade_state/granted-$managed_principal-aos-mcp"
+  # Older Oracle packs omitted this dependency. Upgrade must grant it even
+  # when the host principal and the other managed capsules already exist.
+  test -f "$upgrade_state/granted-$managed_principal-aos-hook-adapter-oracle"
   test -f "$upgrade_state/granted-$managed_principal-aos-skills"
   test -f "$upgrade_state/granted-$managed_principal-aos-forge"
   test -f "$upgrade_home/runtime-running"
@@ -1199,6 +1217,10 @@ write_test_capsule "$partial_state" default aos-mcp \
 write_test_capsule "$partial_state" default aos-skills \
   "$product_skills_hash" \
   "$partial_home/releases/2026.9.1/capsules/aos-skills.capsule" \
+  2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
+write_test_capsule "$partial_state" default aos-hook-adapter-oracle \
+  "$product_hook_hash" \
+  "$partial_home/releases/2026.9.1/capsules/aos-hook-adapter-oracle.capsule" \
   2026-09-01T00:00:00+00:00 2026-09-01T00:00:00+00:00
 write_test_capsule "$partial_state" default aos-forge \
   "$product_forge_hash" \

@@ -1240,6 +1240,40 @@ then
 fi
 test ! -e "$exact_home/extensions/oracles/.install.lock"
 
+# A signed exact runtime pin is refused even when local checksums match.
+pinned_assets="$work/pinned-runtime-assets"
+mkdir -p "$pinned_assets"
+cp -R "$assets/." "$pinned_assets/"
+python3 - "$pinned_assets/runtime-compatibility.toml" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+updated = text.replace(
+    'version-requirement = ">=2026.9.1"',
+    'version-requirement = "=2026.9.1"',
+)
+if updated == text:
+    raise SystemExit("fixture runtime compatibility was not a published minimum")
+path.write_text(updated)
+PY
+write_fixture_checksums "$pinned_assets"
+pinned_home="$home/pinned-runtime/.aos"
+if AOS_HOME="$pinned_home" AOS_ORACLE_ASSETS="$pinned_assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/pinned-runtime.out" 2>&1
+then
+  echo "exact runtime pin unexpectedly installed" >&2
+  exit 1
+fi
+if grep -Fq "BLAKE3 checksum mismatch" "$work/pinned-runtime.out"; then
+  echo "exact runtime pin failed as a checksum mismatch" >&2
+  exit 1
+fi
+grep -Fq "not a published minimum" "$work/pinned-runtime.out"
+test ! -e "$pinned_home/extensions/oracles/codex/Pack.lock"
+
 # The signed checksum manifest is enforced for every staged pack asset.
 tampered_assets="$work/tampered-assets"
 mkdir -p "$tampered_assets"

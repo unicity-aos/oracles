@@ -206,9 +206,11 @@ _aos_execute_active_runtime() {
 # Resolve the Astrid CLI bundled in the authenticated active AOS release.
 #
 # The mutable runtime home is never an executable search path. The signed
-# Oracle snapshot fixes the expected Astrid release, while AOS fixes the active
-# product release. Both release receipts must agree, and the exact selected
-# file must match its signed executable record immediately before execution.
+# Oracle snapshot publishes a compatibility minimum, while AOS authenticates
+# the active product release. The installed runtime's own signed metadata
+# must satisfy that minimum, name the official Astrid release workflow at
+# the actual tag, and match the exact selected file immediately before
+# execution.
 aos_resolve_active_runtime() {
   aos_resolve_apply || return $?
   _aos_active_runtime_path=""
@@ -325,11 +327,21 @@ PY
     /^\[/ { inside = 0 }
     inside && $1 == "release-workflow-identity" { value = $2; gsub(/"/, "", value); print value }
   ' "$_aos_compat")
+  _aos_runtime_requirement=$(awk -F ' = ' '
+    /^\[runtime\]$/ { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && $1 == "version-requirement" { value = $2; gsub(/"/, "", value); print value }
+  ' "$_aos_compat")
+  _aos_calver_re='^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+  _aos_official_identity="https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v${_aos_expected_runtime}"
   grep -Fqx 'repository = "astrid-runtime/astrid"' "$_aos_compat" \
-    && printf '%s\n' "$_aos_expected_runtime" | grep -Eq '^[0-9][A-Za-z0-9._-]*$' \
-    && [ -n "$_aos_expected_tag" ] \
-    && grep -Fqx "version-requirement = \"=$_aos_expected_runtime\"" "$_aos_compat" \
-    && [ -n "$_aos_expected_identity" ] \
+    && printf '%s\n' "$_aos_expected_runtime" | grep -Eq "$_aos_calver_re" \
+    && [ "$_aos_expected_tag" = "v${_aos_expected_runtime}" ] \
+    && [ "$_aos_expected_identity" = "$_aos_official_identity" ] \
+    && {
+      [ "$_aos_runtime_requirement" = ">=${_aos_expected_runtime}" ] \
+        || [ "$_aos_runtime_requirement" = "=${_aos_expected_runtime}" ]
+    } \
     && grep -Fqx 'release-ready = true' "$_aos_compat" || {
       echo "aos-resolve: Oracle receipt does not authorize a released Astrid runtime" >&2
       return 1
@@ -384,13 +396,20 @@ EOF
     *) echo "aos-resolve: active AOS release lacks a unique signed Astrid executable record" >&2; return 1 ;;
   esac
 
-  python3 - "$_aos_manifest" "$_aos_version" "$_aos_expected_runtime" \
-    "$_aos_expected_tag" "$_aos_expected_identity" <<'PY' || return 1
+  _aos_actual_runtime=$(python3 - \
+    "$_aos_manifest" "$_aos_version" "$_aos_expected_runtime" \
+    "$_aos_runtime_requirement" <<'PY'
 import json
 import pathlib
+import re
 import sys
 
-path, product_version, runtime_version, expected_tag, expected_identity = sys.argv[1:]
+CALVER = re.compile(r"^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+OFFICIAL_RELEASE_WORKFLOW = (
+    "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml"
+)
+
+path, product_version, floor_version, requirement = sys.argv[1:]
 try:
     manifest = json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
 except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -413,14 +432,17 @@ if manifest.get("layout") != {
     raise SystemExit("aos-resolve: active AOS manifest runtime layout mismatch")
 if not isinstance(runtime, dict):
     raise SystemExit("aos-resolve: active AOS manifest has no runtime identity")
-if runtime.get("repository") != "astrid-runtime/astrid" or runtime.get("version") != runtime_version:
+if runtime.get("repository") != "astrid-runtime/astrid":
     raise SystemExit("aos-resolve: active AOS manifest runtime identity mismatch")
+actual = runtime.get("version")
+if not isinstance(actual, str) or CALVER.fullmatch(actual) is None:
+    raise SystemExit("aos-resolve: installed Astrid runtime version is invalid")
 target = manifest.get("target")
 if not isinstance(target, str) or not target:
     raise SystemExit("aos-resolve: active AOS manifest has no target identity")
-if runtime.get("tag") != expected_tag:
+if runtime.get("tag") != f"v{actual}":
     raise SystemExit("aos-resolve: active AOS manifest runtime tag mismatch")
-if runtime.get("asset") != f"astrid-{runtime_version}-{target}.tar.gz":
+if runtime.get("asset") != f"astrid-{actual}-{target}.tar.gz":
     raise SystemExit("aos-resolve: active AOS manifest runtime asset mismatch")
 digest = runtime.get("digest")
 if (
@@ -430,9 +452,30 @@ if (
     or any(character not in "0123456789abcdef" for character in digest[7:])
 ):
     raise SystemExit("aos-resolve: active AOS manifest runtime digest is invalid")
-if runtime.get("release_workflow_identity") != expected_identity:
+official_identity = f"{OFFICIAL_RELEASE_WORKFLOW}@refs/tags/v{actual}"
+if runtime.get("release_workflow_identity") != official_identity:
     raise SystemExit("aos-resolve: active AOS manifest runtime signer mismatch")
+if requirement == f"={floor_version}":
+    if actual != floor_version:
+        raise SystemExit(
+            f"aos-resolve: installed Astrid runtime {actual} does not match required ={floor_version}"
+        )
+elif requirement == f">={floor_version}":
+    actual_parts = tuple(int(part) for part in actual.split("."))
+    floor_parts = tuple(int(part) for part in floor_version.split("."))
+    if actual_parts < floor_parts:
+        raise SystemExit(
+            f"aos-resolve: installed Astrid runtime {actual} does not satisfy >={floor_version}"
+        )
+else:
+    raise SystemExit("aos-resolve: Oracle receipt does not authorize a released Astrid runtime")
+print(actual)
 PY
+  ) || return 1
+  printf '%s\n' "$_aos_actual_runtime" | grep -Eq "$_aos_calver_re" || {
+    echo "aos-resolve: active AOS manifest runtime identity mismatch" >&2
+    return 1
+  }
 
   ASTRID="$_aos_runtime"
   ASTRID_RELEASE="$_aos_release"
@@ -442,8 +485,8 @@ PY
 
   _aos_reported_runtime=$("$_aos_runtime" --version 2>/dev/null \
     | awk 'NF { value = $NF } END { print value }')
-  [ "$_aos_reported_runtime" = "$_aos_expected_runtime" ] || {
-    echo "aos-resolve: bundled Astrid reports $_aos_reported_runtime, expected $_aos_expected_runtime" >&2
+  [ "$_aos_reported_runtime" = "$_aos_actual_runtime" ] || {
+    echo "aos-resolve: bundled Astrid reports $_aos_reported_runtime, expected $_aos_actual_runtime" >&2
     return 1
   }
 }

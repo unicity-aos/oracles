@@ -511,6 +511,49 @@ calendar_version_at_least() {
   }'
 }
 
+runtime_toml_value() {
+  rt_file=$1
+  rt_key=$2
+  awk -F ' = ' -v key="$rt_key" '
+    /^\[runtime\]$/ { inside = 1; next }
+    /^\[/ { inside = 0 }
+    inside && $1 == key {
+      value = $2
+      gsub(/"/, "", value)
+      print value
+    }
+  ' "$rt_file"
+}
+
+validate_runtime_compatibility_document() {
+  rt_path=$1
+  [ -f "$rt_path" ] && [ ! -L "$rt_path" ] \
+    || die "runtime compatibility document is missing"
+  rt_repository=$(runtime_toml_value "$rt_path" repository)
+  rt_version=$(runtime_toml_value "$rt_path" version)
+  rt_tag=$(runtime_toml_value "$rt_path" tag)
+  rt_requirement=$(runtime_toml_value "$rt_path" version-requirement)
+  rt_identity=$(runtime_toml_value "$rt_path" release-workflow-identity)
+  rt_ready=$(runtime_toml_value "$rt_path" release-ready)
+  printf '%s\n' "$rt_version" \
+    | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    || die "signed runtime compatibility document has an invalid Astrid floor"
+  [ "$rt_repository" = "astrid-runtime/astrid" ] \
+    || die "signed runtime compatibility document has an invalid runtime repository"
+  [ "$rt_tag" = "v$rt_version" ] \
+    || die "signed runtime compatibility document tag does not match its Astrid floor"
+  [ "$rt_identity" = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v$rt_version" ] \
+    || die "signed runtime compatibility document identity does not match its Astrid floor"
+  [ "$rt_ready" = "true" ] \
+    || die "signed runtime compatibility document is not release-ready"
+  # Authenticated documents may be a published minimum or a historical exact
+  # pin. The requirement floor must equal this document's version; new Oracle
+  # publishes remain gated to >= by the release workflow.
+  [ "$rt_requirement" = ">=$rt_version" ] \
+    || [ "$rt_requirement" = "=$rt_version" ] \
+    || die "signed runtime compatibility document requirement does not match its Astrid floor"
+}
+
 ensure_aos() {
   if [ -x "$AOS_HOME_DIR/bin/aos" ] && [ -z "$AOS_CHANNEL" ] && [ -z "$AOS_VERSION" ]; then
     PATH="$AOS_HOME_DIR/bin:$PATH"
@@ -1159,6 +1202,7 @@ stage_release_metadata() {
   validate_checksum_manifest "$RELEASE_STAGE/BLAKE3SUMS.txt"
   verify_blake3 "$RELEASE_STAGE/aos-oracle-plugins.tar.gz" aos-oracle-plugins.tar.gz
   verify_blake3 "$RELEASE_STAGE/runtime-compatibility.toml" runtime-compatibility.toml
+  validate_runtime_compatibility_document "$RELEASE_STAGE/runtime-compatibility.toml"
   PLUGIN_BLAKE3=$(expected_blake3 aos-oracle-plugins.tar.gz)
   validate_plugin_archive "$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
 }

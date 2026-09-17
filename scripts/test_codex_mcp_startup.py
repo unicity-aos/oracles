@@ -80,7 +80,7 @@ def resolve_active(
 
 
 def runtime_manifest(
-    product_version: str = "2026.9.1", runtime_version: str = "0.11.0"
+    product_version: str = "2026.9.1", runtime_version: str = "2026.9.1"
 ) -> str:
     target = RUNTIME_TARGET
     return json.dumps(
@@ -119,16 +119,55 @@ def runtime_manifest(
     ) + "\n"
 
 
-def ready_compatibility(release_ready: bool = True) -> str:
+def ready_compatibility(
+    version: str = "2026.9.1",
+    requirement: str | None = None,
+    release_ready: bool = True,
+) -> str:
+    if requirement is None:
+        requirement = f">={version}"
     return (
         'schema-version = 1\n\n[runtime]\n'
         'repository = "astrid-runtime/astrid"\n'
-        'version = "0.11.0"\n'
-        'tag = "v0.11.0"\n'
-        'version-requirement = "=0.11.0"\n'
+        f'version = "{version}"\n'
+        f'tag = "v{version}"\n'
+        f'version-requirement = "{requirement}"\n'
         'release-workflow-identity = "https://github.com/astrid-runtime/astrid/'
-        '.github/workflows/release.yml@refs/tags/v0.11.0"\n'
+        f'.github/workflows/release.yml@refs/tags/v{version}"\n'
         f"release-ready = {'true' if release_ready else 'false'}\n"
+    )
+
+
+def file_digests(path: Path, environment: dict[str, str]) -> tuple[str, str]:
+    result = subprocess.run(
+        [
+            "/bin/sh",
+            "-c",
+            f'printf "%s %s" "$(b3sum {path} | awk \'{{print $1}}\')" '
+            f'"$(shasum -a 256 {path} | awk \'{{print $1}}\')"',
+        ],
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        check=True,
+    )
+    blake3, sha256 = result.stdout.split()
+    return blake3, sha256
+
+
+def write_authenticated_runtime(
+    home: Path, environment: dict[str, str], runtime_version: str
+) -> None:
+    astrid = home / "releases/2026.9.1/runtime/bin/astrid"
+    blake3, sha256 = file_digests(astrid, environment)
+    payload = json.loads(runtime_manifest(runtime_version=runtime_version))
+    payload["release_files"]["runtime/bin/astrid"] = {
+        "blake3": blake3,
+        "mode": 0o755,
+        "sha256": sha256,
+    }
+    (home / "releases/2026.9.1/release-manifest.json").write_text(
+        json.dumps(payload, indent=2) + "\n"
     )
 
 
@@ -181,7 +220,7 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         "set -eu\n"
         'printf "%s\\n" "$*" >> "$TEST_ASTRID_LOG"\n'
         'pwd -P >> "$TEST_ASTRID_CWD_LOG"\n'
-        'if [ "${1:-}" = --version ]; then printf "astrid %s\\n" "${TEST_RUNTIME_VERSION:-0.11.0}"; exit 0; fi\n'
+        'if [ "${1:-}" = --version ]; then printf "astrid %s\\n" "${TEST_RUNTIME_VERSION:-2026.9.1}"; exit 0; fi\n'
         'case " $* " in\n'
         '  *" mcp ready "*) printf "%s\\n" \'{"version":1,"principal":"codex-code"}\' ;;\n'
         '  *" mcp attach "*) printf "%s\\n" mcp-ready ;;\n'
@@ -873,9 +912,9 @@ def main() -> None:
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
         assert "BLAKE3 digest does not match" in rejected.stderr
-        expected_runtime.write_text(expected_runtime.read_text().replace(substituted, ""))
+        expected_runtime.write_bytes(executable_bytes)
+        expected_runtime.chmod(0o700)
 
-        preserved_bytes = expected_runtime.read_bytes()
         expected_runtime.unlink()
         expected_runtime.symlink_to(root / "outside-runtime")
         (root / "outside-runtime").write_text("#!/bin/sh\nexit 0\n")
@@ -883,7 +922,7 @@ def main() -> None:
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
         assert "missing its bundled Astrid CLI" in rejected.stderr
         expected_runtime.unlink()
-        expected_runtime.write_bytes(preserved_bytes)
+        expected_runtime.write_bytes(executable_bytes)
         expected_runtime.chmod(0o700)
 
         # The same matching bytes reached through a symlinked home ancestor are
@@ -913,50 +952,92 @@ def main() -> None:
         )
         home_alias.unlink()
 
+        compatibility = home / "extensions/oracles/codex/current/runtime-compatibility.toml"
+        original_compatibility = compatibility.read_text()
+        write_authenticated_runtime(home, environment, "2026.9.1")
+
+        for accepted in ("2026.9.1", "2026.9.2", "2026.10.0"):
+            write_authenticated_runtime(home, environment, accepted)
+            accepted_env = dict(environment)
+            accepted_env["TEST_RUNTIME_VERSION"] = accepted
+            resolved_version = resolve_active(accepted_env)
+            assert resolved_version.returncode == 0, (
+                accepted,
+                resolved_version.stdout,
+                resolved_version.stderr,
+            )
+            assert resolved_version.stdout.strip() == str(expected_runtime)
+
+        for rejected_version, needle in (
+            ("2026.9.0", "does not satisfy >=2026.9.1"),
+            ("2026.8.9", "does not satisfy >=2026.9.1"),
+            ("2026.9.1-rc.1", "runtime version is invalid"),
+            ("2026.09.1", "runtime version is invalid"),
+            ("v2026.9.1", "runtime version is invalid"),
+            ("0.11.0", "runtime version is invalid"),
+        ):
+            write_authenticated_runtime(home, environment, rejected_version)
+            rejected_env = dict(environment)
+            rejected_env["TEST_RUNTIME_VERSION"] = rejected_version
+            rejected = resolve_active(rejected_env)
+            assert rejected.returncode != 0, (
+                rejected_version,
+                rejected.stdout,
+                rejected.stderr,
+            )
+            assert needle in rejected.stderr, (rejected_version, rejected.stderr)
+
+        write_authenticated_runtime(home, environment, "2026.9.2")
+        stale_identity = json.loads(
+            (home / "releases/2026.9.1/release-manifest.json").read_text()
+        )
+        stale_identity["runtime"]["release_workflow_identity"] = (
+            "https://github.com/astrid-runtime/astrid/.github/workflows/"
+            "release.yml@refs/tags/v2026.9.1"
+        )
+        (home / "releases/2026.9.1/release-manifest.json").write_text(
+            json.dumps(stale_identity, indent=2) + "\n"
+        )
+        stale_env = dict(environment)
+        stale_env["TEST_RUNTIME_VERSION"] = "2026.9.2"
+        rejected = resolve_active(stale_env)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "runtime signer mismatch" in rejected.stderr
+
+        compatibility.write_text(ready_compatibility(requirement="=2026.9.1"))
+        write_authenticated_runtime(home, environment, "2026.9.2")
+        pinned = dict(environment)
+        pinned["TEST_RUNTIME_VERSION"] = "2026.9.2"
+        rejected = resolve_active(pinned)
+        assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
+        assert "does not match required =2026.9.1" in rejected.stderr
+        compatibility.write_text(original_compatibility)
+        write_authenticated_runtime(home, environment, "2026.9.1")
+
         wrong_runtime = dict(environment)
         wrong_runtime["TEST_RUNTIME_VERSION"] = "0.10.4"
         rejected = resolve_active(wrong_runtime)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "BLAKE3 digest does not match" in rejected.stderr
+        assert "expected 2026.9.1" in rejected.stderr
         expected_runtime.write_text(
             "#!/bin/sh\n"
             "set -eu\n"
             '[ "${1:-}" = --version ] && printf "astrid 0.10.4\\n"\n'
         )
         expected_runtime.chmod(0o700)
-        wrong_report_digests = subprocess.run(
-            ["/bin/sh", "-c", (
-                f'printf "%s %s" "$(b3sum {expected_runtime} | awk \'{{print $1}}\')" '
-                f'"$(shasum -a 256 {expected_runtime} | awk \'{{print $1}}\')"'
-            )],
-            env=environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=True,
-        ).stdout.split()
-        authorized_manifest = json.loads(manifest.read_text())
-        authorized_manifest["release_files"]["runtime/bin/astrid"] = {
-            "blake3": wrong_report_digests[0],
-            "mode": 0o755,
-            "sha256": wrong_report_digests[1],
-        }
-        manifest.write_text(json.dumps(authorized_manifest, indent=2) + "\n")
+        write_authenticated_runtime(home, environment, "2026.9.1")
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "expected 0.11.0" in rejected.stderr
-        authorized_manifest["release_files"]["runtime/bin/astrid"] = {
-            "blake3": expected_digests[0],
-            "mode": 0o755,
-            "sha256": expected_digests[1],
-        }
-        manifest.write_text(json.dumps(authorized_manifest, indent=2) + "\n")
-
-        manifest.write_text(runtime_manifest(runtime_version="0.10.4"))
+        assert "expected 2026.9.1" in rejected.stderr
+        expected_runtime.write_bytes(executable_bytes)
+        expected_runtime.chmod(0o700)
+        write_authenticated_runtime(home, environment, "0.10.4")
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "runtime identity mismatch" in rejected.stderr
-        manifest.write_text(runtime_manifest())
+        assert "runtime version is invalid" in rejected.stderr
+        expected_runtime.write_bytes(executable_bytes)
+        expected_runtime.chmod(0o700)
+        write_authenticated_runtime(home, environment, "2026.9.1")
 
         malformed_manifest = json.loads(runtime_manifest())
         malformed_manifest["layout"]["runtime_executables"] = "../runtime/bin"

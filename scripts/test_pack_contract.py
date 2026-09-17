@@ -49,14 +49,19 @@ class PackContractTests(unittest.TestCase):
             marker = (ROOT / "plugins" / host / ".aos-oracle-version")
             self.assertEqual(marker.read_text().strip(), release)
 
-    def test_published_runtime_compatibility_is_exact(self) -> None:
+    def test_published_runtime_compatibility_is_a_minimum(self) -> None:
         value = tomllib.loads(
             (ROOT / "release" / "runtime-compatibility.toml").read_text()
         )["runtime"]
         self.assertEqual(value["repository"], "astrid-runtime/astrid")
         self.assertEqual(value["version"], "2026.9.1")
         self.assertEqual(value["tag"], "v2026.9.1")
-        self.assertEqual(value["version-requirement"], "=2026.9.1")
+        self.assertEqual(value["version-requirement"], ">=2026.9.1")
+        self.assertEqual(
+            value["release-workflow-identity"],
+            "https://github.com/astrid-runtime/astrid/.github/workflows/"
+            "release.yml@refs/tags/v2026.9.1",
+        )
         self.assertTrue(value["release-ready"])
 
     def test_packs_do_not_redeclare_the_ce_distribution(self) -> None:

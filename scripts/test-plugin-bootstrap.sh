@@ -54,10 +54,10 @@ schema-version = 1
 
 [runtime]
 repository = "astrid-runtime/astrid"
-version = "0.11.0"
-tag = "v0.11.0"
-version-requirement = "=0.11.0"
-release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.11.0"
+version = "2026.9.1"
+tag = "v2026.9.1"
+version-requirement = ">=2026.9.1"
+release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v2026.9.1"
 release-ready = true
 COMPAT
 cat > "$release/Distro.toml" <<'DISTRO'
@@ -82,11 +82,11 @@ cat > "$release/release-manifest.json" <<'MANIFEST'
   },
   "runtime": {
     "repository": "astrid-runtime/astrid",
-    "version": "0.11.0",
-    "tag": "v0.11.0",
-    "asset": "astrid-0.11.0-__TARGET__.tar.gz",
+    "version": "2026.9.1",
+    "tag": "v2026.9.1",
+    "asset": "astrid-2026.9.1-__TARGET__.tar.gz",
     "digest": "blake3:0000000000000000000000000000000000000000000000000000000000000000",
-    "release_workflow_identity": "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v0.11.0"
+    "release_workflow_identity": "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v2026.9.1"
   },
   "release_files": {
     "runtime/bin/astrid": {
@@ -100,7 +100,7 @@ MANIFEST
 cat > "$release/runtime/bin/astrid" <<'ASTRID'
 #!/usr/bin/env sh
 set -eu
-[ "${1:-}" = --version ] && printf 'astrid 0.11.0\n'
+[ "${1:-}" = --version ] && printf 'astrid 2026.9.1\n'
 ASTRID
 cat > "$release/runtime/bin/astrid-daemon" <<'ASTRID_DAEMON'
 #!/usr/bin/env sh
@@ -125,7 +125,7 @@ import sys
 path, target, blake3, sha256 = sys.argv[1:]
 manifest = json.loads(pathlib.Path(path).read_text())
 manifest["target"] = target
-manifest["runtime"]["asset"] = f"astrid-0.11.0-{target}.tar.gz"
+manifest["runtime"]["asset"] = f"astrid-2026.9.1-{target}.tar.gz"
 manifest["release_files"]["runtime/bin/astrid"] = {
     "blake3": blake3,
     "mode": 0o755,

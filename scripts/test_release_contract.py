@@ -74,10 +74,22 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_publication_is_manual_and_release_ready_gated(self) -> None:
         self.assertIn("on:\n  workflow_dispatch:", self.workflow)
         ready = self.workflow.index('runtime["release-ready"] is not True')
+        minimum = self.workflow.index(
+            'runtime["version-requirement"] != f">={runtime[\'version\']}"'
+        )
         publish = self.workflow.index(
             'gh release edit "$GITHUB_REF_NAME" --draft=false'
         )
         self.assertLess(ready, publish)
+        self.assertLess(minimum, publish)
+        self.assertIn(
+            'runtime["tag"] != f"v{runtime[\'version\']}"',
+            self.workflow,
+        )
+        self.assertIn(
+            "runtime compatibility identity does not match its Astrid floor",
+            self.workflow,
+        )
 
     def test_published_release_must_be_platform_immutable(self) -> None:
         publish = self.workflow.index(

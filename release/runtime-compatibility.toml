@@ -4,8 +4,11 @@ schema-version = 1
 repository = "astrid-runtime/astrid"
 version = "2026.9.1"
 tag = "v2026.9.1"
-version-requirement = "=2026.9.1"
+version-requirement = ">=2026.9.1"
 release-workflow-identity = "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v2026.9.1"
 release-ready = true
 
-# Update every field together; never point a release build at a moving channel.
+# version/tag identify the published Astrid floor this Oracle release documents.
+# version-requirement is the minimum compatible installed runtime. Authenticate
+# the actual installed artifact from its own signed AOS release metadata.
+# Never point a release build at a moving channel.

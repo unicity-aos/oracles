@@ -12,6 +12,9 @@ CalSemVer here. The month is not zero-padded.
 - Version alignment does not replace explicit runtime compatibility requirements.
   Document breaking changes and migrations in release notes; the year component
   is not a traditional SemVer compatibility-major guarantee.
+- Oracle `version`/`tag` identify the published Astrid floor. `version-requirement`
+  is the minimum compatible installed runtime. Exact artifact identity still comes
+  from the signed AOS inventory, not from pinning that floor as the only runtime.
 
 All three products target `2026.9.1` for this patch. Git tags retain their
 existing repository conventions: Astrid and Oracle use `v2026.9.1`; AOS uses

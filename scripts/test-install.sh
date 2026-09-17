@@ -1240,6 +1240,71 @@ then
 fi
 test ! -e "$exact_home/extensions/oracles/.install.lock"
 
+# Checksum-authenticated historical exact pins remain installable. The
+# currently published Oracle 2026.9.1 document is =2026.9.1; new source
+# publishes stay >=2026.9.1. The installed receipt must keep the signed
+# operator so resolve-time equality still enforces an exact pin.
+plant_runtime_requirement() {
+  dest=$1
+  requirement=$2
+  mkdir -p "$dest"
+  cp -R "$assets/." "$dest/"
+  python3 - "$dest/runtime-compatibility.toml" "$requirement" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+requirement = sys.argv[2]
+text = path.read_text()
+needle = 'version-requirement = ">=2026.9.1"'
+if needle not in text:
+    raise SystemExit("fixture runtime compatibility was not a published minimum")
+path.write_text(text.replace(needle, f'version-requirement = "{requirement}"', 1))
+PY
+  write_fixture_checksums "$dest"
+}
+
+historical_assets="$work/historical-runtime-assets"
+plant_runtime_requirement "$historical_assets" "=2026.9.1"
+historical_home="$home/historical-runtime/.aos"
+if ! AOS_HOME="$historical_home" AOS_ORACLE_ASSETS="$historical_assets" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/historical-runtime.out" 2>&1
+then
+  echo "authenticated historical exact pin failed to install" >&2
+  cat "$work/historical-runtime.out" >&2
+  exit 1
+fi
+test -f "$historical_home/extensions/oracles/codex/Pack.lock"
+grep -Fq 'version-requirement = "=2026.9.1"' \
+  "$historical_home/extensions/oracles/codex/releases/2026.9.1/runtime-compatibility.toml"
+grep -Fq 'version-requirement = "=2026.9.1"' \
+  "$historical_home/extensions/oracles/codex/current/runtime-compatibility.toml"
+
+# Requirement floors that do not equal the document version fail document
+# validation after checksum authentication, not as a checksum mismatch.
+mismatch_index=0
+for mismatch in "=2026.9.2" ">=2026.8.0" ">2026.9.1"; do
+  mismatch_index=$((mismatch_index + 1))
+  mismatch_assets="$work/mismatch-runtime-$mismatch_index"
+  plant_runtime_requirement "$mismatch_assets" "$mismatch"
+  mismatch_home="$home/mismatch-runtime-$mismatch_index/.aos"
+  if AOS_HOME="$mismatch_home" AOS_ORACLE_ASSETS="$mismatch_assets" \
+    "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    >"$work/mismatch-runtime-$mismatch_index.out" 2>&1
+  then
+    echo "mismatched runtime requirement $mismatch unexpectedly installed" >&2
+    exit 1
+  fi
+  if grep -Fq "BLAKE3 checksum mismatch" "$work/mismatch-runtime-$mismatch_index.out"; then
+    echo "mismatched runtime requirement $mismatch failed as a checksum mismatch" >&2
+    exit 1
+  fi
+  grep -Fq "signed runtime compatibility document" \
+    "$work/mismatch-runtime-$mismatch_index.out"
+  test ! -e "$mismatch_home/extensions/oracles/codex/Pack.lock"
+done
+
 # The signed checksum manifest is enforced for every staged pack asset.
 tampered_assets="$work/tampered-assets"
 mkdir -p "$tampered_assets"

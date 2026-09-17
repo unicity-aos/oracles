@@ -61,6 +61,16 @@ jobs:
           runtime = tomllib.loads(pathlib.Path("release/runtime-compatibility.toml").read_text())["runtime"]
           if runtime["release-ready"] is not True:
               raise SystemExit("runtime compatibility pin is not release-ready")
+          if runtime["version-requirement"] != f">={runtime['version']}":
+              raise SystemExit("runtime compatibility requirement is not a published minimum")
+          if runtime["tag"] != f"v{runtime['version']}":
+              raise SystemExit("runtime compatibility tag does not match its Astrid floor")
+          expected_identity = (
+              "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml"
+              f"@refs/tags/v{runtime['version']}"
+          )
+          if runtime["release-workflow-identity"] != expected_identity:
+              raise SystemExit("runtime compatibility identity does not match its Astrid floor")
           for host in ("claude", "codex", "grok"):
               pack = tomllib.loads(pathlib.Path(f"packs/{host}.toml").read_text())["pack"]
               if pack["version"] != version:

@@ -16,6 +16,7 @@ EXPECTED = {
 }
 EXPECTED_AOS_CAPSULES = [
     {"name": "aos-mcp", "availability": "required"},
+    {"name": "aos-hook-adapter-oracle", "availability": "required"},
     {"name": "aos-skills", "availability": "required"},
     {"name": "aos-forge", "availability": "if-present"},
 ]
@@ -75,7 +76,7 @@ class PackContractTests(unittest.TestCase):
             self.assertFalse(any(name.endswith(("-install", "-runner")) for name in names))
             self.assertEqual(
                 {item["name"] for item in value["aos-capsule"]},
-                {"aos-mcp", "aos-skills", "aos-forge"},
+                {"aos-mcp", "aos-hook-adapter-oracle", "aos-skills", "aos-forge"},
             )
 
 

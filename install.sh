@@ -30,6 +30,7 @@ LOCK_BACKEND=""
 PLUGIN_STAGE=""
 RECEIPT_STAGE=""
 PREVIOUS_BINDINGS=""
+PREVIOUS_PACK=""
 CURRENT_PACK_BINDINGS=""
 INSTALL_TRANSACTION_ACTIVE=0
 AOS_HOME_EXISTED=0
@@ -817,6 +818,7 @@ aos_capsules_for() {
     claude|codex|grok)
       printf '%s\n' \
         'aos-mcp required' \
+        'aos-hook-adapter-oracle required' \
         'aos-skills required' \
         'aos-forge if-present'
       ;;
@@ -968,6 +970,53 @@ append_binding() {
   printf '%s %s\n' "$ab_name" "$ab_hash" >> "$ab_file"
 }
 
+
+previous_pack_declares_aos_capsule() {
+  pp_name=$1
+  [ -n "${PREVIOUS_PACK:-}" ] && [ -f "$PREVIOUS_PACK" ] || return 1
+  pack_aos_capsules_tsv "$PREVIOUS_PACK" | awk -v wanted="$pp_name" '
+    $1 == wanted { found = 1 }
+    END { exit !found }
+  '
+}
+
+# Local installed-release identity only: the named capsule's wasm hash matches
+# a previous Unicity CE release artifact path already present in this home.
+# This does not verify that older Distro's signature.
+aos_identity_matches_previous_local_distro_artifact() {
+  pd_name=$1
+  pd_hash=$2
+  previous_pack_declares_aos_capsule "$pd_name" || return 1
+  for pd_manifest in "$AOS_HOME_DIR"/releases/*/Distro.toml; do
+    [ -f "$pd_manifest" ] && [ ! -L "$pd_manifest" ] || continue
+    grep -Fqx 'id = "unicity-ce"' "$pd_manifest" || continue
+    pd_release=${pd_manifest%/Distro.toml}
+    [ -d "$pd_release" ] && [ ! -L "$pd_release" ] || continue
+    pd_version=${pd_release##*/}
+    printf '%s\n' "$pd_version" \
+      | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || continue
+    grep -Fqx "version = \"$pd_version\"" "$pd_manifest" || continue
+    aos_release_has_capsule "$pd_name" "$pd_release" || continue
+    pd_artifact="$pd_release/capsules/$pd_name.capsule"
+    [ -f "$pd_artifact" ] && [ ! -L "$pd_artifact" ] || continue
+    pd_release_hash=$(release_capsule_wasm_blake3 "$pd_artifact" "$pd_name")
+    [ "$pd_hash" = "$pd_release_hash" ] && return 0
+  done
+  return 1
+}
+
+aos_identity_matches_release_or_managed() {
+  ai_name=$1
+  ai_hash=$2
+  ai_release_hash=$3
+  [ "$ai_hash" = "$ai_release_hash" ] && return 0
+  if [ -n "${PREVIOUS_BINDINGS:-}" ] && [ -f "$PREVIOUS_BINDINGS" ]; then
+    ai_previous=$(binding_hash "$PREVIOUS_BINDINGS" "$ai_name" 2>/dev/null || true)
+    [ -n "$ai_previous" ] && [ "$ai_hash" = "$ai_previous" ] && return 0
+  fi
+  aos_identity_matches_previous_local_distro_artifact "$ai_name" "$ai_hash"
+}
+
 legacy_v020_hash() {
   case "$1" in
     aos-mcp) printf 'a2e772db86cbbc1a19a86033254f9379a01fe2c07258bc419793316f9d40e95e\n' ;;
@@ -1034,8 +1083,10 @@ load_previous_bindings() {
   lp_pack="$lp_root/Pack.lock"
   lp_receipt="$lp_root/current/Receipt.toml"
   PREVIOUS_BINDINGS="$WORK/previous-$lp_host.bindings"
+  PREVIOUS_PACK=""
   : > "$PREVIOUS_BINDINGS"
   [ -r "$lp_pack" ] || return 0
+  PREVIOUS_PACK="$lp_pack"
   [ -r "$lp_receipt" ] || die "installed $lp_host Oracle pack has no receipt"
   grep -Fqx "host = \"$lp_host\"" "$lp_pack" \
     || die "installed $lp_host Oracle pack has the wrong host"
@@ -1393,9 +1444,10 @@ resolve_aos_capsules() {
   repair_runtime_workspace_selection
 
   # Preflight every existing identity before AOS can apply a distribution.
-  # A foreign source, malformed hash, or default/host disagreement is a reason
-  # to stop before init; it is not a state for the installer to reconcile by
-  # mutation.
+  # A foreign source, malformed hash, or unmanaged default/host disagreement
+  # stops before init. A host hash that exactly matches a prior managed
+  # identity may later be moved onto this signed distro; that is not a
+  # reason to treat unknown same-ID bytes as operator state.
   while read -r rac_name rac_availability rac_extra; do
     [ -n "$rac_name" ] || continue
     [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
@@ -1409,7 +1461,8 @@ resolve_aos_capsules() {
         || die "AOS capsule dependency '$rac_name' for $rac_principal has no registry source"
       printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
         || die "AOS capsule dependency '$rac_name' for $rac_principal has an invalid identity hash"
-      [ "$CAPSULE_HASH" = "$rac_release_hash" ] \
+      aos_identity_matches_release_or_managed \
+        "$rac_name" "$CAPSULE_HASH" "$rac_release_hash" \
         || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
       rac_host_hash=$CAPSULE_HASH
     elif [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
@@ -1424,8 +1477,15 @@ resolve_aos_capsules() {
         || die "default AOS capsule dependency '$rac_name' differs from the signed operator distribution"
       rac_default_hash=$CAPSULE_HASH
       if load_capsule_record "$rac_principal" "$rac_name"; then
-        [ "$CAPSULE_HASH" = "$rac_default_hash" ] \
-          || die "default and host identities disagree for AOS capsule '$rac_name'"
+        if [ "$CAPSULE_HASH" != "$rac_default_hash" ]; then
+          # Default already matches this signed distro; a prior managed host
+          # copy is upgraded after the principal exists. Any other split is
+          # still a foreign same-ID disagreement.
+          [ "$rac_default_hash" = "$rac_release_hash" ] \
+            && aos_identity_matches_release_or_managed \
+              "$rac_name" "$CAPSULE_HASH" "$rac_release_hash" \
+            || die "default and host identities disagree for AOS capsule '$rac_name'"
+        fi
       fi
     elif [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
       die "default AOS capsule dependency '$rac_name' has a malformed identity"
@@ -1491,8 +1551,12 @@ resolve_aos_capsules() {
     printf '%s\n' "$rac_name" >> "$RESOLVED_AOS_CAPSULES"
     if load_capsule_record "$rac_principal" "$rac_name"; then
       [ -n "$CAPSULE_SOURCE" ] \
-        && [ "$CAPSULE_HASH" = "$rac_hash" ] \
         || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
+      if [ "$CAPSULE_HASH" != "$rac_hash" ]; then
+        aos_identity_matches_release_or_managed \
+          "$rac_name" "$CAPSULE_HASH" "$rac_hash" \
+          || die "AOS capsule dependency '$rac_name' for $rac_principal differs from the signed operator distribution"
+      fi
     fi
   done < "$CURRENT_AOS_CAPSULES"
 }
@@ -1523,6 +1587,50 @@ stage_pack() {
   STAGED_PACK=$stage
 }
 
+
+reconcile_managed_aos_capsules() {
+  rma_principal=$1
+  rma_release="$AOS_HOME_DIR/releases/$ACTIVE_AOS_VERSION"
+  [ -d "$rma_release" ] && [ ! -L "$rma_release" ] \
+    || die "installed Unicity AOS $ACTIVE_AOS_VERSION has no trusted release directory"
+  while read -r rma_name rma_hash rma_extra; do
+    [ -n "$rma_name" ] || continue
+    [ -z "${rma_extra:-}" ] || die "invalid resolved AOS capsule identity"
+    printf '%s\n' "$rma_hash" | grep -Eq '^[0-9a-f]{64}$' \
+      || die "signed AOS distribution has no trusted identity for '$rma_name'"
+    if ! load_capsule_record "$rma_principal" "$rma_name"; then
+      if [ "$CAPSULE_RECORD_FOUND" -eq 1 ]; then
+        die "AOS capsule dependency '$rma_name' for $rma_principal has a malformed identity"
+      fi
+      continue
+    fi
+    [ -n "$CAPSULE_SOURCE" ] \
+      || die "AOS capsule dependency '$rma_name' for $rma_principal has no registry source"
+    [ "$CAPSULE_HASH" = "$rma_hash" ] && continue
+    aos_identity_matches_release_or_managed "$rma_name" "$CAPSULE_HASH" "$rma_hash" \
+      || die "AOS capsule dependency '$rma_name' for $rma_principal differs from the signed operator distribution"
+    rma_artifact="$rma_release/capsules/$rma_name.capsule"
+    [ -f "$rma_artifact" ] && [ ! -L "$rma_artifact" ] \
+      || die "signed AOS distribution has no trusted capsule '$rma_name'"
+    rma_release_hash=$(release_capsule_wasm_blake3 "$rma_artifact" "$rma_name")
+    [ "$rma_release_hash" = "$rma_hash" ] \
+      || die "signed AOS distribution capsule '$rma_name' does not resolve to the active release"
+    say "Updating managed AOS capsule '$rma_name' for $rma_principal to the signed operator distribution..."
+    if [ "$ASSUME_YES" -eq 1 ]; then
+      aos --principal "$rma_principal" distro apply --yes --capsule "$rma_name" </dev/null
+    elif [ -r /dev/tty ]; then
+      aos --principal "$rma_principal" distro apply --yes --capsule "$rma_name" </dev/tty
+    else
+      aos --principal "$rma_principal" distro apply --yes --capsule "$rma_name"
+    fi
+    load_capsule_record "$rma_principal" "$rma_name" \
+      || die "updated AOS capsule '$rma_name' has no readable identity for $rma_principal"
+    [ -n "$CAPSULE_SOURCE" ] \
+      && [ "$CAPSULE_HASH" = "$rma_hash" ] \
+      || die "updated AOS capsule '$rma_name' for $rma_principal does not match the signed operator distribution"
+  done < "$RESOLVED_AOS_IDENTITIES"
+}
+
 install_pack() {
   host=$1
   principal=$(principal_for "$host")
@@ -1535,6 +1643,7 @@ install_pack() {
   : > "$OBSOLETE_BINDINGS"
   resolve_aos_capsules "$principal"
   ensure_principal "$host" "$principal"
+  reconcile_managed_aos_capsules "$principal"
 
   for capsule in $(capsules_for "$host"); do
     expected_hash=$(binding_hash "$CURRENT_PACK_BINDINGS" "$capsule") \

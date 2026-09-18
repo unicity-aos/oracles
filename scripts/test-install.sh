@@ -600,7 +600,7 @@ python3 - "$plugin_only_home" <<'PY'
 import json
 from pathlib import Path
 import sys
-plugin = Path(sys.argv[1]) / "extensions/oracles/plugins/2026.9.1/plugins/unicity-aos"
+plugin = Path(sys.argv[1]) / "extensions/oracles/plugins/2026.9.2/plugins/unicity-aos"
 server = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["aos"]
 assert server["command"] == "python3", server
 assert server["args"] == [str(plugin / "bin/aos-codex-mcp"), "--principal", "codex-code"], server

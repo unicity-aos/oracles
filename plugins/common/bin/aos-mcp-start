@@ -24,7 +24,9 @@ STATUS_TOOL = {
     "description": "Report whether AOS setup is starting, ready, or failed. Retry while starting; runtime tools appear when ready.",
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
-VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25", "2026-07-28")
+# Match the versions supported by the authenticated Astrid backend. The proxy
+# must not accept an older version that the backend will renegotiate later.
+VERSIONS = ("2025-11-25", "2026-07-28")
 MAX_MESSAGE = 16 * 1024 * 1024
 
 

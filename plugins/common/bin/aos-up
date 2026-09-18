@@ -196,6 +196,9 @@ capsule_ready() {
   capsule_output=$("$AOS" capsule show aos-mcp --agent "${AOS_HOST}-code" 2>&1) ||
     capsule_status=$?
   [ "$capsule_status" -eq 0 ] && return 0
+  # Cached update notices are advisory, not capsule transport diagnostics.
+  # Remove only the known notice; all other unexpected output stays fatal.
+  capsule_output=$(printf '%s\n' "$capsule_output" | sed '/^! Update available: v[0-9][0-9.]* → v[0-9][0-9.]*\. Run `astrid update` to upgrade\.$/d')
   if [ "$capsule_status" -eq 1 ] \
     && { [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent '${AOS_HOST}-code'" ] \
       || [ "$capsule_output" = "✗ capsule 'aos-mcp' is not installed for agent '${AOS_HOST}-code'" ]; }

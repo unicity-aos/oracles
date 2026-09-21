@@ -95,6 +95,59 @@ class Client:
 
 
 class SetupTests(unittest.TestCase):
+    def test_update_notice_refresh_is_detached_and_reaches_hook_and_status(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            bindir = home / "bin"
+            bindir.mkdir()
+            aos = bindir / "aos"
+            aos.write_text("#!/bin/sh\n[ \"$*\" = 'update --check' ] || exit 91\nsleep 2\necho 'Update available: AOS 2026.9.2 -> 2026.9.3'\n")
+            aos.chmod(0o700)
+            env = dict(os.environ, AOS_HOME=raw, AOS_BIN=str(aos))
+            command = [sys.executable, str(ROOT / "plugins/unicity-aos/bin/aos-codex-mcp"), "--hook"]
+            started = time.monotonic()
+            result = subprocess.run(command, env=env, capture_output=True, timeout=1.5, check=True)
+            self.assertLess(time.monotonic() - started, 1.5)
+            self.assertNotIn("Update available", result.stdout.decode())
+            stamp = home / "update/host-update-check/stamp"
+            deadline = time.monotonic() + 6
+            while not stamp.exists() and time.monotonic() < deadline:
+                time.sleep(.05)
+            self.assertTrue(stamp.exists(), "detached check did not complete")
+            for script in (SOURCE, ROOT / "plugins/unicity-aos/bin/aos-codex-mcp"):
+                result = subprocess.run([sys.executable, str(script), "--hook"], env=env,
+                                        capture_output=True, timeout=1.5, check=True)
+                context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+                self.assertIn("Tell the user: Update available:", context)
+            from unittest.mock import patch
+            with patch.dict(os.environ, env):
+                codex_loader = importlib.machinery.SourceFileLoader("update_codex", command[1])
+                codex_spec = importlib.util.spec_from_loader(codex_loader.name, codex_loader)
+                codex = importlib.util.module_from_spec(codex_spec)
+                codex_loader.exec_module(codex)
+                for implementation in (adapter, codex):
+                    connection = implementation.Connection([])
+                    connection.initialized = True
+                    replies = []
+                    connection.result = lambda request, result: replies.append(result)
+                    connection.host({"id": 1, "method": "tools/call", "params": {"name": adapter.STATUS_NAME}})
+                    status = json.loads(replies[0]["content"][0]["text"])
+                    self.assertIn("Update available:", status["update_notice"])
+
+    def test_failed_update_check_is_not_cached_as_success(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            aos = home / "aos"
+            aos.write_text("#!/bin/sh\nexit 69\n")
+            aos.chmod(0o700)
+            result = subprocess.run([str(ROOT / "plugins/common/bin/aos-update-check"), str(aos)],
+                                    env=dict(os.environ, AOS_HOME=raw), capture_output=True, timeout=3)
+            self.assertEqual(result.returncode, 0)
+            state = home / "update/host-update-check"
+            self.assertFalse((state / "stamp").exists())
+            self.assertTrue((state / "retry").exists())
+            self.assertFalse((state / "lock").exists())
+
     def test_legacy_proposals_negotiate_a_backend_supported_version(self):
         for version in ("2024-11-05", "2025-03-26", "2025-06-18"):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as raw:

@@ -16,6 +16,44 @@ import signal
 import subprocess
 import sys
 import threading
+import time
+
+
+def cached_update_notice():
+    """Read only a fresh advisory; never make a network request on a host hook."""
+    state = Path(os.environ.get("AOS_HOME", str(Path.home() / ".aos"))) / "update/host-update-check"
+    try:
+        if time.time() - (state / "stamp").stat().st_mtime < 86400:
+            with (state / "available").open() as stream:
+                notice = stream.read(1024).strip()
+            if notice.startswith("Update available:"):
+                return notice
+    except (OSError, UnicodeError):
+        pass
+    return ""
+
+
+def refresh_update_notice():
+    """Detach a bounded advisory check, with all pipes disconnected from the host."""
+    home = Path(os.environ.get("AOS_HOME", str(Path.home() / ".aos")))
+    aos = Path(os.environ.get("AOS_BIN", str(home / "bin/aos")))
+    if not aos.is_file() or not os.access(aos, os.X_OK):
+        return  # Installation belongs to aos-up, never to an update notification.
+    try:
+        subprocess.Popen([str(Path(__file__).resolve().with_name("aos-update-check")), str(aos)],
+                         env=dict(os.environ, AOS_UPDATE_CHECK_TIMEOUT="60"),
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except OSError:
+        pass  # Advisory availability must not block an otherwise usable session.
+
+
+def session_hook(context):
+    notice = cached_update_notice()
+    refresh_update_notice()
+    if notice:
+        context += " Tell the user: " + notice
+    return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}
 
 
 STATUS_NAME = "aos_setup_status"
@@ -97,6 +135,13 @@ class Connection:
     def result(self, request, result):
         self.send({"jsonrpc": "2.0", "id": request["id"], "result": result})
 
+    def status_payload(self):
+        status = {"state": self.state, "message": self.detail}
+        notice = cached_update_notice()
+        if notice:
+            status["update_notice"] = notice
+        return status
+
     def error(self, request, text, code=-32000):
         self.send({"jsonrpc": "2.0", "id": request["id"], "error": {"code": code, "message": text}})
 
@@ -161,7 +206,7 @@ class Connection:
             self.result(message, {})
             return
         if method == "tools/call" and message.get("params", {}).get("name") == STATUS_NAME:
-            self.result(message, {"resultType": "complete", "content": [{"type": "text", "text": json.dumps({"state": self.state, "message": self.detail})}],
+            self.result(message, {"resultType": "complete", "content": [{"type": "text", "text": json.dumps(self.status_payload())}],
                                   "isError": self.state == "failed"})
             return
         if self.state != "ready":
@@ -252,8 +297,8 @@ class Connection:
 
 def main():
     if sys.argv[1:] == ["--hook"]:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext":
-            "AOS setup is managed by its MCP connection without blocking this session. Check aos_setup_status for starting, ready, or failed; do not assume tools are ready yet."}}), flush=True)
+        print(json.dumps(session_hook(
+            "AOS setup is managed by its MCP connection without blocking this session. Check aos_setup_status for starting, ready, or failed; do not assume tools are ready yet.")), flush=True)
         return 0
     return Connection([str(Path(__file__).resolve().with_name("aos-up")), *sys.argv[1:]]).run()
 

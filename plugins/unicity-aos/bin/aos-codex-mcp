@@ -78,7 +78,7 @@ class Connection(readiness.Connection):
                 self.error(message, "Tool arguments must be an object", -32602)
                 return
             if name == readiness.STATUS_NAME:
-                self.result(message, self.with_notice({"resultType": "complete", "content": [{"type": "text", "text": json.dumps({"state": self.state, "message": self.detail})}], "isError": self.state == "failed"}))
+                self.result(message, self.with_notice({"resultType": "complete", "content": [{"type": "text", "text": json.dumps(self.status_payload())}], "isError": self.state == "failed"}))
                 return
             if name not in (LIST, CALL):
                 self.error(message, "Use aos_list_tools and aos_call_tool for runtime capabilities", -32602)
@@ -214,7 +214,7 @@ class Connection(readiness.Connection):
 
 if __name__ == "__main__":
     if sys.argv[1:] == ["--hook"]:
-        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": INSTRUCTIONS + " Use aos_setup_status if readiness is relevant."}}), flush=True)
+        print(json.dumps(readiness.session_hook(INSTRUCTIONS + " Use aos_setup_status if readiness is relevant.")), flush=True)
         sys.exit(0)
 
     def interrupted(_signum, _frame):

@@ -54,6 +54,14 @@ visible through that tool and the host's MCP diagnostics; reconnect to retry
 after correcting the failure. SessionStart reports this setup path without
 waiting for downloads. Direct `aos-doctor` remains an explicit diagnostic.
 
+SessionStart also refreshes AOS update availability in a detached, bounded check;
+it never waits for network access. A discovered update is included in subsequent
+session-start context and in `aos_setup_status`, with the command to update.
+Successful checks are cached for a day; failed checks retry after five minutes
+and are never recorded as successful checks. This requires an AOS version that
+supports the read-only `aos update --check` command. Older versions remain usable,
+but cannot provide this advisory. This does not automatically install an update.
+
 ## Host packs
 
 Oracle packs are additive components, not replacement operating-system

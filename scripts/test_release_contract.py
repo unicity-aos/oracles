@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -224,6 +225,99 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             self.assertTrue(b3sum_called.is_file())
             self.assertFalse((artifacts / "BLAKE3SUMS.txt").exists())
+
+
+class LatestInstallerTests(unittest.TestCase):
+    def test_host_install_entrypoints_default_to_latest(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            installer = root / "installer.sh"
+            installer.write_text('#!/bin/sh\nprintf "%s\\n" "$*"\n')
+            for host in ("claude", "grok", "unicity-aos"):
+                plugin = ROOT / "plugins" / host
+                for override in ((), ("--oracle-version", "2026.9.1")):
+                    env = dict(os.environ, AOS_PLUGIN_ROOT=str(plugin),
+                               AOS_ORACLES_INSTALLER=str(installer))
+                    env.pop("AOS_ORACLES_VERSION", None)
+                    result = subprocess.run(
+                        [str(plugin / "bin/aos-install"), "--host", "codex", *override],
+                        env=env, capture_output=True, text=True, check=True)
+                    expected = override[-1] if override else "latest"
+                    self.assertIn(f"--oracle-version {expected}", result.stdout)
+                source = (plugin / "bin/aos-install").read_text()
+                self.assertIn("https://aos.unicity.ai/oracle-install.sh", source)
+
+    def probe(self, url: str, extra: tuple[str, ...] = (), fail: bool = False,
+              repository: str = "unicity-aos/oracles") -> tuple[str, str]:
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            curl = root / "curl"
+            curl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$PROBE_LOG"\n'
+                            'test "$PROBE_FAIL" = 0 || exit 22\nprintf "%s" "$PROBE_URL"\n')
+            curl.chmod(0o700)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                       AOS_HOME=str(root / "home"), PROBE_LOG=str(root / "calls"),
+                       PROBE_URL=url, PROBE_FAIL=str(int(fail)))
+            for name in ("AOS_ORACLE_ASSETS", "AOS_ORACLES_VERSION", "AOS_ORACLES_REPO"):
+                env.pop(name, None)
+            env["AOS_ORACLES_REPO"] = repository
+            # Stop after resolution/argument validation, before any installation.
+            result = subprocess.run(["sh", str(ROOT / "install.sh"), *extra,
+                                     "--aos-channel", "invalid-probe-channel"],
+                                    env=env, capture_output=True, text=True, timeout=5)
+            calls = (root / "calls").read_text() if (root / "calls").exists() else ""
+            self.assertFalse((root / "home").exists())
+            self.assertNotEqual(result.returncode, 0)
+            return result.stderr, calls
+
+    def test_default_resolves_new_releases_without_a_source_bump(self) -> None:
+        for version in ("2026.9.1", "2026.9.9"):
+            error, calls = self.probe("https://github.com/unicity-aos/oracles/releases/tag/v" + version)
+            self.assertIn("invalid AOS channel", error)
+            self.assertIn("https://github.com/unicity-aos/oracles/releases/latest", calls)
+            self.assertIn("%{url_effective}", calls)
+
+    def test_exact_override_does_not_resolve_latest(self) -> None:
+        error, calls = self.probe("", ("--oracle-version", "2026.9.1"))
+        self.assertIn("invalid AOS channel", error)
+        self.assertEqual(calls, "")
+
+    def test_failed_or_unexpected_resolution_never_falls_back_to_a_baked_version(self) -> None:
+        for url, fail in (("", True), ("https://evil.example/releases/tag/v2026.9.9", False),
+                          ("https://github.com/unicity-aos/oracles/releases/tag/v2026.9.9-rc1", False)):
+            error, _ = self.probe(url, fail=fail)
+            self.assertNotIn("invalid AOS channel", error)
+
+    def test_local_assets_require_an_explicit_version_without_network(self) -> None:
+        error, calls = self.probe("", ("--local-assets", "/nonexistent-fixture"))
+        self.assertIn("explicit --oracle-version", error)
+        self.assertEqual(calls, "")
+
+    def test_invalid_repository_is_rejected_before_network(self) -> None:
+        for repository in ("owner/*", "owner/repo?x", "owner/repo/extra", "../repo"):
+            error, calls = self.probe("", repository=repository)
+            self.assertIn("invalid Oracle repository", error)
+            self.assertEqual(calls, "")
+
+    def test_missing_download_or_python_tool_fails_before_home_mutation(self) -> None:
+        commands = "awk basename cat chmod cp curl diff find grep ln mkdir mktemp mv pwd python3 rm sed sort tar tr uniq uname flock lockf".split()
+        for missing in ("curl", "python3"):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as raw:
+                root = pathlib.Path(raw)
+                for command in commands:
+                    executable = shutil.which(command)
+                    if executable and command != missing:
+                        (root / command).symlink_to(executable)
+                env = dict(os.environ, PATH=raw, AOS_HOME=str(root / "home"))
+                for name in ("AOS_ORACLE_ASSETS", "AOS_ORACLES_VERSION", "AOS_ORACLES_REPO"):
+                    env.pop(name, None)
+                result = subprocess.run(
+                    ["/bin/sh", str(ROOT / "install.sh"), "--oracle-version", "2026.9.2",
+                     "--host", "codex", "--yes", "--no-install-aos"],
+                    env=env, capture_output=True, text=True, timeout=5)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(missing, result.stderr)
+                self.assertFalse((root / "home").exists())
 
 
 if __name__ == "__main__":

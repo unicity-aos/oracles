@@ -31,6 +31,16 @@ curl -fsSL https://raw.githubusercontent.com/unicity-aos/oracles/main/install.sh
   | sh -s -- --host codex
 ```
 
+Normal installs reconcile AOS against its current stable channel, including
+when an older AOS is already installed. `--no-install-aos` explicitly reuses
+the existing AOS installation instead. Choose `--aos-channel` or `--aos-version`
+only when intentionally overriding stable.
+
+The default Oracle version is resolved once from the latest published GitHub
+release, then its artifacts are verified against that exact tag's Sigstore
+identity. `--oracle-version` or `AOS_ORACLES_VERSION` explicitly pins a version;
+local asset fixtures require an explicit version and never resolve online.
+
 The installer is idempotent. It provisions a least-authority host principal,
 installs the exact signed oracle pack, grants that principal only its selected
 AOS services, and installs the host marketplace plugin. It writes product state

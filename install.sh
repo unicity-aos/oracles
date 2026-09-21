@@ -4,7 +4,7 @@ set -eu
 umask 077
 
 ORACLES_REPO="${AOS_ORACLES_REPO:-unicity-aos/oracles}"
-ORACLES_VERSION="${AOS_ORACLES_VERSION:-2026.9.2}"
+ORACLES_VERSION="${AOS_ORACLES_VERSION:-latest}"
 AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/base-install.sh}"
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 AOS_CHANNEL=""
@@ -207,7 +207,7 @@ Usage: install.sh [options]
   --host HOST       install claude, codex, or grok (repeatable)
   --all             install every supported host
   --yes, -y         non-interactive host-pack provisioning
-  --oracle-version V exact signed oracle pack version (default: 2026.9.2)
+  --oracle-version V exact signed oracle pack version (default: latest published)
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
@@ -236,6 +236,7 @@ while [ "$#" -gt 0 ]; do
     --oracle-version)
       shift
       ORACLES_VERSION="${1:-}"
+      [ -n "$ORACLES_VERSION" ] || die "--oracle-version requires a version"
       ;;
     --aos-channel)
       shift
@@ -266,6 +267,25 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+printf '%s\n' "$ORACLES_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$' \
+  || die "invalid Oracle repository '$ORACLES_REPO'"
+if [ -z "$LOCAL_ASSETS" ]; then
+  have curl || die "curl is required to download Oracle releases"
+fi
+if [ "$ORACLES_VERSION" = latest ]; then
+  [ -z "$LOCAL_ASSETS" ] || die "local assets require an explicit --oracle-version"
+  # Resolve once without the rate-limited GitHub API, then verify all artifacts
+  # against that exact release tag's Sigstore identity below.
+  release_url=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    -fsSL --max-time 30 -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$ORACLES_REPO/releases/latest") \
+    || die "could not resolve the latest published Oracle release"
+  prefix="https://github.com/$ORACLES_REPO/releases/tag/v"
+  case "$release_url" in
+    "$prefix"*) ORACLES_VERSION=${release_url#"$prefix"} ;;
+    *) die "latest Oracle release redirected outside the expected repository" ;;
+  esac
+fi
 printf '%s\n' "$ORACLES_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || die "invalid oracle version '$ORACLES_VERSION'"
 [ -z "$AOS_CHANNEL" ] || [ -z "$AOS_VERSION" ] \
@@ -287,7 +307,7 @@ fi
 require_commands() {
   missing=""
   for command in \
-    awk basename cat chmod cp diff find grep ln mkdir mktemp mv pwd rm sed sort tar tr uniq uname
+    awk basename cat chmod cp diff find grep ln mkdir mktemp mv pwd python3 rm sed sort tar tr uniq uname
   do
     have "$command" || missing="$missing $command"
   done
@@ -556,7 +576,8 @@ validate_runtime_compatibility_document() {
 }
 
 ensure_aos() {
-  if [ -x "$AOS_HOME_DIR/bin/aos" ] && [ -z "$AOS_CHANNEL" ] && [ -z "$AOS_VERSION" ]; then
+  if [ "$NO_INSTALL_AOS" -eq 1 ] && [ -x "$AOS_HOME_DIR/bin/aos" ] \
+    && [ -z "$AOS_CHANNEL" ] && [ -z "$AOS_VERSION" ]; then
     PATH="$AOS_HOME_DIR/bin:$PATH"
     export PATH
     return 0
@@ -816,9 +837,13 @@ capsules_for() {
 aos_capsules_for() {
   case "$1" in
     claude|codex|grok)
+      printf '%s\n' 'aos-mcp required'
+      # Published 2026.9.1 predates the hook adapter dependency. Keep its
+      # authenticated pack contract intact; newer packs must include it.
+      if [ "$ORACLES_VERSION" != 2026.9.1 ]; then
+        printf '%s\n' 'aos-hook-adapter-oracle required'
+      fi
       printf '%s\n' \
-        'aos-mcp required' \
-        'aos-hook-adapter-oracle required' \
         'aos-skills required' \
         'aos-forge if-present'
       ;;
@@ -1286,8 +1311,13 @@ prepare_plugin_snapshot() {
   PLUGIN_SNAPSHOT="$stage"
   # Bind installation-local configuration before exact snapshot comparison, so
   # repeat installs compare the same configured bytes instead of the template.
-  python3 "$stage/plugins/unicity-aos/bin/aos-configure-mcp" \
-    --installed-root "$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION/plugins/unicity-aos"
+  configure_mcp="$stage/plugins/unicity-aos/bin/aos-configure-mcp"
+  if [ -f "$configure_mcp" ]; then
+    python3 "$configure_mcp" \
+      --installed-root "$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION/plugins/unicity-aos"
+  elif [ "$ORACLES_VERSION" != 2026.9.1 ]; then
+    die "plugin snapshot is missing aos-configure-mcp"
+  fi
 }
 
 capture_receipt_rollback_state() {

@@ -226,5 +226,51 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             self.assertFalse((artifacts / "BLAKE3SUMS.txt").exists())
 
 
+class LatestInstallerTests(unittest.TestCase):
+    def probe(self, url, extra=(), fail=False):
+        with tempfile.TemporaryDirectory() as raw:
+            root = pathlib.Path(raw)
+            curl = root / "curl"
+            curl.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$PROBE_LOG"\n'
+                            'test "$PROBE_FAIL" = 0 || exit 22\nprintf "%s" "$PROBE_URL"\n')
+            curl.chmod(0o700)
+            env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                       AOS_HOME=str(root / "home"), PROBE_LOG=str(root / "calls"),
+                       PROBE_URL=url, PROBE_FAIL=str(int(fail)))
+            for name in ("AOS_ORACLE_ASSETS", "AOS_ORACLES_VERSION", "AOS_ORACLES_REPO"):
+                env.pop(name, None)
+            # Stop after resolution/argument validation, before any installation.
+            result = subprocess.run(["sh", str(ROOT / "install.sh"), *extra,
+                                     "--aos-channel", "invalid-probe-channel"],
+                                    env=env, capture_output=True, text=True, timeout=5)
+            calls = (root / "calls").read_text() if (root / "calls").exists() else ""
+            self.assertFalse((root / "home").exists())
+            self.assertNotEqual(result.returncode, 0)
+            return result.stderr, calls
+
+    def test_default_resolves_new_releases_without_a_source_bump(self):
+        for version in ("2026.9.1", "2026.9.9"):
+            error, calls = self.probe("https://github.com/unicity-aos/oracles/releases/tag/v" + version)
+            self.assertIn("invalid AOS channel", error)
+            self.assertIn("https://github.com/unicity-aos/oracles/releases/latest", calls)
+            self.assertIn("%{url_effective}", calls)
+
+    def test_exact_override_does_not_resolve_latest(self):
+        error, calls = self.probe("", ("--oracle-version", "2026.9.1"))
+        self.assertIn("invalid AOS channel", error)
+        self.assertEqual(calls, "")
+
+    def test_failed_or_unexpected_resolution_never_falls_back_to_a_baked_version(self):
+        for url, fail in (("", True), ("https://evil.example/releases/tag/v2026.9.9", False),
+                          ("https://github.com/unicity-aos/oracles/releases/tag/v2026.9.9-rc1", False)):
+            error, _ = self.probe(url, fail=fail)
+            self.assertNotIn("invalid AOS channel", error)
+
+    def test_local_assets_require_an_explicit_version_without_network(self):
+        error, calls = self.probe("", ("--local-assets", "/nonexistent-fixture"))
+        self.assertIn("explicit --oracle-version", error)
+        self.assertEqual(calls, "")
+
+
 if __name__ == "__main__":
     unittest.main()

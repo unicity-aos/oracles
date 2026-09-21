@@ -4,7 +4,7 @@ set -eu
 umask 077
 
 ORACLES_REPO="${AOS_ORACLES_REPO:-unicity-aos/oracles}"
-ORACLES_VERSION="${AOS_ORACLES_VERSION:-2026.9.2}"
+ORACLES_VERSION="${AOS_ORACLES_VERSION:-latest}"
 AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/base-install.sh}"
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 AOS_CHANNEL=""
@@ -207,7 +207,7 @@ Usage: install.sh [options]
   --host HOST       install claude, codex, or grok (repeatable)
   --all             install every supported host
   --yes, -y         non-interactive host-pack provisioning
-  --oracle-version V exact signed oracle pack version (default: 2026.9.2)
+  --oracle-version V exact signed oracle pack version (default: latest published)
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
@@ -236,6 +236,7 @@ while [ "$#" -gt 0 ]; do
     --oracle-version)
       shift
       ORACLES_VERSION="${1:-}"
+      [ -n "$ORACLES_VERSION" ] || die "--oracle-version requires a version"
       ;;
     --aos-channel)
       shift
@@ -266,6 +267,21 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+if [ "$ORACLES_VERSION" = latest ]; then
+  [ -z "$LOCAL_ASSETS" ] || die "local assets require an explicit --oracle-version"
+  have curl || die "curl is required to resolve the latest Oracle release"
+  # Resolve once without the rate-limited GitHub API, then verify all artifacts
+  # against that exact release tag's Sigstore identity below.
+  release_url=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    -fsSL --max-time 30 -o /dev/null -w '%{url_effective}' \
+    "https://github.com/$ORACLES_REPO/releases/latest") \
+    || die "could not resolve the latest published Oracle release"
+  prefix="https://github.com/$ORACLES_REPO/releases/tag/v"
+  case "$release_url" in
+    "$prefix"*) ORACLES_VERSION=${release_url#"$prefix"} ;;
+    *) die "latest Oracle release redirected outside the expected repository" ;;
+  esac
+fi
 printf '%s\n' "$ORACLES_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || die "invalid oracle version '$ORACLES_VERSION'"
 [ -z "$AOS_CHANNEL" ] || [ -z "$AOS_VERSION" ] \

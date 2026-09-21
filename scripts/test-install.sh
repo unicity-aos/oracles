@@ -459,6 +459,7 @@ chmod +x \
 export PATH="$fake_bin:/usr/bin:/bin"
 export AOS_HOME="$home/.aos"
 export AOS_ORACLE_ASSETS="$assets"
+export AOS_ORACLES_VERSION="$ORACLE_VERSION"
 export TEST_LOG="$work/commands.log"
 export TEST_STATE="$work/state"
 export TEST_PRODUCT_ASSETS="$product_assets"

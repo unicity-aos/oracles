@@ -2271,4 +2271,60 @@ for abandoned in missing malformed; do
   test -f "$abandoned_home/extensions/oracles/codex/Pack.lock"
 done
 
+# An already-installed AOS does not silently opt out of stable reconciliation.
+stable_home="$home/stable-reconcile/.aos"
+mkdir -p "$stable_home/bin"
+cp "$fake_bin/aos" "$stable_home/bin/aos"
+stable_installer="$work/stable-installer.sh"
+printf '%s\n' '#!/bin/sh' 'printf "stable-installer %s\n" "$*" >> "$TEST_LOG"' > "$stable_installer"
+stable_start=$(wc -l < "$TEST_LOG")
+AOS_HOME="$stable_home" AOS_INSTALL_URL="$stable_installer" \
+  "$repo_root/install.sh" --plugins-only --host codex --yes
+tail -n "+$((stable_start + 1))" "$TEST_LOG" > "$work/stable-reconcile.log"
+grep -Fxq 'stable-installer --yes' "$work/stable-reconcile.log"
+
+# The installer must also accept the last published pack, not only the next
+# release's fixtures. That pack has no hook-adapter dependency or MCP configurer.
+legacy_assets="$work/legacy-assets"
+legacy_plugins="$work/legacy-plugins"
+mkdir -p "$legacy_assets" "$legacy_plugins"
+python3 - "$assets" "$legacy_assets" "$ORACLE_VERSION" <<'PY'
+from pathlib import Path
+import sys
+source, destination = map(Path, sys.argv[1:3])
+for host in ("claude", "codex", "grok"):
+    text = (source / f"{host}.toml").read_text()
+    text = text.replace(f'version = "{sys.argv[3]}"', 'version = "2026.9.1"')
+    text = text.replace('[[aos-capsule]]\nname = "aos-hook-adapter-oracle"\navailability = "required"\n\n', '')
+    (destination / f"{host}.toml").write_text(text)
+PY
+cp "$assets/runtime-compatibility.toml" "$legacy_assets/runtime-compatibility.toml"
+tar -xzf "$assets/aos-oracle-plugins.tar.gz" -C "$legacy_plugins"
+rm "$legacy_plugins/plugins/unicity-aos/bin/aos-configure-mcp"
+tar -czf "$legacy_assets/aos-oracle-plugins.tar.gz" -C "$legacy_plugins" .
+# Optional actual published assets exercise the same path with release bytes.
+if [ -n "${TEST_PUBLISHED_ORACLE_ASSETS:-}" ]; then
+  for host in claude codex grok; do
+    cp "$TEST_PUBLISHED_ORACLE_ASSETS/$host-pack.toml" "$legacy_assets/$host.toml"
+  done
+  cp "$TEST_PUBLISHED_ORACLE_ASSETS/runtime-compatibility.toml" "$legacy_assets/runtime-compatibility.toml"
+  cp "$TEST_PUBLISHED_ORACLE_ASSETS/aos-oracle-plugins.tar.gz" "$legacy_assets/aos-oracle-plugins.tar.gz"
+fi
+write_fixture_checksums "$legacy_assets"
+for mode in full plugins; do
+  legacy_home="$home/legacy-$mode/.aos"
+  legacy_state="$work/legacy-$mode-state"
+  mkdir -p "$legacy_state"
+  legacy_args=(--no-install-aos)
+  if [ "$mode" = plugins ]; then legacy_args+=(--plugins-only); fi
+  AOS_ORACLE_ASSETS="$legacy_assets" AOS_ORACLES_VERSION=2026.9.1 \
+    TEST_STATE="$legacy_state" AOS_HOME="$legacy_home" \
+    "$repo_root/install.sh" --host codex --yes "${legacy_args[@]}"
+  test -d "$legacy_home/extensions/oracles/plugins/2026.9.1"
+  if [ "$mode" = full ]; then
+    test -f "$legacy_state/granted-codex-code-aos-mcp"
+    test ! -e "$legacy_state/granted-codex-code-aos-hook-adapter-oracle"
+  fi
+done
+
 python3 "$repo_root/scripts/test_release_contract.py"

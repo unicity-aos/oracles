@@ -955,7 +955,7 @@ def main() -> None:
         original_compatibility = compatibility.read_text()
         write_authenticated_runtime(home, environment, "2026.9.1")
 
-        for accepted in ("2026.9.1", "2026.9.2", "2026.10.0"):
+        for accepted in ("2026.9.1", "2026.9.2", "2026.9.4", "2026.10.0"):
             write_authenticated_runtime(home, environment, accepted)
             accepted_env = dict(environment)
             accepted_env["TEST_RUNTIME_VERSION"] = accepted

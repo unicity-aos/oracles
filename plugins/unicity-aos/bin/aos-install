@@ -24,13 +24,13 @@ BUNDLED_ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
 printf '%s\n' "$BUNDLED_ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
   || die "plugin snapshot has an invalid Oracle release identity"
 
-INSTALL_URL="${AOS_ORACLES_INSTALL_URL:-https://raw.githubusercontent.com/unicity-aos/oracles/v$BUNDLED_ORACLE_VERSION/install.sh}"
+INSTALL_URL="${AOS_ORACLES_INSTALL_URL:-https://aos.unicity.ai/oracle-install.sh}"
 LOCAL_INSTALLER="${AOS_ORACLES_INSTALLER:-}"
 HOST="$AOS_HOST"
 ASSUME_YES=0
 AOS_CHANNEL=""
 AOS_VERSION=""
-ORACLE_VERSION="$BUNDLED_ORACLE_VERSION"
+ORACLE_VERSION="${AOS_ORACLES_VERSION:-latest}"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -43,8 +43,8 @@ Usage: aos-install [--host claude|codex|grok] [installer options]
   --oracle-version V   install an exact signed oracle-pack release
   --yes, -y            non-interactive provisioning
 
-It installs the signed AOS base when needed and reconciles only the selected
-host pack to this plugin snapshot's exact Oracle release.
+By default it follows stable AOS and the latest published Oracle release.
+Explicit version options remain available for deliberate reproducibility.
 USAGE
 }
 

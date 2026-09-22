@@ -15,6 +15,7 @@ ALL_HOSTS=0
 NO_INSTALL_AOS=0
 SKIP_HOST_PLUGIN=0
 PLUGINS_ONLY=0
+RESULT_FILE=
 REQUESTED_HOSTS=""
 LOCAL_ASSETS="${AOS_ORACLE_ASSETS:-}"
 WORK=""
@@ -213,6 +214,7 @@ Usage: install.sh [options]
   --local-assets D  use locally built capsules and pack manifests for testing
   --aos-installer S use an alternate AOS installer URL or local path for testing
   --plugins-only    install selected host marketplace plugins; provision on host start
+  --result-file F   write successful provisioned host/principal pairs as JSON (new file)
   --no-install-aos  fail instead of invoking the canonical AOS installer
   --skip-host-plugin
                      provision capsules/receipt without reinstalling the active host plugin
@@ -256,6 +258,11 @@ while [ "$#" -gt 0 ]; do
       [ -n "$AOS_INSTALL_URL" ] || die "--aos-installer requires a URL or local path"
       ;;
     --plugins-only) PLUGINS_ONLY=1 ;;
+    --result-file)
+      shift
+      RESULT_FILE=${1:-}
+      [ -n "$RESULT_FILE" ] || die "--result-file requires a path"
+      ;;
     --no-install-aos) NO_INSTALL_AOS=1 ;;
     --skip-host-plugin) SKIP_HOST_PLUGIN=1 ;;
     --approve-untrusted)
@@ -266,6 +273,17 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+case "$AOS_HOME_DIR" in /*) ;; *) die "AOS_HOME must be an absolute path" ;; esac
+if [ -n "${AOS_BIN_DIR:-}" ]; then
+  case "$AOS_BIN_DIR" in /*) ;; *) die "AOS_BIN_DIR must be an absolute path" ;; esac
+fi
+if [ -n "$RESULT_FILE" ]; then
+  case "$RESULT_FILE" in /*) ;; *) die "--result-file requires an absolute path" ;; esac
+  [ "$PLUGINS_ONLY" -eq 0 ] || die "--result-file requires full principal provisioning"
+  [ ! -e "$RESULT_FILE" ] && [ ! -L "$RESULT_FILE" ] \
+    || die "--result-file must name a new file"
+fi
 
 printf '%s\n' "$ORACLES_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$' \
   || die "invalid Oracle repository '$ORACLES_REPO'"
@@ -576,9 +594,10 @@ validate_runtime_compatibility_document() {
 }
 
 ensure_aos() {
-  if [ "$NO_INSTALL_AOS" -eq 1 ] && [ -x "$AOS_HOME_DIR/bin/aos" ] \
+  aos_bin=${AOS_BIN_DIR:-$AOS_HOME_DIR/bin}
+  if [ "$NO_INSTALL_AOS" -eq 1 ] && [ -x "$aos_bin/aos" ] \
     && [ -z "$AOS_CHANNEL" ] && [ -z "$AOS_VERSION" ]; then
-    PATH="$AOS_HOME_DIR/bin:$PATH"
+    PATH="$aos_bin:$PATH"
     export PATH
     return 0
   fi
@@ -616,13 +635,13 @@ ensure_aos() {
   [ -z "$AOS_CHANNEL" ] || set -- "$@" --channel "$AOS_CHANNEL"
   [ -z "$AOS_VERSION" ] || set -- "$@" --version "$AOS_VERSION"
   sh "$@"
-  if [ -x "$AOS_HOME_DIR/bin/aos" ]; then
-    PATH="$AOS_HOME_DIR/bin:$PATH"
+  if [ -x "$aos_bin/aos" ]; then
+    PATH="$aos_bin:$PATH"
     export PATH
   fi
-  [ -x "$AOS_HOME_DIR/bin/aos" ] \
-    || die "AOS installer did not provision $AOS_HOME_DIR/bin/aos"
-  PATH="$AOS_HOME_DIR/bin:$PATH"
+  [ -x "$aos_bin/aos" ] \
+    || die "AOS installer did not provision $aos_bin/aos"
+  PATH="$aos_bin:$PATH"
   export PATH
   if [ -n "$AOS_VERSION" ]; then
     installed=$(aos --version | awk 'NF { value = $NF } END { print value }')
@@ -1906,4 +1925,30 @@ for host in $hosts; do
 done
 
 restore_runtime_state
+if [ -n "$RESULT_FILE" ]; then
+  set --
+  for host in $hosts; do
+    set -- "$@" "$host" "$(principal_for "$host")"
+  done
+  python3 - "$RESULT_FILE" "$@" <<'PY'
+import json, os, sys, tempfile
+pairs = sys.argv[2:]
+result = {"schema": "aos-oracle-provisioning.v1", "hosts": [
+    {"host": host, "principal": principal}
+    for host, principal in zip(pairs[::2], pairs[1::2])
+]}
+encoded = json.dumps(result) + "\n"
+destination = sys.argv[1]
+fd, staged = tempfile.mkstemp(prefix=".oracle-result-", dir=os.path.dirname(destination))
+try:
+    with os.fdopen(fd, "w") as output:
+        output.write(encoded)
+        output.flush()
+        os.fsync(output.fileno())
+    # Publish complete bytes without replacing any existing file or symlink.
+    os.link(staged, destination)
+finally:
+    os.unlink(staged)
+PY
+fi
 say "Unicity AOS oracle installation complete. Start a new host session to load the plugin."

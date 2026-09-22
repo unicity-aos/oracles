@@ -17,12 +17,16 @@ try:
         raise ValueError()
     with open(path, encoding="utf-8") as stream:
         value = json.load(stream)
+    if not isinstance(value, dict) or not isinstance(value.get("items"), list):
+        raise ValueError()
     age = time.time() - value["checked_at"]
     if value["schema_version"] != 1 or not 0 <= age < 86400:
         raise ValueError()
     names = {"aos": "AOS", "oracle:codex": "Oracle for Codex", "oracle:claude": "Oracle for Claude", "oracle:grok": "Oracle for Grok"}
     notices = []
     for item in value["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise ValueError()
         name = names.get(item.get("id"))
         version = item.get("candidate_version")
         if name and item.get("availability") == "available" and isinstance(version, str) and re.fullmatch(r"[0-9A-Za-z.+-]{1,100}", version):

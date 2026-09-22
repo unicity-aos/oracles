@@ -596,6 +596,9 @@ if grep -Eq '^aos |^(claude|grok) ' "$work/plugin-only.log"; then
 fi
 test ! -e "$plugin_only_home/runtime"
 test ! -e "$plugin_only_home/extensions/oracles/codex/Pack.lock"
+grep -Fqx "oracle-version = \"$ORACLE_VERSION\"" "$plugin_only_home/extensions/oracles/codex/PluginRegistration.toml"
+grep -Fqx 'host = "codex"' "$plugin_only_home/extensions/oracles/codex/PluginRegistration.toml"
+test ! -e "$plugin_only_home/extensions/oracles/claude/PluginRegistration.toml"
 test ! -e "$plugin_only_home/extensions/oracles/.install.lock"
 python3 - "$plugin_only_home" <<'PY'
 import json

@@ -62,6 +62,18 @@ and are never recorded as successful checks. This requires an AOS version that
 supports the read-only `aos update --check` command. Older versions remain usable,
 but cannot provide this advisory. This does not automatically install an update.
 
+Newer Command Centers expose `aos updates check` and an Updates page. Oracle
+reuses their fresh public product/plugin inventory without another network
+check; principal-scoped capsule names are never included in host advisories.
+The signed plugin archive includes its updater. `install.sh --check --json`
+verifies release metadata without installing AOS, registering a host, or
+starting a runtime. Applying an update still verifies the downloaded archive.
+
+Host registration is recorded separately in `PluginRegistration.toml`. A
+plugins-only install does not create a capsule-pack receipt and does not claim
+that existing coding sessions activated the new plugin. Older plugin snapshots
+need one public-installer rerun before in-app Oracle updates are available.
+
 ## Host packs
 
 Oracle packs are additive components, not replacement operating-system

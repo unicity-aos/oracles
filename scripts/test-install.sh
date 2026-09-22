@@ -626,7 +626,23 @@ printf 'existing claude pack\n' > "$work/claude-before"
 cp "$work/claude-before" "$AOS_HOME/extensions/oracles/claude/private-state"
 codex_start=$(wc -l < "$TEST_LOG")
 
-"$repo_root/install.sh" --host codex --yes --no-install-aos
+"$repo_root/install.sh" --host codex --yes --no-install-aos --result-file "$work/provisioned.json"
+python3 - "$work/provisioned.json" "$AOS_HOME" <<'PY'
+import json, pathlib, sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert result == {"schema": "aos-oracle-provisioning.v1", "hosts": [
+    {"host": "codex", "principal": "codex-code"}
+]}, result
+receipt = (pathlib.Path(sys.argv[2]) / "extensions/oracles/codex/current/Receipt.toml").read_text().splitlines()
+assert 'host = "codex"' in receipt
+assert 'principal = "codex-code"' in receipt
+PY
+if "$repo_root/install.sh" --plugins-only --result-file "$work/invalid-result.json" \
+  >"$work/invalid-result.log" 2>&1; then
+  echo "plugins-only produced a provisioning result" >&2
+  exit 1
+fi
+test ! -e "$work/invalid-result.json"
 
 codex_marketplace_root=$(cat "$TEST_STATE/codex-marketplace-root")
 [ "$codex_marketplace_root" = "$AOS_HOME/extensions/oracles/plugins/$ORACLE_VERSION" ]
@@ -2326,5 +2342,30 @@ for mode in full plugins; do
     test ! -e "$legacy_state/granted-codex-code-aos-hook-adapter-oracle"
   fi
 done
+
+# The real installer must report the entire selected set after full provisioning.
+all_home="$home/provisioned-hosts/.aos"
+all_state="$work/provisioned-hosts-state"
+mkdir -p "$all_state"
+AOS_HOME="$all_home" TEST_STATE="$all_state" AOS_BIN_DIR="$fake_bin" \
+  "$repo_root/install.sh" --host claude --host codex --host grok --yes --no-install-aos \
+    --result-file "$work/all-hosts.json"
+python3 - "$work/all-hosts.json" "$all_home" <<'PY'
+import json, pathlib, sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert result['schema'] == 'aos-oracle-provisioning.v1'
+assert result['hosts'] == [
+    {'host': host, 'principal': host + '-code'} for host in ('claude', 'codex', 'grok')
+]
+for entry in result['hosts']:
+    receipt = pathlib.Path(sys.argv[2]) / 'extensions/oracles' / entry['host'] / 'current/Receipt.toml'
+    assert 'principal = "' + entry['principal'] + '"' in receipt.read_text().splitlines()
+PY
+if "$repo_root/install.sh" --host codex --yes --no-install-aos --result-file relative.json \
+  >"$work/relative-result.log" 2>&1; then
+  echo "relative result path accepted" >&2
+  exit 1
+fi
+grep -Fq 'requires an absolute path' "$work/relative-result.log"
 
 python3 "$repo_root/scripts/test_release_contract.py"

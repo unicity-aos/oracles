@@ -46,6 +46,15 @@ installs the exact signed oracle pack, grants that principal only its selected
 AOS services, and installs the host marketplace plugin. It writes product state
 under `~/.aos`; it never imports or changes a standalone `~/.astrid` tree.
 
+Integrators that need principals immediately must use full provisioning, not
+`--plugins-only` (which defers it until host startup). Pass `--result-file /absolute/new/path.json`
+to receive `aos-oracle-provisioning.v1` JSON containing the selected `host` and
+`principal` pairs. The result is written only after every selected host completes
+pack provisioning, plugin registration, receipt creation, and runtime-state restoration.
+It is an installation handoff, not proof that a host has loaded its MCP plugin.
+Existing result files and relative paths are refused. `AOS_BIN_DIR` selects the
+configured AOS executable directory when a custom installation prefix is used.
+
 On first connection, MCP answers immediately while AOS provisioning runs.
 The `aos_setup_status` tool reports `starting`, `ready`, or `failed`. You can
 continue other work during setup; the connection announces the runtime tools

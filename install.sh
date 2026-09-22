@@ -15,6 +15,8 @@ ALL_HOSTS=0
 NO_INSTALL_AOS=0
 SKIP_HOST_PLUGIN=0
 PLUGINS_ONLY=0
+CHECK_ONLY=0
+JSON_OUTPUT=0
 REQUESTED_HOSTS=""
 LOCAL_ASSETS="${AOS_ORACLE_ASSETS:-}"
 WORK=""
@@ -204,6 +206,9 @@ usage() {
   cat <<'EOF'
 Usage: install.sh [options]
 
+  --check          verify release metadata without installing or starting AOS
+  --json           emit structured metadata (requires --check)
+
   --host HOST       install claude, codex, or grok (repeatable)
   --all             install every supported host
   --yes, -y         non-interactive host-pack provisioning
@@ -256,6 +261,8 @@ while [ "$#" -gt 0 ]; do
       [ -n "$AOS_INSTALL_URL" ] || die "--aos-installer requires a URL or local path"
       ;;
     --plugins-only) PLUGINS_ONLY=1 ;;
+    --check) CHECK_ONLY=1 ;;
+    --json) JSON_OUTPUT=1 ;;
     --no-install-aos) NO_INSTALL_AOS=1 ;;
     --skip-host-plugin) SKIP_HOST_PLUGIN=1 ;;
     --approve-untrusted)
@@ -266,6 +273,14 @@ while [ "$#" -gt 0 ]; do
   esac
   shift
 done
+
+if [ "$JSON_OUTPUT" -eq 1 ]; then
+  [ "$CHECK_ONLY" -eq 1 ] || die "--json requires --check"
+  exec 3>&1 1>&2
+fi
+if [ "$CHECK_ONLY" -eq 1 ] && [ -n "$LOCAL_ASSETS" ]; then
+  die "update discovery requires signed release metadata, not local assets"
+fi
 
 printf '%s\n' "$ORACLES_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$' \
   || die "invalid Oracle repository '$ORACLES_REPO'"
@@ -1283,6 +1298,10 @@ stage_release_metadata() {
   verify_blake3 "$RELEASE_STAGE/runtime-compatibility.toml" runtime-compatibility.toml
   validate_runtime_compatibility_document "$RELEASE_STAGE/runtime-compatibility.toml"
   PLUGIN_BLAKE3=$(expected_blake3 aos-oracle-plugins.tar.gz)
+  if [ -n "${AOS_EXPECTED_PLUGIN_BLAKE3:-}" ]; then
+    [ "$PLUGIN_BLAKE3" = "$AOS_EXPECTED_PLUGIN_BLAKE3" ] \
+      || die "Oracle plugin artifact changed since discovery; check again"
+  fi
   validate_plugin_archive "$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
 }
 
@@ -1806,6 +1825,28 @@ install_plugin() {
       grok plugin install "$plugin_root/plugins/grok" --trust >/dev/null
       ;;
   esac
+  # Host registration and pack provisioning are different transitions. In
+  # plugins-only mode the pack is deliberately provisioned on the next launch.
+  # Record registration only after the host command succeeds, without claiming
+  # that an already-running host has loaded the new plugin.
+  registration_root="$AOS_HOME_DIR/extensions/oracles/$host"
+  ensure_contained_directory "$registration_root" "plugin registration root"
+  registration="$registration_root/PluginRegistration.toml"
+  [ ! -L "$registration" ] || die "plugin registration is a symlink"
+  [ ! -e "$registration" ] || [ -f "$registration" ] || die "plugin registration is not regular"
+  registration_stage=$(mktemp "$registration_root/.registration.XXXXXX")
+  {
+    printf 'schema-version = 1\n'
+    printf 'oracle-version = "%s"\n' "$ORACLES_VERSION"
+    printf 'host = "%s"\n' "$host"
+    printf 'source = "%s"\n' "$ASSET_SOURCE"
+    printf 'plugin-snapshot = "../../../plugins/%s"\n' "$ORACLES_VERSION"
+    printf 'plugin-blake3 = "%s"\n' "$PLUGIN_BLAKE3"
+  } > "$registration_stage"
+  chmod 600 "$registration_stage"
+  ensure_contained_directory "$registration_root" "plugin registration root"
+  mv -f "$registration_stage" "$registration"
+  mark_host_committed "$host"
   say "✓ $host marketplace plugin installed"
 }
 
@@ -1873,6 +1914,26 @@ write_receipt() {
   mark_host_committed "$host"
   NEW_RECEIPT=""
 }
+
+if [ "$CHECK_ONLY" -eq 1 ]; then
+  WORK=${WORK:-$(mktemp -d 2>/dev/null || mktemp -d -t aos-oracles)}
+  RELEASE_STAGE="$WORK/release"
+  mkdir "$RELEASE_STAGE"
+  ensure_cosign
+  download_verified BLAKE3SUMS.txt "$RELEASE_STAGE/BLAKE3SUMS.txt"
+  download_verified runtime-compatibility.toml "$RELEASE_STAGE/runtime-compatibility.toml"
+  validate_checksum_manifest "$RELEASE_STAGE/BLAKE3SUMS.txt"
+  validate_runtime_compatibility_document "$RELEASE_STAGE/runtime-compatibility.toml"
+  PLUGIN_BLAKE3=$(expected_blake3 aos-oracle-plugins.tar.gz) \
+    || die "signed release has no plugin archive"
+  if [ "$JSON_OUTPUT" -eq 1 ]; then
+    printf '{"schema_version":1,"kind":"oracle","version":"%s","plugin_blake3":"%s","verification":"metadata"}\n' \
+      "$ORACLES_VERSION" "$PLUGIN_BLAKE3" >&3
+  else
+    printf 'Oracle %s signed release metadata verified; no installation performed.\n' "$ORACLES_VERSION"
+  fi
+  exit 0
+fi
 
 ensure_b3sum
 hosts=$(select_hosts)

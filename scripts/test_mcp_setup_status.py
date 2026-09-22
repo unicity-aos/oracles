@@ -148,6 +148,26 @@ class SetupTests(unittest.TestCase):
             self.assertTrue((state / "retry").exists())
             self.assertFalse((state / "lock").exists())
 
+    def test_fresh_command_center_inventory_does_not_start_another_checker(self):
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            state = home / "update/command-center"
+            state.mkdir(parents=True)
+            (state / "inventory.json").write_text(json.dumps({
+                "schema_version": 1, "checked_at": int(time.time()), "items": [
+                    {"id": "oracle:codex", "candidate_version": "2026.10.0", "availability": "available"},
+                    {"id": "capsule:private:secret-name", "candidate_version": "1.0.0", "availability": "available"},
+                ]}))
+            aos = home / "aos"
+            aos.write_text("#!/bin/sh\ntouch \"$AOS_HOME/unexpected-check\"\nexit 1\n")
+            aos.chmod(0o700)
+            result = subprocess.run([str(ROOT / "plugins/common/bin/aos-update-check"), str(aos)],
+                                    env=dict(os.environ, AOS_HOME=raw), capture_output=True, timeout=2)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn(b"Oracle for Codex 2026.10.0", result.stdout)
+            self.assertNotIn(b"secret-name", result.stdout)
+            self.assertFalse((home / "unexpected-check").exists())
+
     def test_legacy_proposals_negotiate_a_backend_supported_version(self):
         for version in ("2024-11-05", "2025-03-26", "2025-06-18"):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as raw:

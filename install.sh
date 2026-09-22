@@ -274,6 +274,10 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 
+case "$AOS_HOME_DIR" in /*) ;; *) die "AOS_HOME must be an absolute path" ;; esac
+if [ -n "${AOS_BIN_DIR:-}" ]; then
+  case "$AOS_BIN_DIR" in /*) ;; *) die "AOS_BIN_DIR must be an absolute path" ;; esac
+fi
 if [ -n "$RESULT_FILE" ]; then
   case "$RESULT_FILE" in /*) ;; *) die "--result-file requires an absolute path" ;; esac
   [ "$PLUGINS_ONLY" -eq 0 ] || die "--result-file requires full principal provisioning"
@@ -1927,16 +1931,24 @@ if [ -n "$RESULT_FILE" ]; then
     set -- "$@" "$host" "$(principal_for "$host")"
   done
   python3 - "$RESULT_FILE" "$@" <<'PY'
-import json, os, sys
+import json, os, sys, tempfile
 pairs = sys.argv[2:]
 result = {"schema": "aos-oracle-provisioning.v1", "hosts": [
     {"host": host, "principal": principal}
     for host, principal in zip(pairs[::2], pairs[1::2])
 ]}
 encoded = json.dumps(result) + "\n"
-fd = os.open(sys.argv[1], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(fd, "w") as output:
-    output.write(encoded)
+destination = sys.argv[1]
+fd, staged = tempfile.mkstemp(prefix=".oracle-result-", dir=os.path.dirname(destination))
+try:
+    with os.fdopen(fd, "w") as output:
+        output.write(encoded)
+        output.flush()
+        os.fsync(output.fileno())
+    # Publish complete bytes without replacing any existing file or symlink.
+    os.link(staged, destination)
+finally:
+    os.unlink(staged)
 PY
 fi
 say "Unicity AOS oracle installation complete. Start a new host session to load the plugin."

@@ -2368,4 +2368,18 @@ if "$repo_root/install.sh" --host codex --yes --no-install-aos --result-file rel
 fi
 grep -Fq 'requires an absolute path' "$work/relative-result.log"
 
+# Refuse existing results and dangling symlinks before provisioning anything.
+printf 'preserve-existing-result\n' > "$work/existing-result.json"
+ln -s "$work/missing-result-target" "$work/symlink-result.json"
+for rejected_result in "$work/existing-result.json" "$work/symlink-result.json"; do
+  if "$repo_root/install.sh" --host codex --yes --no-install-aos \
+    --result-file "$rejected_result" >"$work/rejected-result.log" 2>&1; then
+    echo "existing result path accepted: $rejected_result" >&2
+    exit 1
+  fi
+done
+grep -Fxq 'preserve-existing-result' "$work/existing-result.json"
+test -L "$work/symlink-result.json"
+test ! -e "$work/missing-result-target"
+
 python3 "$repo_root/scripts/test_release_contract.py"

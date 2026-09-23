@@ -355,19 +355,46 @@ sha256_file() {
   fi
 }
 
+b3sum_install_hint() {
+  if [ "$(uname -s)" = Darwin ]; then
+    say "  brew install b3sum"
+  elif have apt-get; then
+    say "  sudo apt install b3sum"
+  elif have dnf; then
+    say "  sudo dnf install b3sum"
+  fi
+  say "  cargo install b3sum"
+}
+
+b3sum_missing_notice() {
+  say "b3sum (the BLAKE3 hash tool) is required and is not installed."
+  say "AOS identifies an installed capsule by the BLAKE3 hash of its WASM code."
+  say "The installer uses b3sum to confirm that each installed AOS capsule is the"
+  say "one in the signed distribution. Sigstore authenticates the downloaded"
+  say "archives, but it cannot make this comparison, so there is no way to skip it."
+  say "Install b3sum with one of:"
+  b3sum_install_hint
+}
+
+# b3sum is checked before any download or AOS change. Capsule identity
+# comparison (release_capsule_wasm_blake3) needs it on every path, so a
+# missing b3sum found later would stop an install that is half done.
 ensure_b3sum() {
-  if have b3sum; then
-    B3SUM=$(command -v b3sum)
-    return
-  fi
-  if [ -n "$LOCAL_ASSETS" ]; then
-    die "b3sum is required to verify unsigned local oracle assets"
-  fi
-  # Every downloaded release asset is independently verified by Sigstore
-  # against the pinned release-workflow identity. BLAKE3 is an additional
-  # byte-for-byte check when b3sum is available, not an installation
-  # prerequisite for an otherwise authenticated release.
-  B3SUM=""
+  while ! have b3sum; do
+    if [ "$ASSUME_YES" -eq 1 ] || ! ( : </dev/tty ) 2>/dev/null; then
+      b3sum_missing_notice >&2
+      die "b3sum is required; install it and run the installer again"
+    fi
+    b3sum_missing_notice >/dev/tty
+    printf '%s' "Install b3sum in another terminal, then press Enter to check again, or type q to quit: " >/dev/tty
+    answer=""
+    IFS= read -r answer </dev/tty \
+      || die "b3sum is required; install it and run the installer again"
+    case "$answer" in
+      q|Q|quit|exit) die "installation cancelled: b3sum is not installed" ;;
+    esac
+  done
+  B3SUM=$(command -v b3sum)
 }
 
 blake3_file() {
@@ -379,7 +406,6 @@ release_capsule_wasm_blake3() {
   rcw_name=$2
   rcw_member=$(printf '%s\n' "$rcw_name" | tr '-' '_')
   rcw_output="$WORK/release-$rcw_name.wasm"
-  [ -n "$B3SUM" ] || die "b3sum is required to authenticate AOS capsule '$rcw_name'"
   tar -xOf "$rcw_archive" "$rcw_member.wasm" >"$rcw_output" \
     || die "AOS capsule '$rcw_name' has no readable WASM member"
   blake3_file "$rcw_output"
@@ -1257,7 +1283,6 @@ verify_blake3() {
   name=$2
   expected=$(expected_blake3 "$name") \
     || die "release checksum manifest has no digest for $name"
-  [ -n "$B3SUM" ] || return 0
   actual=$(blake3_file "$path")
   printf '%s\n' "$actual" | grep -Eq '^[0-9a-f]{64}$' \
     || die "b3sum returned an invalid digest for $name"

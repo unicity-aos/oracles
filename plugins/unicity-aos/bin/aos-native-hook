@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""Bound host-hook delivery and make transport failure an explicit denial."""
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import signal
+import sys
+
+
+def refusal(event):
+    reason = "AOS policy could not be checked. Check AOS status and retry."
+    if event == "user_prompt_submit":
+        return {"decision": "block", "reason": reason}
+    specific = {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                "permissionDecisionReason": reason}
+    if event == "permission_request":
+        specific = {"hookEventName": "PermissionRequest",
+                    "decision": {"behavior": "deny", "message": reason}}
+    return {"hookSpecificOutput": specific}
+
+
+def valid_output(host, event, value):
+    if value == {}:
+        return True  # No objection: native host permissions remain in control.
+    if not isinstance(value, dict):
+        return False
+    if event == "user_prompt_submit" and value.get("decision") == "block":
+        return set(value) <= {"decision", "reason"} and isinstance(value.get("reason"), str)
+    specific = value.get("hookSpecificOutput")
+    if set(value) != {"hookSpecificOutput"} or not isinstance(specific, dict):
+        return False
+    expected = {"pre_tool_use": "PreToolUse", "user_prompt_submit": "UserPromptSubmit",
+                "permission_request": "PermissionRequest"}[event]
+    if specific.get("hookEventName") != expected:
+        return False
+    if event == "permission_request":
+        decision = specific.get("decision")
+        return (set(specific) == {"hookEventName", "decision"}
+                and isinstance(decision, dict) and set(decision) <= {"behavior", "message"}
+                and decision.get("behavior") == "deny" and isinstance(decision.get("message"), str))
+    if "additionalContext" in specific and not isinstance(specific["additionalContext"], str):
+        return False
+    allowed = {"hookEventName", "additionalContext"}
+    if event == "pre_tool_use":
+        allowed |= {"permissionDecision", "permissionDecisionReason"}
+        if "permissionDecision" in specific:
+            decisions = ("deny",) if host == "codex" else ("deny", "ask")
+            if (specific["permissionDecision"] not in decisions
+                    or not isinstance(specific.get("permissionDecisionReason"), str)):
+                return False
+    return set(specific) <= allowed
+
+
+def native_output(host, event, reply):
+    """Translate an authenticated AOS decision; only Oracle knows host schemas."""
+    if (not isinstance(reply, dict)
+            or set(reply) != {"schema_version", "event", "decision", "context"}
+            or type(reply["schema_version"]) is not int or reply["schema_version"] != 1
+            or reply["event"] != event):
+        raise ValueError("invalid policy reply")
+    decision, context = reply["decision"], reply["context"]
+    if (not isinstance(decision, dict)
+            or set(decision) - {"skip", "ask", "reason"}
+            or type(decision.get("skip")) is not bool
+            or type(decision.get("ask", False)) is not bool):
+        raise ValueError("missing or malformed binding decision")
+    reason = decision.get("reason")
+    if reason is not None and (not isinstance(reason, str) or len(reason.encode()) > 4096):
+        raise ValueError("invalid policy reason")
+    if context is not None and not isinstance(context, str):
+        raise ValueError("invalid context")
+    if host == "grok" and event == "permission_request":
+        raise ValueError("unsupported host event")
+    reason = reason if reason is not None else "AOS policy requires approval"
+    output = {}
+    if decision["skip"] or decision.get("ask", False):
+        if event == "user_prompt_submit":
+            output = {"decision": "block", "reason": reason}
+        elif event == "permission_request":
+            if decision["skip"]:
+                output = {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                          "decision": {"behavior": "deny", "message": reason}}}
+        elif event == "pre_tool_use":
+            output = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                      "permissionDecision": "deny" if decision["skip"] or host == "codex" else "ask",
+                      "permissionDecisionReason": reason}}
+        else:
+            raise ValueError("unsupported binding event")
+    if context and context.strip():
+        name = None
+        if event == "pre_tool_use":
+            name = "PreToolUse"
+        elif event == "user_prompt_submit" and host != "grok" and "decision" not in output:
+            name = "UserPromptSubmit"
+        if name:
+            output.setdefault("hookSpecificOutput", {"hookEventName": name})["additionalContext"] = context
+    return output
+
+
+def main():
+    if len(sys.argv) != 3:
+        return 2
+    host, event = sys.argv[1:]
+    if host not in ("codex", "claude", "grok") or event not in (
+            "pre_tool_use", "user_prompt_submit", "permission_request"):
+        return 2
+    if host == "grok" and event == "permission_request":
+        return 2
+    result = refusal(event)
+    try:
+        payload = sys.stdin.buffer.read(1024 * 1024 + 1)
+        if len(payload) > 1024 * 1024:
+            raise ValueError("oversized hook input")
+        launcher = Path(__file__).resolve().with_name("aos-up")
+        command = [str(launcher)] + (["codex"] if host == "codex" else [])
+        command += ["hook", event]
+        # Below the shortest registered binding-hook timeout (15 seconds),
+        # leaving the host time to consume an explicit refusal on failure.
+        with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, start_new_session=True) as child:
+            try:
+                output, _ = child.communicate(payload, timeout=10)
+            except subprocess.TimeoutExpired:
+                # The launcher may be waiting on an AOS subprocess. Retire the
+                # invocation group, not an unrelated persistent daemon.
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                child.communicate()
+                raise
+            if child.returncode:
+                raise ValueError("hook delivery failed")
+        if len(output) > 128 * 1024:
+            raise ValueError("oversized hook output")
+        # Empty output from an old/context-only CLI is not a policy decision.
+        result = native_output(host, event, json.loads(output))
+        if not valid_output(host, event, result):
+            raise ValueError("invalid hook output")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        result = refusal(event)
+    print(json.dumps(result, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

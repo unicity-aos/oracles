@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""Administrator-only, same-binding migration to Oracle-owned Claude hooks.
+
+Run with a trusted interpreter using -I. Inputs must come from verified release
+metadata; hashes here bind those selected bytes, not their publisher identity.
+"""
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import runpy
+import shlex
+import signal
+import stat
+import subprocess
+import sys
+import uuid
+
+HERE = Path(__file__).resolve().parent
+PLANNER = runpy.run_path(str(HERE / "aos-protected-settings"))
+ASSETS = {"aos-protected-hook", "aos-native-hook", "codewall-gate"}
+LIMIT = 64 * 1024 * 1024
+
+
+def digest(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def protected(path, directory=False, system_executable=False):
+    path = Path(PLANNER["absolute"](str(path)))
+    for ancestor in reversed(path.parents):
+        info = ancestor.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError("unprotected ancestor")
+    info = path.lstat()
+    kind = stat.S_ISDIR if directory else stat.S_ISREG
+    if not kind(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError("unprotected entry")
+    # macOS ships /usr/bin/python3 as a root-owned multi-link system binary.
+    # Generated assets must still have a single owner/path; this exception is
+    # restricted to the explicitly selected system interpreter, never helpers.
+    if system_executable and (directory or not info.st_mode & 0o111):
+        raise ValueError("invalid system interpreter")
+    if not directory and not system_executable and info.st_nlink != 1:
+        raise ValueError("aliased protected file")
+
+
+def read_file(path, limit=LIMIT):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as source:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size > limit:
+            raise ValueError("invalid source file")
+        data = source.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError("oversized source file")
+    return data
+
+
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_new(path, data, mode):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, "wb") as output:
+        output.write(data)
+        output.flush()
+        os.fchmod(output.fileno(), mode)
+        os.fsync(output.fileno())
+
+
+def stage(root, assets, identity):
+    generation = root / digest(identity)
+    if not generation.exists():
+        temporary = root / (".prepare-" + uuid.uuid4().hex)
+        temporary.mkdir(mode=0o700)
+        for name, data in assets.items():
+            write_new(temporary / name, data, 0o400 if name == "previous-settings.json" else 0o555)
+        sync_directory(temporary)
+        temporary.chmod(0o555)
+        os.rename(temporary, generation)
+        sync_directory(root)
+    protected(generation, directory=True)
+    if {entry.name for entry in generation.iterdir()} != set(assets):
+        raise ValueError("unexpected generation contents")
+    for name, data in assets.items():
+        protected(generation / name)
+        if read_file(generation / name) != data:
+            raise ValueError("generation bytes differ")
+    return generation
+
+
+def run_as(uid, command, payload):
+    account = pwd.getpwuid(uid)
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, user=uid, group=account.pw_gid,
+                          extra_groups=[], cwd="/", env={"PATH": "/usr/bin:/bin"},
+                          start_new_session=True) as child:
+        try:
+            stdout, _ = child.communicate(payload, timeout=12)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.communicate()
+            raise
+        if child.returncode or len(stdout) > 128 * 1024:
+            raise ValueError("replacement readiness failed")
+    return stdout
+
+
+def verify_ready(binding, replacement):
+    codec = runpy.run_path(str(Path(replacement["adapter"]).with_name("aos-native-hook")))
+    for event, native, action in [
+        ("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "printf oracle-readiness"}},
+         {"kind": "tool", "name": "Bash", "arguments": {"command": "printf oracle-readiness"}}),
+        ("UserPromptSubmit", {"prompt": "oracle-readiness"},
+         {"kind": "prompt", "text": "oracle-readiness"}),
+    ]:
+        normalized = PLANNER["EVENTS"][event]
+        command = [replacement["evaluator"], "--enforcer-source-id", binding["source"],
+                   "--event", normalized.replace("_", "-")]
+        if "service_socket" in binding:
+            output_format = "oracle-json"
+            command += ["--service-socket", binding["service_socket"], "--service-uid", str(binding["service_uid"]),
+                        "--service-installation-id", binding["service_installation_id"]]
+        else:
+            output_format = "oracle-local-json"
+            command += ["--principal", binding["principal"]]
+            if binding["audit_journal"] is not None:
+                command += ["--audit-journal", binding["audit_journal"],
+                            "--audit-installation-id", binding["audit_installation_id"]]
+            environment = ["/usr/bin/env", "ASTRID_HOME=" + binding["runtime_home"]]
+            if binding["runtime_run_dir"] is not None:
+                environment += ["ASTRID_RUN_DIR=" + binding["runtime_run_dir"]]
+            command = environment + command
+        # Readiness fails on unavailable policy/audit, unlike a delivered deny.
+        run_as(binding["supervised_uid"], command + ["--check"], b"")
+        neutral = json.loads(run_as(binding["supervised_uid"], command + ["--format", output_format],
+                             json.dumps({"schema_version": 1, "event": normalized, "action": action}).encode()))
+        expected = codec["native_output"]("claude", normalized, neutral)
+        planned_command = PLANNER["replacement_command"](binding, replacement, event)
+        result = json.loads(run_as(binding["supervised_uid"], shlex.split(planned_command),
+                                   json.dumps(native).encode()))
+        if result != expected or result == codec["refusal"](normalized):
+            raise ValueError("replacement did not deliver the evaluated decision")
+
+
+def activate(request, remove=False, check_only=False):
+    if os.geteuid() != 0:
+        raise ValueError("administrator deployment required")
+    fields = ("schema_version", "root", "settings", "settings_sha256", "binding", "python", "assets")
+    previous = request.get("previous_registration")
+    custody = request.get("custody_transition")
+    PLANNER["exact_fields"](request, fields + (("previous_registration",) if previous is not None else ())
+                            + (("custody_transition",) if custody is not None else ()))
+    if custody is not None and (previous is None or custody not in ("local_reenrolment", "service_rotation")):
+        raise ValueError("invalid custody transition")
+    if previous is not None:
+        PLANNER["exact_fields"](previous, ("binding", "replacement"))
+    if type(request["schema_version"]) is not int or request["schema_version"] != 1:
+        raise ValueError("unsupported deployment contract")
+    PLANNER["validate_binding"](request["binding"])
+    root, settings = Path(request["root"]), Path(request["settings"])
+    protected(root, directory=True)
+    protected(settings)
+    protected(request["python"], system_executable=True)
+    PLANNER["exact_fields"](request["assets"], ASSETS)
+    assets = {}
+    for name, source in request["assets"].items():
+        PLANNER["exact_fields"](source, ("path", "sha256"))
+        data = read_file(PLANNER["absolute"](source["path"]))
+        if digest(data) != source["sha256"]:
+            raise ValueError("release asset digest mismatch")
+        assets[name] = data
+    lock_path = settings.with_name(settings.name + ".aos-lock")
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "rb+") as lock:
+        protected(lock_path)
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        identity = json.dumps(request, sort_keys=True, separators=(",", ":")).encode()
+        current = read_file(settings, 1024 * 1024)
+        settings_mode = stat.S_IMODE(settings.stat().st_mode)
+        original = current
+        if digest(original) != request["settings_sha256"]:
+            # An interrupted retry may have committed settings already. The
+            # immutable baseline binds reconstruction to the selected document.
+            baseline = root / digest(identity) / "previous-settings.json"
+            protected(baseline)
+            original = read_file(baseline, 1024 * 1024)
+            if digest(original) != request["settings_sha256"]:
+                raise ValueError("settings changed since selection")
+        assets["previous-settings.json"] = original
+        generation = stage(root, assets, identity)
+        replacement = {"python": request["python"], "adapter": str(generation / "aos-protected-hook"),
+                       "evaluator": str(generation / "codewall-gate")}
+        plan_request = {"schema_version": 1, "host": "claude",
+                        "existing_settings": json.loads(original),
+                        "binding": request["binding"], "replacement": replacement}
+        if previous is None:
+            candidate = PLANNER["plan"](plan_request)
+        else:
+            plan_request.update(previous)
+            if custody is None:
+                candidate = PLANNER["repair_registration"](plan_request, request["binding"], replacement)
+            else:
+                candidate = PLANNER["rotate_registration"](plan_request, request["binding"], replacement, custody)
+        candidate_bytes = (json.dumps(candidate, indent=2) + "\n").encode()
+        if remove:
+            removal = PLANNER["remove_registration"]({"schema_version": 1, "host": "claude",
+                "existing_settings": candidate, "binding": request["binding"], "replacement": replacement})
+            removed_bytes = (json.dumps(removal, indent=2) + "\n").encode()
+            allowed = (candidate_bytes, removed_bytes)
+            candidate_bytes = removed_bytes
+        else:
+            allowed = (original, candidate_bytes)
+        if current not in allowed:
+            raise ValueError("settings changed since selection")
+        if check_only:
+            if not remove:
+                raise ValueError("preflight is only supported for removal")
+            return {"schema_version": 1, "generation": str(generation),
+                    "settings": str(settings), "settings_sha256": digest(current),
+                    "registration": "absent" if current == candidate_bytes else "present"}
+        if not remove:
+            verify_ready(request["binding"], replacement)
+        # Never replace an administrator's intervening edit. Cooperative
+        # deployers also hold the same stable lock inode throughout activation.
+        protected(settings)
+        if (read_file(settings, 1024 * 1024) != current
+                or stat.S_IMODE(settings.stat().st_mode) != settings_mode):
+            raise ValueError("settings changed during readiness")
+        if current != candidate_bytes:
+            temporary = settings.with_name("." + settings.name + ".oracle-" + uuid.uuid4().hex)
+            write_new(temporary, candidate_bytes, settings_mode)
+            os.replace(temporary, settings)
+            sync_directory(settings.parent)
+        return {"schema_version": 1, "generation": str(generation),
+                "settings": str(settings), "settings_sha256": digest(read_file(settings))}
+
+
+if __name__ == "__main__":
+    try:
+        if sys.argv[1:] not in ([], ["--remove"], ["--check-remove"]):
+            raise ValueError("unknown deployment operation")
+        raw = sys.stdin.buffer.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("oversized deployment request")
+        print(json.dumps(activate(json.loads(raw), remove=bool(sys.argv[1:]),
+                                  check_only=sys.argv[1:] == ["--check-remove"])))
+    except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        print("Protected Oracle activation failed; inspect deployment before retrying.", file=sys.stderr)
+        sys.exit(1)

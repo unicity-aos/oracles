@@ -216,20 +216,33 @@ hook_json_escape() {
 }
 
 host_session_id() {
-  host="$1"
-  payload_file="$2"
-  if [ -n "${ASTRID_SESSION_ID:-}" ]; then
-    hook_segment "$ASTRID_SESSION_ID"
-    return
-  fi
-  if command -v jq >/dev/null 2>&1; then
-    value=$(jq -r '.session_id // .thread_id // .threadId // .conversation_id // .conversationId // empty' "$payload_file" 2>/dev/null || true)
-    if [ -n "$value" ]; then
-      hook_segment "$host-$value"
-      return
-    fi
-  fi
-  hook_segment "$host-pid-${PPID:-$$}"
+  # Native delivery already requires Python. Do not collapse distinct IDs or
+  # invent a shared session from the parent process when jq is unavailable.
+  python3 - "$1" "$2" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+
+explicit = os.environ.get("ASTRID_SESSION_ID", "")
+if explicit:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", explicit):
+        raise SystemExit("aos-up: invalid explicit session identity")
+    print(explicit)
+else:
+    with open(sys.argv[2], encoding="utf-8") as stream:
+        payload = json.load(stream)
+    if not isinstance(payload, dict):
+        raise SystemExit("aos-up: missing host session identity")
+    value = next((payload[key] for key in (
+        "session_id", "sessionId", "thread_id", "threadId",
+        "conversation_id", "conversationId"
+    ) if payload.get(key) is not None), None)
+    if not isinstance(value, str) or not value:
+        raise SystemExit("aos-up: missing host session identity")
+    print(sys.argv[1] + "-" + hashlib.sha256(value.encode("utf-8")).hexdigest())
+PY
 }
 
 mint_host_hook_token() {
@@ -323,24 +336,28 @@ emit_host_hook() {
   [ -n "$event" ] || return 2
   host=$(hook_segment "$AOS_HOST")
   case "$host" in claude|grok) ;; *) return 2 ;; esac
+  format=context
+  case "$event" in pre_tool_use|user_prompt_submit|permission_request) format=native ;; esac
 
   tmp=$(mktemp "${TMPDIR:-/tmp}/aos-$host-hook.XXXXXX") || return 1
   trap 'rm -f "$tmp"' EXIT HUP INT TERM
   cat > "$tmp" || true
-  session_id=$(host_session_id "$host" "$tmp")
+  session_id=$(host_session_id "$host" "$tmp") || return 1
   if ! aos_resolve_apply 2>/dev/null; then
-    [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
+    [ "$format" != native ] && [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
     log "could not resolve the AOS command for the $host hook"
     return 127
   fi
-  capsule_ready
+  # Native policy delivery never bootstraps a daemon inside a timed hook.
+  # MCP/session startup owns provisioning; an unavailable runtime is refused.
+  if [ "$format" != native ]; then capsule_ready; fi
   if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
     token="$ASTRID_HOOK_TOKEN"
   else
     token=$(host_hook_token "$host" "$session_id") || return 1
   fi
   if ! aos_enter_product_workspace; then
-    [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
+    [ "$format" != native ] && [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
     log "could not enter the AOS runtime workspace for the $host hook"
     return 1
   fi
@@ -351,16 +368,22 @@ emit_host_hook() {
   }
   workspace=$(printf '%s\n' "$HOST_WORKSPACE" | cksum | sed 's/ .*//')
   context=""
+  wire_format=context
+  [ "$format" != native ] || wire_format=json
   if context=$(ASTRID_HOOK_TOKEN="$token" "$AOS" --principal "$principal" hook \
       --host "$host" --session "$session_id" --event "$event" \
-      --workspace "cwd-$workspace" < "$tmp" 2>/dev/null); then
-    render_host_hook_context "$event" "$context"
+      --workspace "cwd-$workspace" --format "$wire_format" < "$tmp" 2>/dev/null); then
+    if [ "$format" = native ]; then
+      printf '%s\n' "$context"
+    else
+      render_host_hook_context "$event" "$context"
+    fi
     case "$event" in
-      stop|session_end) retire_host_hook_token "$host" "$session_id" ;;
+      session_end) retire_host_hook_token "$host" "$session_id" ;;
     esac
     return 0
   fi
-  [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
+  [ "$format" != native ] && [ "${ASTRID_HOST_HOOK_FAIL_CLOSED:-0}" != "1" ] && return 0
   log "AOS rejected the $host hook"
   return 1
 }

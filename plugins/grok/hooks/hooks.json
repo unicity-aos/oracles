@@ -26,11 +26,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"/bin/aos-up hook user_prompt_submit",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok user_prompt_submit",
             "timeout": 15
           }
         ]
       }
-    ]
+    ],
+    "PreToolUse": [{"hooks": [{"type": "command", "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok pre_tool_use", "timeout": 15}]}],
+    "SessionEnd": [{"hooks": [{"type": "command", "command": "\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"/bin/aos-up hook session_end", "timeout": 15}]}]
   }
 }

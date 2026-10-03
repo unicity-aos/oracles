@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Oracle native codec for an administrator-provisioned policy evaluator.
+
+Deployment must pin this file, its sibling aos-native-hook, the interpreter and
+the evaluator in protected storage. Invoke Python with -I. This is not a user
+plugin fallback and does not discover configuration from the environment.
+"""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import runpy
+import signal
+import subprocess
+import sys
+import uuid
+
+
+def canonical_request(host, event, payload):
+    value = json.loads(payload)
+    if not isinstance(value, dict):
+        raise ValueError("invalid hook input")
+    native_event = {"pre_tool_use": "PreToolUse", "user_prompt_submit": "UserPromptSubmit"}[event]
+    if value.get("hook_event_name", native_event) != native_event:
+        raise ValueError("wrong hook event")
+    if event == "pre_tool_use":
+        if host == "grok":
+            if value.get("toolInputTruncated", False) is not False:
+                raise ValueError("incomplete tool input")
+            for native, canonical in (("toolName", "tool_name"), ("toolInput", "tool_input")):
+                if native in value:
+                    if canonical in value and value[canonical] != value[native]:
+                        raise ValueError("conflicting tool input")
+                    value[canonical] = value[native]
+        name, arguments = value.get("tool_name"), value.get("tool_input")
+        if (not isinstance(name, str) or not name or len(name.encode()) > 256
+                or not all(c.isascii() and (c.isalnum() or c in "_-:.") for c in name)
+                or not isinstance(arguments, dict)):
+            raise ValueError("invalid tool action")
+        action = {"kind": "tool", "name": name, "arguments": arguments}
+    else:
+        text = value.get("prompt")
+        if not isinstance(text, str):
+            raise ValueError("invalid prompt action")
+        action = {"kind": "prompt", "text": text}
+    # Session/principal claims from native input cannot select protected policy.
+    return {"schema_version": 1, "event": event, "action": action}
+
+
+def evaluate(args, payload):
+    request = canonical_request(args.host, args.event, payload)
+    command, environment = evaluator_command(args)
+    with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, start_new_session=True,
+                          env=environment) as child:
+        try:
+            output, _ = child.communicate(json.dumps(request).encode(), timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            child.communicate()
+            raise
+        if child.returncode or len(output) > 128 * 1024:
+            raise ValueError("protected evaluator unavailable")
+    return json.loads(output)
+
+
+def evaluator_command(args):
+    # Do not inherit runtime selectors or dynamic-loader variables from the
+    # supervised process. Local custody is explicit, never a service fallback.
+    environment = {"PATH": "/usr/bin:/bin"}
+    command = [args.evaluator, "--format",
+               "oracle-json" if args.service_socket else "oracle-local-json",
+               "--event", args.event.replace("_", "-"),
+               "--enforcer-source-id", args.enforcer_source_id]
+    if args.service_socket:
+        command += ["--service-socket", args.service_socket, "--service-uid", str(args.service_uid),
+                    "--service-installation-id", args.service_installation_id]
+    else:
+        environment["ASTRID_HOME"] = args.runtime_home
+        if args.runtime_run_dir:
+            environment["ASTRID_RUN_DIR"] = args.runtime_run_dir
+        command += ["--principal", args.principal]
+        if args.audit_journal:
+            command += ["--audit-journal", args.audit_journal,
+                        "--audit-installation-id", args.audit_installation_id]
+    return command, environment
+
+
+def arguments():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--aos-protected-hook", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--host", choices=("claude", "codex", "grok"), required=True)
+    parser.add_argument("--event", choices=("pre_tool_use", "user_prompt_submit"), required=True)
+    parser.add_argument("--evaluator", required=True)
+    parser.add_argument("--enforcer-source-id", required=True)
+    route = parser.add_mutually_exclusive_group(required=True)
+    route.add_argument("--service-socket")
+    route.add_argument("--runtime-home")
+    parser.add_argument("--service-uid", type=int)
+    parser.add_argument("--service-installation-id")
+    parser.add_argument("--principal")
+    parser.add_argument("--runtime-run-dir")
+    parser.add_argument("--audit-journal")
+    parser.add_argument("--audit-installation-id")
+    parser.add_argument("--supervised-uid", type=int, required=True)
+    args = parser.parse_args()
+    paths = (args.evaluator, args.service_socket, args.runtime_home,
+             args.runtime_run_dir, args.audit_journal)
+    if (any(not Path(path).is_absolute() or ".." in Path(path).parts for path in paths if path)
+            or not 0 < args.supervised_uid < 2**32):
+        parser.error("invalid protected service binding")
+    if args.service_socket:
+        if (args.service_uid is None or not 0 < args.service_uid < 2**32
+                or args.service_uid == args.supervised_uid or not args.service_installation_id
+                or any((args.principal, args.runtime_run_dir, args.audit_journal, args.audit_installation_id))):
+            parser.error("invalid protected service binding")
+    elif (args.service_uid is not None or args.service_installation_id
+          or not args.principal or len(args.principal) > 128
+          or not all(c.isascii() and (c.isalnum() or c in "_-") for c in args.principal)
+          or bool(args.audit_journal) != bool(args.audit_installation_id)):
+        parser.error("invalid local runtime binding")
+    for identity in (args.enforcer_source_id, args.service_installation_id, args.audit_installation_id):
+        if identity is None:
+            continue
+        try:
+            valid = str(uuid.UUID(identity)) == identity and uuid.UUID(identity).int != 0
+        except ValueError:
+            valid = False
+        if not valid:
+            parser.error("invalid protected identity")
+    return args
+
+
+def main():
+    args = arguments()
+    # Machine-wide policy is scoped to its provisioned session account, as in
+    # the legacy gate. The evaluator independently authenticates its peer UID.
+    if os.getuid() != args.supervised_uid:
+        print("{}")
+        return 0
+    codec = runpy.run_path(str(Path(__file__).resolve().with_name("aos-native-hook")))
+    try:
+        payload = sys.stdin.buffer.read(1024 * 1024 + 1)
+        if len(payload) > 1024 * 1024:
+            raise ValueError("oversized hook input")
+        reply = evaluate(args, payload)
+        result = codec["native_output"](args.host, args.event, reply)
+        if not codec["valid_output"](args.host, args.event, result):
+            raise ValueError("invalid native output")
+    except (OSError, ValueError, subprocess.SubprocessError):
+        result = codec["refusal"](args.event)
+    print(json.dumps(result, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except Exception:
+        # A missing/corrupt deployed codec must not exit 1, which Claude treats
+        # as nonblocking. Do not print input or evaluator errors to the host.
+        print("Oracle protected policy adapter is unavailable", file=sys.stderr)
+        sys.exit(2)

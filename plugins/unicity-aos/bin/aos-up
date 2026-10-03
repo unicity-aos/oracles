@@ -387,36 +387,32 @@ render_hook_context() {
   fi
 }
 
-parent_codex_pid() {
-  hook_parent="${PPID:-$$}"
-  grandparent="$(ps -o ppid= -p "$hook_parent" 2>/dev/null | tr -d ' ' || true)"
-  if [ -n "$grandparent" ]; then
-    printf '%s' "$grandparent"
-  else
-    printf '%s' "$hook_parent"
-  fi
-}
-
 derive_session_id() {
-  payload_file="$1"
-  if [ -n "${ASTRID_SESSION_ID:-}" ]; then
-    sid="$(topic_segment "$ASTRID_SESSION_ID")"
-    if [ -n "$sid" ]; then
-      printf '%s' "$sid"
-      return
-    fi
-  fi
-  if command -v jq >/dev/null 2>&1; then
-    from_payload="$(jq -r '.session_id // .thread_id // .threadId // .conversation_id // .conversationId // empty' "$payload_file" 2>/dev/null || true)"
-    if [ -n "$from_payload" ]; then
-      sid="$(topic_segment "codex-$from_payload")"
-      if [ -n "$sid" ]; then
-        printf '%s' "$sid"
-        return
-      fi
-    fi
-  fi
-  topic_segment "codex-pid-$(parent_codex_pid)"
+  python3 - "$1" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+
+explicit = os.environ.get("ASTRID_SESSION_ID", "")
+if explicit:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", explicit):
+        raise SystemExit("aos-up: invalid explicit session identity")
+    print(explicit)
+else:
+    with open(sys.argv[1], encoding="utf-8") as stream:
+        payload = json.load(stream)
+    if not isinstance(payload, dict):
+        raise SystemExit("aos-up: missing host session identity")
+    value = next((payload[key] for key in (
+        "session_id", "sessionId", "thread_id", "threadId",
+        "conversation_id", "conversationId"
+    ) if payload.get(key) is not None), None)
+    if not isinstance(value, str) or not value:
+        raise SystemExit("aos-up: missing host session identity")
+    print("codex-" + hashlib.sha256(value.encode("utf-8")).hexdigest())
+PY
 }
 
 derive_workspace_id() {
@@ -434,13 +430,15 @@ derive_workspace_id() {
 
 emit_hook() {
   event="$(topic_segment "${1:-}")"
+  format=context
+  case "$event" in pre_tool_use|user_prompt_submit|permission_request) format=native ;; esac
   if [ -z "$event" ]; then
     echo "usage: aos-up codex hook <event>" >&2
     exit 2
   fi
 
   if ! aos_resolve_apply 2>/dev/null; then
-    if [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}" = "1" ]; then
+    if [ "$format" = native ] || [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}" = "1" ]; then
       echo "aos-up: could not resolve the AOS command for the Codex hook" >&2
       return 127
     fi
@@ -452,7 +450,7 @@ emit_hook() {
   cat >"$tmp" || true
 
   principal="$(principal_id)"
-  session_id="$(derive_session_id "$tmp")"
+  session_id="$(derive_session_id "$tmp")" || return 1
   workspace_id="$(derive_workspace_id)"
   if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
     token="$ASTRID_HOOK_TOKEN"
@@ -460,16 +458,22 @@ emit_hook() {
     token=$(hook_token "$session_id") || return 1
   fi
   context=""
+  wire_format=context
+  [ "$format" != native ] || wire_format=json
   if context=$(ASTRID_HOOK_TOKEN="$token" "$AOS" --principal "$principal" hook \
       --host codex --session "$session_id" --event "$event" \
-      --workspace "$workspace_id" < "$tmp" 2>/dev/null); then
-    render_hook_context "$event" "$context"
+      --workspace "$workspace_id" --format "$wire_format" < "$tmp" 2>/dev/null); then
+    if [ "$format" = native ]; then
+      printf '%s\n' "$context"
+    else
+      render_hook_context "$event" "$context"
+    fi
     case "$event" in
       session_end) retire_hook_token "$session_id" ;;
     esac
     return 0
   fi
-  if [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}" = "1" ]; then
+  if [ "$format" = native ] || [ "${ASTRID_CODEX_HOOK_FAIL_CLOSED:-0}" = "1" ]; then
     echo "aos-up: AOS rejected the Codex hook" >&2
     return 1
   fi
@@ -604,7 +608,15 @@ mcp_attach() {
 # Pack.lock can be absent, unreadable, or mid-swap. Probe the capsule transport
 # before entering or creating the product workspace; only the product's exact
 # documented absence result permits provisioning to continue.
-if aos_resolve_apply 2>/dev/null; then
+# Native policy hooks have their own bounded delivery/refusal path. They must
+# not start or provision a runtime inside the host's per-tool deadline.
+native_hook=0
+if [ "${1:-}" = codex ] && [ "${2:-}" = hook ]; then
+  case "${3:-}" in
+    pre_tool_use|user_prompt_submit|permission_request) native_hook=1 ;;
+  esac
+fi
+if [ "$native_hook" -eq 0 ] && aos_resolve_apply 2>/dev/null; then
   if ! capsule_ready; then
     :
   fi

@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook user_prompt_submit",
+            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-native-hook\" codex user_prompt_submit",
             "timeout": 15
           }
         ]
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook pre_tool_use",
+            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-native-hook\" codex pre_tool_use",
             "timeout": 30,
             "statusMessage": "Checking Unicity AOS tool policy"
           }
@@ -54,7 +54,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook permission_request",
+            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-native-hook\" codex permission_request",
             "timeout": 30,
             "statusMessage": "Checking Unicity AOS approval policy"
           }

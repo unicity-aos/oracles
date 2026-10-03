@@ -283,7 +283,8 @@ def exercise_hook_adapter(root: Path) -> None:
         'printf "%s\\n" "$*" >> "$TEST_HOOK_ARGS"\n'
         'printf "%s\\n" "$ASTRID_HOOK_TOKEN" >> "$TEST_HOOK_TOKENS"\n'
         'cat > "$TEST_HOOK_PAYLOAD"\n'
-        'printf "%s\\n" "private same-turn context"\n',
+        'printf \'%s\\n\' \'{"schema_version":1,"event":"user_prompt_submit",'
+        '"decision":{"skip":false,"ask":false},"context":"private same-turn context"}\'\n',
     )
     environment = {
         "HOME": str(root / "hook-home"),
@@ -304,7 +305,7 @@ def exercise_hook_adapter(root: Path) -> None:
     payload = json.dumps(
         {"session_id": "hook-session", "turn_id": "turn-one", "prompt": "hello"}
     )
-    command = [str(PLUGIN / "bin/aos-up"), "codex", "hook", "user_prompt_submit"]
+    command = ["python3", str(PLUGIN / "bin/aos-native-hook"), "codex", "user_prompt_submit"]
     for _ in range(2):
         result = subprocess.run(
             command,
@@ -326,6 +327,7 @@ def exercise_hook_adapter(root: Path) -> None:
     invocations = args_log.read_text().splitlines()
     assert len(invocations) == 2, invocations
     assert all("--workspace cwd-" in invocation for invocation in invocations), invocations
+    assert all("--format json" in invocation for invocation in invocations), invocations
     tokens = token_log.read_text().splitlines()
     assert len(tokens) == 2 and tokens[0] == tokens[1], tokens
     assert json.loads(payload_log.read_text()) == json.loads(payload)

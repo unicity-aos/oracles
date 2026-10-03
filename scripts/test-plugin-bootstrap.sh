@@ -282,7 +282,7 @@ hooks = json.loads(Path(sys.argv[1]).read_text())["hooks"]
 def command(event):
     return hooks[event][0]["hooks"][0]["command"]
 
-assert "hook user_prompt_submit" in command("UserPromptSubmit")
+assert 'bin/aos-native-hook" codex user_prompt_submit' in command("UserPromptSubmit")
 assert "hook stop" in command("Stop")
 assert "hook session_end" in command("SessionEnd")
 PY
@@ -315,7 +315,8 @@ payload = json.loads(Path(sys.argv[1]).read_text())
 assert payload == {"session_id": "release-smoke"}
 args = Path(sys.argv[2]).read_text().strip()
 assert args.startswith("--principal codex-code hook --host codex "), args
-assert "--session codex-release-smoke" in args, args
+import hashlib
+assert "--session codex-" + hashlib.sha256(b"release-smoke").hexdigest() in args, args
 assert "--event user_prompt_submit" in args, args
 assert f"--workspace {sys.argv[3]}" in args, args
 assert " emit " not in f" {args} ", args
@@ -325,7 +326,8 @@ assert Path(sys.argv[4]).read_text().strip() == str(Path(sys.argv[5]).resolve())
 )
 PY
 
-route_token="$home/.aos/cache/oracles/hooks/codex/codex-release-smoke.token"
+route_session=$(python3 -c 'import hashlib; print("codex-" + hashlib.sha256(b"release-smoke").hexdigest())')
+route_token="$home/.aos/cache/oracles/hooks/codex/$route_session.token"
 test -f "$route_token"
 (cd "$project" && printf '%s\n' '{"session_id":"release-smoke","last_assistant_message":"done"}' | env -i \
   PATH="$fake_bin:/usr/bin:/bin" \

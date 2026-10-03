@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Plan a same-identity protected Claude handoff without touching settings.
+
+The privileged deployer must verify replacement bytes and readiness, then
+compare the original settings and atomically publish the result. This planner
+does not authorize an identity rotation or a downgrade to personal plugins.
+"""
+import copy
+import json
+from pathlib import PurePosixPath
+import shlex
+import sys
+import uuid
+
+MARKER = "--codewall-managed-hook"
+EVENTS = {"PreToolUse": "pre_tool_use", "UserPromptSubmit": "user_prompt_submit"}
+
+
+def exact_fields(value, fields):
+    if not isinstance(value, dict) or set(value) != set(fields):
+        raise ValueError("invalid handoff contract")
+
+
+def absolute(value):
+    if (not isinstance(value, str) or not value.startswith("/") or "\x00" in value
+            or ".." in value.split("/") or str(PurePosixPath(value)) != value):
+        raise ValueError("noncanonical protected path")
+    return value
+
+
+def validate_binding(binding):
+    common = ("gate", "principal", "source", "supervised_uid")
+    service = "service_socket" in binding
+    exact_fields(binding, common + (("service_socket", "service_uid", "service_installation_id")
+                 if service else ("runtime_home", "runtime_run_dir", "audit_journal", "audit_installation_id")))
+    absolute(binding["gate"])
+    if service:
+        absolute(binding["service_socket"])
+    else:
+        absolute(binding["runtime_home"])
+        for key in ("runtime_run_dir", "audit_journal"):
+            if binding[key] is not None:
+                absolute(binding[key])
+        if (binding["audit_journal"] is None) != (binding["audit_installation_id"] is None):
+            raise ValueError("incomplete local audit binding")
+    principal = binding["principal"]
+    if (not isinstance(principal, str) or not principal or len(principal) > 128
+            or not all(c.isascii() and (c.isalnum() or c in "_-") for c in principal)):
+        raise ValueError("invalid principal")
+    for key in ("source", "service_installation_id" if service else "audit_installation_id"):
+        value = binding[key]
+        if key == "audit_installation_id" and value is None:
+            continue
+        if not isinstance(value, str) or str(uuid.UUID(value)) != value or uuid.UUID(value).int == 0:
+            raise ValueError("invalid identity")
+    for key in (("supervised_uid", "service_uid") if service else ("supervised_uid",)):
+        if type(binding[key]) is not int or not 0 < binding[key] < 2**32:
+            raise ValueError("invalid uid")
+    if service and binding["supervised_uid"] == binding["service_uid"]:
+        raise ValueError("protected account separation required")
+
+
+def quote(value):
+    # Matches the legacy installer's exact no-expansion grammar.
+    return "'" + value.replace("'", "'\\''") + "'"
+
+
+def legacy_command(binding, event):
+    command = (f'{quote(binding["gate"])} {MARKER} --principal {quote(binding["principal"])} '
+               f'--enforcer-source-id {quote(binding["source"])} '
+               f'--supervised-uid {binding["supervised_uid"]}')
+    if "service_socket" in binding:
+        command += (f' --service-socket {quote(binding["service_socket"])} '
+                    f'--service-uid {binding["service_uid"]} '
+                    f'--service-installation-id {quote(binding["service_installation_id"])}')
+    else:
+        run = binding["runtime_run_dir"]
+        unset = " -u ASTRID_RUN_DIR" if run is None else ""
+        run_env = f" ASTRID_RUN_DIR={quote(run)}" if run is not None else ""
+        command = f'/usr/bin/env{unset} ASTRID_HOME={quote(binding["runtime_home"])}{run_env} {command}'
+        if binding["audit_journal"] is not None:
+            command += (f' --audit-journal {quote(binding["audit_journal"])} '
+                        f'--audit-installation-id {quote(binding["audit_installation_id"])}')
+    return command + (" --event user-prompt-submit" if event == "UserPromptSubmit" else "")
+
+
+def replacement_command(binding, replacement, event):
+    command = [replacement["python"], "-I", replacement["adapter"],
+                       "--aos-protected-hook",
+                       "--host", "claude", "--event", EVENTS[event],
+                       "--evaluator", replacement["evaluator"],
+                       "--enforcer-source-id", binding["source"],
+                       "--supervised-uid", str(binding["supervised_uid"])]
+    if "service_socket" in binding:
+        command += ["--service-socket", binding["service_socket"],
+                    "--service-uid", str(binding["service_uid"]),
+                    "--service-installation-id", binding["service_installation_id"]]
+    else:
+        command += ["--runtime-home", binding["runtime_home"], "--principal", binding["principal"]]
+        for key in ("runtime_run_dir", "audit_journal", "audit_installation_id"):
+            if binding[key] is not None:
+                command += ["--" + key.replace("_", "-"), binding[key]]
+    return shlex.join(command)
+
+
+def plan(request):
+    return transition(request, remove=False)
+
+
+def remove_registration(request):
+    """Remove an exact Oracle-owned pair, never an unrecognized or legacy hook."""
+    return transition(request, remove=True)
+
+
+def repair_registration(request, binding, replacement):
+    """Refresh selected executable/source bytes without changing custody."""
+    validate_binding(binding)
+    before = request["binding"]
+    if ({key: value for key, value in before.items() if key not in ("gate", "source")}
+            != {key: value for key, value in binding.items() if key not in ("gate", "source")}):
+        raise ValueError("repair cannot rotate authority")
+    exact_fields(replacement, ("python", "adapter", "evaluator"))
+    for path in replacement.values():
+        absolute(path)
+    return transition(request, remove=False, successor=(binding, replacement))
+
+
+def rotate_registration(request, binding, replacement, kind):
+    """Render a custody transition authorized by the privileged policy owner.
+
+    This pure planner does not validate Codewall intent records. The root
+    caller must do that before submitting an exact old/new transaction to
+    aos-protected-deploy, which still checks old settings and new readiness.
+    """
+    validate_binding(request["binding"])
+    validate_binding(binding)
+    before = request["binding"]
+    if kind == "local_reenrolment" and "service_socket" not in before:
+        changing = {"gate", "source", "audit_journal", "audit_installation_id"}
+        pins = ("audit_journal", "audit_installation_id")
+    elif kind == "service_rotation" and "service_socket" in before:
+        changing = {"gate", "source", "service_socket", "service_installation_id"}
+        pins = ("service_socket", "service_installation_id")
+    else:
+        raise ValueError("unsupported custody transition")
+    if ({k: v for k, v in before.items() if k not in changing}
+            != {k: v for k, v in binding.items() if k not in changing}
+            or any(before[k] is None or binding.get(k) is None or before[k] == binding[k] for k in pins)):
+        raise ValueError("custody transition changed stable identity or reused pins")
+    exact_fields(replacement, ("python", "adapter", "evaluator"))
+    for path in replacement.values():
+        absolute(path)
+    return transition(request, remove=False, successor=(binding, replacement))
+
+
+def transition(request, remove, successor=None):
+    exact_fields(request, ("schema_version", "host", "existing_settings", "binding", "replacement"))
+    if type(request["schema_version"]) is not int or request["schema_version"] != 1 or request["host"] != "claude":
+        raise ValueError("unsupported protected registration")
+    binding, replacement = request["binding"], request["replacement"]
+    validate_binding(binding)
+    exact_fields(replacement, ("python", "adapter", "evaluator"))
+    for path in replacement.values():
+        absolute(path)
+    settings = copy.deepcopy(request["existing_settings"])
+    if not isinstance(settings, dict) or not isinstance(settings.get("hooks"), dict):
+        raise ValueError("existing protected registration required")
+    found = set()
+    oracle_owned = remove or successor is not None
+    marker = "--aos-protected-hook" if oracle_owned else MARKER
+    removed = object()
+    for event, groups in settings["hooks"].items():
+        if not isinstance(groups, list):
+            raise ValueError("invalid hook groups")
+        empty_owned_groups = []
+        for group in groups:
+            if not isinstance(group, dict):
+                raise ValueError("invalid hook group")
+            handlers = group.get("hooks", [])
+            if not isinstance(handlers, list):
+                raise ValueError("invalid handlers")
+            for index, handler in enumerate(handlers):
+                # Unknown/unowned content is preserved verbatim. An owned but
+                # unrecognizable shape is not safe to silently leave or remove.
+                encoded = json.dumps(handler)
+                other_marker = MARKER if oracle_owned else "--aos-protected-hook"
+                if other_marker in encoded:
+                    raise ValueError("mixed registration ownership requires reconciliation")
+                if marker not in encoded:
+                    continue
+                if (event not in EVENTS or event in found or not isinstance(handler, dict)
+                        or handler.get("type") != "command"
+                        or handler.get("command") != (replacement_command(binding, replacement, event)
+                                                      if oracle_owned else legacy_command(binding, event))
+                        or set(handler) - {"type", "command", "timeout", "statusMessage"}
+                        or (event == "PreToolUse" and group.get("matcher") != "*")):
+                    raise ValueError("legacy registration does not match the pinned binding")
+                next_binding, next_replacement = successor or (binding, replacement)
+                updated = removed if remove else dict(
+                    handler, command=replacement_command(next_binding, next_replacement, event),
+                    timeout=15, statusMessage="Checking protected policy…")
+                handlers[index] = updated
+                found.add(event)
+            if remove and any(handler is removed for handler in handlers):
+                handlers[:] = [handler for handler in handlers if handler is not removed]
+                if not handlers:
+                    empty_owned_groups.append(group)
+        groups[:] = [group for group in groups
+                     if not any(group is empty for empty in empty_owned_groups)]
+    if found != set(EVENTS):
+        raise ValueError("both selected enforcement paths must be present")
+    return settings
+
+
+if __name__ == "__main__":
+    try:
+        raw = sys.stdin.buffer.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("oversized settings")
+        print(json.dumps(plan(json.loads(raw)), separators=(",", ":")))
+    except (ValueError, TypeError, KeyError):
+        print("Protected hook handoff rejected; existing settings must remain unchanged.", file=sys.stderr)
+        sys.exit(1)

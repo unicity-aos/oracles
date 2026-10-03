@@ -17,6 +17,8 @@ SKIP_HOST_PLUGIN=0
 PLUGINS_ONLY=0
 CHECK_ONLY=0
 JSON_OUTPUT=0
+RESULT_FILE=
+PROTECTED_ASSETS=
 REQUESTED_HOSTS=""
 LOCAL_ASSETS="${AOS_ORACLE_ASSETS:-}"
 WORK=""
@@ -218,6 +220,9 @@ Usage: install.sh [options]
   --local-assets D  use locally built capsules and pack manifests for testing
   --aos-installer S use an alternate AOS installer URL or local path for testing
   --plugins-only    install selected host marketplace plugins; provision on host start
+  --result-file F   write successful provisioned host/principal pairs as JSON (new file)
+  --protected-assets D
+                     export verified protected-hook helpers to a new directory
   --no-install-aos  fail instead of invoking the canonical AOS installer
   --skip-host-plugin
                      provision capsules/receipt without reinstalling the active host plugin
@@ -263,6 +268,16 @@ while [ "$#" -gt 0 ]; do
     --plugins-only) PLUGINS_ONLY=1 ;;
     --check) CHECK_ONLY=1 ;;
     --json) JSON_OUTPUT=1 ;;
+    --result-file)
+      shift
+      RESULT_FILE=${1:-}
+      [ -n "$RESULT_FILE" ] || die "--result-file requires a path"
+      ;;
+    --protected-assets)
+      shift
+      PROTECTED_ASSETS=${1:-}
+      [ -n "$PROTECTED_ASSETS" ] || die "--protected-assets requires a directory"
+      ;;
     --no-install-aos) NO_INSTALL_AOS=1 ;;
     --skip-host-plugin) SKIP_HOST_PLUGIN=1 ;;
     --approve-untrusted)
@@ -280,6 +295,25 @@ if [ "$JSON_OUTPUT" -eq 1 ]; then
 fi
 if [ "$CHECK_ONLY" -eq 1 ] && [ -n "$LOCAL_ASSETS" ]; then
   die "update discovery requires signed release metadata, not local assets"
+fi
+if [ "$CHECK_ONLY" -eq 1 ] && { [ -n "$RESULT_FILE" ] || [ -n "$PROTECTED_ASSETS" ]; }; then
+  die "--check cannot provision results or export protected deployment assets"
+fi
+case "$AOS_HOME_DIR" in /*) ;; *) die "AOS_HOME must be an absolute path" ;; esac
+if [ -n "${AOS_BIN_DIR:-}" ]; then
+  case "$AOS_BIN_DIR" in /*) ;; *) die "AOS_BIN_DIR must be an absolute path" ;; esac
+fi
+if [ -n "$RESULT_FILE" ]; then
+  case "$RESULT_FILE" in /*) ;; *) die "--result-file requires an absolute path" ;; esac
+  [ "$PLUGINS_ONLY" -eq 0 ] || die "--result-file requires full principal provisioning"
+  [ ! -e "$RESULT_FILE" ] && [ ! -L "$RESULT_FILE" ] \
+    || die "--result-file must name a new file"
+fi
+if [ -n "$PROTECTED_ASSETS" ]; then
+  case "$PROTECTED_ASSETS" in /*) ;; *) die "--protected-assets requires an absolute path" ;; esac
+  [ ! -e "$PROTECTED_ASSETS" ] && [ ! -L "$PROTECTED_ASSETS" ] \
+    || die "--protected-assets must name a new directory"
+  [ -z "$LOCAL_ASSETS" ] || die "protected deployment assets require a signed release"
 fi
 
 printf '%s\n' "$ORACLES_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$' \
@@ -591,9 +625,10 @@ validate_runtime_compatibility_document() {
 }
 
 ensure_aos() {
-  if [ "$NO_INSTALL_AOS" -eq 1 ] && [ -x "$AOS_HOME_DIR/bin/aos" ] \
+  aos_bin=${AOS_BIN_DIR:-$AOS_HOME_DIR/bin}
+  if [ "$NO_INSTALL_AOS" -eq 1 ] && [ -x "$aos_bin/aos" ] \
     && [ -z "$AOS_CHANNEL" ] && [ -z "$AOS_VERSION" ]; then
-    PATH="$AOS_HOME_DIR/bin:$PATH"
+    PATH="$aos_bin:$PATH"
     export PATH
     return 0
   fi
@@ -631,13 +666,13 @@ ensure_aos() {
   [ -z "$AOS_CHANNEL" ] || set -- "$@" --channel "$AOS_CHANNEL"
   [ -z "$AOS_VERSION" ] || set -- "$@" --version "$AOS_VERSION"
   sh "$@"
-  if [ -x "$AOS_HOME_DIR/bin/aos" ]; then
-    PATH="$AOS_HOME_DIR/bin:$PATH"
+  if [ -x "$aos_bin/aos" ]; then
+    PATH="$aos_bin:$PATH"
     export PATH
   fi
-  [ -x "$AOS_HOME_DIR/bin/aos" ] \
-    || die "AOS installer did not provision $AOS_HOME_DIR/bin/aos"
-  PATH="$AOS_HOME_DIR/bin:$PATH"
+  [ -x "$aos_bin/aos" ] \
+    || die "AOS installer did not provision $aos_bin/aos"
+  PATH="$aos_bin:$PATH"
   export PATH
   if [ -n "$AOS_VERSION" ]; then
     installed=$(aos --version | awk 'NF { value = $NF } END { print value }')
@@ -1305,6 +1340,48 @@ stage_release_metadata() {
   validate_plugin_archive "$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
 }
 
+export_protected_assets() {
+  [ -n "$PROTECTED_ASSETS" ] || return 0
+  # Read the just-verified archive, not an installed user-writable snapshot or
+  # receipt. The privileged caller must still bind copied bytes to these hashes.
+  python3 - "$RELEASE_STAGE/aos-oracle-plugins.tar.gz" "$PROTECTED_ASSETS" \
+    "$ORACLES_REPO" "$ORACLES_VERSION" <<'PY'
+import hashlib, json, os, pathlib, shutil, sys, tarfile
+archive, destination, repository, version = sys.argv[1:]
+names = ("aos-protected-hook", "aos-native-hook", "aos-protected-settings", "aos-protected-deploy")
+selected = {}
+with tarfile.open(archive, "r:gz") as bundle:
+    for name in names:
+        path = "plugins/claude/bin/" + name
+        matches = [member for member in bundle.getmembers() if member.name == path]
+        if len(matches) != 1 or not matches[0].isfile() or not 0 < matches[0].size <= 1024 * 1024:
+            raise ValueError("release lacks an unambiguous protected helper: " + name)
+        with bundle.extractfile(matches[0]) as source:
+            selected[name] = source.read(1024 * 1024 + 1)
+manifest = {"schema": "aos-oracle-protected-assets.v1", "repository": repository,
+            "version": version, "source": "signed-release", "assets": {
+                name: hashlib.sha256(data).hexdigest() for name, data in selected.items()}}
+# mkdir fails on an existing entry, including symlinks. Cleanup owns only the
+# new export directory; never replace or delete a caller's existing directory.
+os.mkdir(destination, 0o700)
+try:
+    for name, data in selected.items():
+        with open(pathlib.Path(destination) / name, "xb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        os.chmod(pathlib.Path(destination) / name, 0o500)
+    with open(pathlib.Path(destination) / "manifest.json", "x") as output:
+        json.dump(manifest, output, sort_keys=True)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+except BaseException:
+    shutil.rmtree(destination)
+    raise
+PY
+}
+
 prepare_plugin_snapshot() {
   [ -z "$PLUGIN_SNAPSHOT" ] || return 0
   archive="$RELEASE_STAGE/aos-oracle-plugins.tar.gz"
@@ -1944,6 +2021,7 @@ INSTALL_TRANSACTION_ACTIVE=1
 ensure_install_destinations "$hosts"
 acquire_install_lock
 stage_release_metadata
+export_protected_assets
 ensure_aos
 if [ "$PLUGINS_ONLY" -eq 1 ]; then
   prepare_plugin_snapshot
@@ -1967,4 +2045,30 @@ for host in $hosts; do
 done
 
 restore_runtime_state
+if [ -n "$RESULT_FILE" ]; then
+  set --
+  for host in $hosts; do
+    set -- "$@" "$host" "$(principal_for "$host")"
+  done
+  python3 - "$RESULT_FILE" "$@" <<'PY'
+import json, os, sys, tempfile
+pairs = sys.argv[2:]
+result = {"schema": "aos-oracle-provisioning.v1", "hosts": [
+    {"host": host, "principal": principal}
+    for host, principal in zip(pairs[::2], pairs[1::2])
+]}
+encoded = json.dumps(result) + "\n"
+destination = sys.argv[1]
+fd, staged = tempfile.mkstemp(prefix=".oracle-result-", dir=os.path.dirname(destination))
+try:
+    with os.fdopen(fd, "w") as output:
+        output.write(encoded)
+        output.flush()
+        os.fsync(output.fileno())
+    # Publish complete bytes without replacing any existing file or symlink.
+    os.link(staged, destination)
+finally:
+    os.unlink(staged)
+PY
+fi
 say "Unicity AOS oracle installation complete. Start a new host session to load the plugin."

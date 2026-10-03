@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -159,7 +160,9 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
         'pwd -P > "$TEST_HOOK_CWD"; '
         'printf "%s\\n" "${ASTRID_HOOK_TOKEN:-}" >> "$TEST_HOOK_TOKENS" ;; esac\n'
         'cat > "$TEST_HOOK_PAYLOAD"\n'
-        'printf "%s\\n" "private same-turn context"\n',
+        'case "$AOS_HOST" in grok) printf "%s\\n" "{}" ;; *) '
+        'printf "%s\\n" \'{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit",'
+        '"additionalContext":"private same-turn context"}}\' ;; esac\n',
     )
     environment = {
         "HOME": str(test_root / "home"),
@@ -196,22 +199,24 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
         )
         assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
         assert result.stderr == "", result.stderr
-        hook_output = json.loads(result.stdout)["hookSpecificOutput"]
-        assert hook_output == {
+        hook_output = json.loads(result.stdout)
+        assert hook_output == ({} if host == "grok" else {"hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": "private same-turn context",
-        }
+        }})
 
     invocations = args_log.read_text().splitlines()
     hook_invocations = [
         line for line in invocations if line.startswith("--principal") and " hook " in line
     ]
-    assert invocations.count('--principal default start --ephemeral') == 1, invocations
-    assert len(invocations) == 5 and len(hook_invocations) == 2, invocations
-    assert invocations.count(f"capsule show aos-mcp --agent {host}-code") == 2
+    # Native hooks use the CLI's bounded registry query, not a second metadata
+    # subprocess or a daemon bootstrap inside the host's blocking hook.
+    assert len(invocations) == 2 and len(hook_invocations) == 2, invocations
+    assert all(invocation.endswith("--format json") for invocation in invocations)
     expected = (
         f"--principal {spec['principal']} hook --host {host} "
-        f"--session {host}-hook-session --event user_prompt_submit --workspace cwd-"
+        f"--session {host}-{hashlib.sha256(b'hook-session').hexdigest()} "
+        "--event user_prompt_submit --workspace cwd-"
     )
     assert all(
         invocation.startswith(expected) for invocation in hook_invocations
@@ -258,15 +263,11 @@ def exercise_hook_adapter(host: str, root: Path) -> None:
         timeout=5,
         check=False,
     )
-    assert transport.returncode == 93, (transport.stdout, transport.stderr)
-    assert (
-        "daemon transport failed while reading capsule metadata" in transport.stderr
-    )
-    assert Path(transport_environment["TEST_HOOK_ARGS"]).read_text().splitlines() == [
-        '--principal default start --ephemeral', f"capsule show aos-mcp --agent {host}-code"
-    ]
+    assert transport.returncode == 1, (transport.stdout, transport.stderr)
+    assert "AOS rejected" in transport.stderr
+    failed_calls = Path(transport_environment["TEST_HOOK_ARGS"]).read_text().splitlines()
+    assert len(failed_calls) == 1 and " hook " in failed_calls[0], failed_calls
     assert not Path(transport_environment["TEST_HOOK_CWD"]).exists()
-    assert not transport_plugin_data.exists()
     assert not (home / "cache").exists()
 
 

@@ -4,6 +4,41 @@ set -eu
 
 AOS=${1:-aos}
 AOS_HOME_DIR=${AOS_HOME:-$HOME/.aos}
+# New Command Centers own richer product/plugin discovery. Reuse their fresh
+# public product inventory without launching another checker or inspecting
+# principal-scoped capsules. Older installations retain the existing fallback.
+if command -v python3 >/dev/null 2>&1; then
+  if python3 - "$AOS_HOME_DIR/update/command-center/inventory.json" <<'PY'
+import json, os, re, stat, sys, time
+try:
+    path = sys.argv[1]
+    info = os.lstat(path)
+    if not stat.S_ISREG(info.st_mode) or info.st_size > 65536 or info.st_uid != os.getuid():
+        raise ValueError()
+    with open(path, encoding="utf-8") as stream:
+        value = json.load(stream)
+    if not isinstance(value, dict) or not isinstance(value.get("items"), list):
+        raise ValueError()
+    age = time.time() - value["checked_at"]
+    if value["schema_version"] != 1 or not 0 <= age < 86400:
+        raise ValueError()
+    names = {"aos": "AOS", "oracle:codex": "Oracle for Codex", "oracle:claude": "Oracle for Claude", "oracle:grok": "Oracle for Grok"}
+    notices = []
+    for item in value["items"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise ValueError()
+        name = names.get(item.get("id"))
+        version = item.get("candidate_version")
+        if name and item.get("availability") == "available" and isinstance(version, str) and re.fullmatch(r"[0-9A-Za-z.+-]{1,100}", version):
+            notices.append(f"Update available: {name} {version}. Open AOS → Updates or run `aos updates check`.")
+    print("\n".join(notices), end="\n" if notices else "")
+except (OSError, ValueError, TypeError, KeyError):
+    sys.exit(1)
+PY
+  then
+    exit 0
+  fi
+fi
 state="$AOS_HOME_DIR/update/host-update-check"
 stamp="$state/stamp"
 cache="$state/available"

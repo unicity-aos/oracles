@@ -17,6 +17,18 @@ NAMES = ("aos-protected-hook", "aos-native-hook", "aos-protected-settings", "aos
 
 
 class ProtectedAssetExport(unittest.TestCase):
+    def test_discovery_cannot_claim_provisioning_or_export(self):
+        for option in ("--result-file", "--protected-assets"):
+            with tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "output"
+                result = subprocess.run(
+                    ["sh", str(INSTALLER), "--check", option, str(output)],
+                    capture_output=True, text=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("--check cannot provision", result.stderr)
+                self.assertFalse(output.exists())
+
     def run_export(self, root, bad=None):
         with tarfile.open(root / "aos-oracle-plugins.tar.gz", "w:gz") as archive:
             for name in NAMES:

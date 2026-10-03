@@ -36,7 +36,7 @@ case "$command" in
             --owner=0 --group=0 --numeric-owner \
             -czf "$artifact_dir/aos-oracle-plugins.tar.gz" \
             .agents .claude-plugin .grok-plugin \
-            plugins/claude plugins/grok plugins/unicity-aos
+            plugins/claude plugins/grok plugins/unicity-aos install.sh
         cp release/runtime-compatibility.toml \
             "$artifact_dir/runtime-compatibility.toml"
         (

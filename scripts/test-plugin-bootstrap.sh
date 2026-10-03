@@ -282,7 +282,7 @@ hooks = json.loads(Path(sys.argv[1]).read_text())["hooks"]
 def command(event):
     return hooks[event][0]["hooks"][0]["command"]
 
-assert "hook user_prompt_submit" in command("UserPromptSubmit")
+assert 'bin/aos-native-hook" codex user_prompt_submit' in command("UserPromptSubmit")
 assert "hook stop" in command("Stop")
 assert "hook session_end" in command("SessionEnd")
 PY

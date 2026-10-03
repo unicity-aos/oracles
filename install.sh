@@ -326,7 +326,9 @@ if [ "$ORACLES_VERSION" = latest ]; then
   # Resolve once without the rate-limited GitHub API, then verify all artifacts
   # against that exact release tag's Sigstore identity below.
   release_url=$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
-    -fsSL --max-time 30 -o /dev/null -w '%{url_effective}' \
+    -fsSL --connect-timeout 15 --max-time 30 --retry 2 \
+    --retry-delay 1 --retry-max-time 90 --retry-connrefused \
+    -o /dev/null -w '%{url_effective}' \
     "https://github.com/$ORACLES_REPO/releases/latest") \
     || die "could not resolve the latest published Oracle release"
   prefix="https://github.com/$ORACLES_REPO/releases/tag/v"
@@ -655,7 +657,7 @@ ensure_aos() {
         cp "$local_installer" "$installer"
         ;;
       *)
-        curl -fsSL --max-time 60 "$AOS_INSTALL_URL" -o "$installer" \
+        download_file "$AOS_INSTALL_URL" "$installer" \
           || die "could not download the canonical AOS installer"
         ;;
     esac
@@ -1215,6 +1217,34 @@ ensure_principal() {
   fi
 }
 
+download_file() {
+  dl_timeout=${AOS_ORACLE_DOWNLOAD_TIMEOUT:-600}
+  dl_connect=${AOS_ORACLE_CONNECT_TIMEOUT:-15}
+  dl_retries=${AOS_ORACLE_DOWNLOAD_RETRIES:-2}
+  dl_retry_time=${AOS_ORACLE_RETRY_MAX_TIME:-1800}
+  for dl_setting in "$dl_timeout:3600:1" "$dl_connect:300:1" \
+    "$dl_retries:10:0" "$dl_retry_time:10800:1"; do
+    dl_value=${dl_setting%%:*}
+    dl_bounds=${dl_setting#*:}
+    dl_max=${dl_bounds%%:*}
+    dl_min=${dl_bounds#*:}
+    case "$dl_value" in
+      ''|*[!0-9]*) die "download settings must be bounded integers" ;;
+    esac
+    [ "${#dl_value}" -le 5 ] && [ "$dl_value" -ge "$dl_min" ] \
+      && [ "$dl_value" -le "$dl_max" ] \
+      || die "download setting outside allowed range: $dl_value"
+  done
+  # Each invocation has finite attempt and retry limits. curl retries transient
+  # failures only; permanent HTTP errors and authenticity failures stay fatal.
+  if ! curl -fsSL --connect-timeout "$dl_connect" --max-time "$dl_timeout" \
+    --retry "$dl_retries" --retry-delay 1 --retry-max-time "$dl_retry_time" \
+    --retry-connrefused "$1" -o "$2"; then
+    rm -f "$2"
+    return 1
+  fi
+}
+
 ensure_cosign() {
   if have cosign; then COSIGN=$(command -v cosign); return; fi
   have curl || die "curl is required to fetch the Sigstore verifier"
@@ -1227,11 +1257,41 @@ ensure_cosign() {
     linux-amd64) digest=ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc ;;
   esac
   COSIGN="$WORK/cosign"
-  curl -fsSL --max-time 120 \
+  # Keep cache data outside the installation transaction so rollback on a
+  # fresh home does not force another large verifier download on retry.
+  cosign_cache_base="${XDG_CACHE_HOME:-$HOME/.cache}"
+  cosign_cache_root="$cosign_cache_base/aos-oracles"
+  cosign_cache_dir="$cosign_cache_root/cosign"
+  cosign_cache="$cosign_cache_dir/$COSIGN_VERSION-$target"
+  for cosign_dir in "$cosign_cache_base" "$cosign_cache_root" "$cosign_cache_dir"; do
+    [ ! -L "$cosign_dir" ] || die "Sigstore cache directory is a symlink: $cosign_dir"
+    mkdir -p "$cosign_dir" || die "could not create Sigstore cache: $cosign_dir"
+  done
+  [ ! -L "$cosign_cache" ] || die "Sigstore cache entry is a symlink: $cosign_cache"
+  [ ! -e "$cosign_cache" ] || [ -f "$cosign_cache" ] \
+    || die "Sigstore cache entry is not a regular file: $cosign_cache"
+  if [ -f "$cosign_cache" ]; then
+    # Execute a checked private snapshot, never the mutable cached pathname.
+    cp "$cosign_cache" "$COSIGN" || die "could not read cached Sigstore verifier"
+    if [ "$(sha256_file "$COSIGN")" = "$digest" ]; then
+      chmod 700 "$COSIGN"
+      return
+    fi
+    rm -f "$COSIGN"
+  fi
+  download_file \
     "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-$target" \
-    -o "$COSIGN" || die "could not download the Sigstore verifier"
+    "$COSIGN" || die "could not download the Sigstore verifier (adjust AOS_ORACLE_DOWNLOAD_TIMEOUT for slow connections)"
   [ "$(sha256_file "$COSIGN")" = "$digest" ] || die "Sigstore verifier checksum mismatch"
   chmod 700 "$COSIGN"
+  cosign_cache_stage=$(mktemp -d "$cosign_cache_dir/.download.XXXXXX") \
+    || die "could not stage cached Sigstore verifier"
+  if ! cp "$COSIGN" "$cosign_cache_stage/verifier" \
+    || ! mv -f "$cosign_cache_stage/verifier" "$cosign_cache"; then
+    rm -rf "$cosign_cache_stage"
+    die "could not cache verified Sigstore verifier"
+  fi
+  rmdir "$cosign_cache_stage"
 }
 
 verify_release_asset() {
@@ -1249,9 +1309,9 @@ download_verified() {
   name=$1
   out=$2
   base="https://github.com/$ORACLES_REPO/releases/download/v$ORACLES_VERSION"
-  curl -fsSL --max-time 120 "$base/$name" -o "$out" \
+  download_file "$base/$name" "$out" \
     || die "could not download $name from v$ORACLES_VERSION"
-  curl -fsSL --max-time 60 "$base/$name.sigstore.json" -o "$out.sigstore.json" \
+  download_file "$base/$name.sigstore.json" "$out.sigstore.json" \
     || die "could not download the Sigstore bundle for $name"
   verify_release_asset "$out" "$out.sigstore.json"
 }

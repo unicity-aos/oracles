@@ -41,6 +41,23 @@ release, then its artifacts are verified against that exact tag's Sigstore
 identity. `--oracle-version` or `AOS_ORACLES_VERSION` explicitly pins a version;
 local asset fixtures require an explicit version and never resolve online.
 
+Downloads have finite connection, attempt and retry limits. Slow connections
+can set `AOS_ORACLE_DOWNLOAD_TIMEOUT=900` on the `sh` invocation. Settings are
+integer seconds: `AOS_ORACLE_CONNECT_TIMEOUT` (default 15, range 1–300),
+`AOS_ORACLE_DOWNLOAD_TIMEOUT` (default 600, range 1–3600), and
+`AOS_ORACLE_RETRY_MAX_TIME` (default 1800, range 1–10800).
+`AOS_ORACLE_DOWNLOAD_RETRIES` defaults to 2 (range 0–10). curl retries transient
+transport/HTTP failures, never failed signature or checksum verification. The
+retry budget bounds when another attempt can start; the final attempt can take
+up to the attempt timeout. Latest-tag discovery uses separate fixed limits.
+
+When no `cosign` is on PATH, the pinned verifier is cached under
+`${XDG_CACHE_HOME:-$HOME/.cache}/aos-oracles/cosign`. This stays outside the
+installation transaction so rollback preserves it. Every reuse checks its
+pinned SHA-256 digest on a private copy before execution. Corrupt cache entries
+are downloaded again; partial downloads are never cached. Symlink cache paths
+are refused. Release artifacts still require their exact Sigstore identity.
+
 The installer is idempotent. It provisions a least-authority host principal,
 installs the exact signed oracle pack, grants that principal only its selected
 AOS services, and installs the host marketplace plugin. It writes product state

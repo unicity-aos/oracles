@@ -240,6 +240,7 @@ jobs:
           python3 scripts/test_release_contract.py
       - name: Exercise the non-interactive pack installer twice
         run: |
+          python3 scripts/test_installer_downloads.py
           scripts/test-install.sh
           scripts/test-plugin-bootstrap.sh
       - name: Validate the root installer shell

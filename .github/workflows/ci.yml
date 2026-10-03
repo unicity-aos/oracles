@@ -115,6 +115,12 @@ jobs:
       - name: Verify Claude and Grok MCP startup readiness
         run: |
           python3 scripts/test_host_mcp_startup.py
+          python3 scripts/test_host_hook_lifecycle.py
+          python3 scripts/test_native_hook_delivery.py
+          python3 scripts/test_protected_hook_delivery.py
+          python3 scripts/test_protected_settings.py
+          python3 scripts/test_protected_deploy.py
+          python3 scripts/test_protected_asset_export.py
           python3 scripts/test_preflight_notices.py
 
       - name: Verify nonblocking MCP setup and same-connection readiness

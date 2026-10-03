@@ -213,6 +213,18 @@ proof of authorization. The deployer remains administrator-only.
   Manifest-digest refusal, migration/retry, retained-record check/repair,
   failed-readiness preservation and removal passed. The export manifest and
   evaluator are fixtures, not proof of signed downloads or real service policy.
-- Live Claude/Codex/Grok application sessions and a fully assembled protected
-  service migration have not been verified by these tests. Independent review
-  and final integration evidence remain required before claiming completion.
+- Combined protected-service handoff: Codewall's
+  `oracle_service_container_probe.py` passed with the real Rust deployment CLI,
+  Linux runtime, packaged enforcer and gate. Separate service/client UIDs tested
+  24 codec cases; migration/retry and the exact registered Oracle-owned commands
+  tested four further tool/prompt allow/deny cases. Assertions check the protected
+  generation, absence of the legacy marker, removal and preservation of unrelated
+  settings. The export manifest and signing policy are QA fixtures, not production
+  download or enrollment evidence. Independent review accepted the corrected proof.
+- The refreshed 36-case packaged lifecycle passed on all three host principals
+  after the Codewall main restack and exact Codex session-identity correction.
+  Debug concurrent execution took seconds; this is not a latency benchmark.
+- Live Claude/Codex/Grok application sessions remain untested. These results
+  establish the available registered-command, capsule and protected-service
+  boundaries, not host UI behavior or production activation. CI readiness is
+  tracked separately on the companion pull requests.

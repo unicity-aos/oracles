@@ -1,85 +1,22 @@
 {
   "hooks": {
-    "SessionStart": [
-      {
-        "matcher": "startup|resume|clear|compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-codex-mcp\" --hook",
-            "timeout": 5,
-            "statusMessage": "Checking Unicity AOS setup status"
-          }
-        ]
-      },
-      {
-        "matcher": "startup|resume|clear|compact",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex session-start",
-            "timeout": 15,
-            "statusMessage": "Registering Codex with Unicity AOS"
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
+    "Interrupt": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-native-hook\" codex user_prompt_submit",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-native-hook\" codex pre_tool_use",
-            "timeout": 30,
-            "statusMessage": "Checking Unicity AOS tool policy"
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex interrupt",
+            "timeout": 3
           }
         ]
       }
     ],
     "PermissionRequest": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; python3 \"$root/bin/aos-native-hook\" codex permission_request",
-            "timeout": 30,
-            "statusMessage": "Checking Unicity AOS approval policy"
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook post_tool_use",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "PreCompact": [
-      {
-        "matcher": "manual|auto",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook pre_compact",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex permission_request",
             "timeout": 15
           }
         ]
@@ -87,46 +24,43 @@
     ],
     "PostCompact": [
       {
-        "matcher": "manual|auto",
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook post_compact",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex post_compact",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex post_tool_use",
             "timeout": 15
           }
         ]
       }
     ],
-    "SubagentStart": [
+    "PreCompact": [
       {
-        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook subagent_start",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex pre_compact",
             "timeout": 15
           }
         ]
       }
     ],
-    "SubagentStop": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook subagent_stop",
-            "timeout": 15
-          }
-        ]
-      }
-    ],
-    "Stop": [
+    "PreToolUse": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook stop",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex pre_tool_use",
             "timeout": 15
           }
         ]
@@ -137,7 +71,72 @@
         "hooks": [
           {
             "type": "command",
-            "command": "root=\"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}\"; \"$root/bin/aos-up\" codex hook session_end",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex session_end",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-codex-mcp\" --hook",
+            "timeout": 5,
+            "statusMessage": "Checking AOS setup status"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex session_start",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex subagent_start",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex subagent_stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-.}}/bin/aos-native-hook\" codex user_prompt_submit",
             "timeout": 15
           }
         ]

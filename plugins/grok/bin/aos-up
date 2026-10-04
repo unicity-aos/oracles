@@ -338,6 +338,11 @@ emit_host_hook() {
   case "$host" in claude|grok) ;; *) return 2 ;; esac
   format=context
   case "$event" in pre_tool_use|user_prompt_submit|permission_request) format=native ;; esac
+  case "${AOS_HOOK_OUTPUT_FORMAT:-context}" in
+    json) format=native ;;
+    context) ;;
+    *) return 2 ;;
+  esac
 
   tmp=$(mktemp "${TMPDIR:-/tmp}/aos-$host-hook.XXXXXX") || return 1
   trap 'rm -f "$tmp"' EXIT HUP INT TERM
@@ -379,7 +384,9 @@ emit_host_hook() {
       render_host_hook_context "$event" "$context"
     fi
     case "$event" in
-      session_end) retire_host_hook_token "$host" "$session_id" ;;
+      session_end)
+        [ "${AOS_HOOK_RETAIN_SESSION_ROUTE:-0}" = 1 ] || retire_host_hook_token "$host" "$session_id"
+        ;;
     esac
     return 0
   fi

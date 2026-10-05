@@ -170,7 +170,7 @@
           {
             "type": "command",
             "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok user_prompt_submit",
-            "timeout": 15
+            "timeout": 3
           }
         ]
       }

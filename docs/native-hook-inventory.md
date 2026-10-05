@@ -22,6 +22,12 @@ Observational callbacks never become a fictional block. Missing transport
 refuses decision-capable callbacks and reports undelivered observations on
 stderr. TeammateIdle and TaskCompleted refusals use exit 2 plus stderr.
 
+Grok's SessionStart, SubagentStart, UserPromptSubmit and post-tool callbacks
+are passive: their stdout is ignored. They publish observations without
+collecting context or required-policy decisions. Only PreToolUse and
+Stop/SubagentStop enforce decisions in Grok; a prompt policy cannot prevent
+Grok from accepting a prompt through this passive callback.
+
 Observer/context delivery has a two-second internal deadline, below the
 three-second registration limit. Binding delivery has ten seconds below its
 fifteen-second registration limit. Hooks do not provision or install capsules;

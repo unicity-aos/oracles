@@ -27,6 +27,14 @@ def emit(value):
 
 
 class NativeHookDelivery(unittest.TestCase):
+    def test_grok_passive_hooks_do_not_claim_decision_or_context_authority(self):
+        for event in ("session_start", "subagent_start", "user_prompt_submit",
+                      "post_tool_use", "post_tool_use_failure"):
+            with self.subTest(event=event):
+                self.assertEqual(CODEC["hook_contract"]("grok", event)[2], "observe")
+                self.assertEqual(CODEC["native_output"]("grok", event,
+                    reply(event, skip=True, context="ignored by native host")), {})
+
     def test_codex_native_hook_does_not_bootstrap_or_probe_capsules(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
@@ -169,6 +177,8 @@ class NativeHookDelivery(unittest.TestCase):
                         value = self.invoke(host, event, script)
                         if event == "pre_tool_use":
                             self.assertEqual(value["hookSpecificOutput"]["permissionDecision"], "deny")
+                        elif host == "grok":
+                            self.assertEqual(value, {})  # Native prompt event is passive.
                         else:
                             self.assertEqual(value["decision"], "block")
 

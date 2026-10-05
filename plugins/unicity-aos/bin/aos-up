@@ -432,6 +432,11 @@ emit_hook() {
   event="$(topic_segment "${1:-}")"
   format=context
   case "$event" in pre_tool_use|user_prompt_submit|permission_request) format=native ;; esac
+  case "${AOS_HOOK_OUTPUT_FORMAT:-context}" in
+    json) format=native ;;
+    context) ;;
+    *) return 2 ;;
+  esac
   if [ -z "$event" ]; then
     echo "usage: aos-up codex hook <event>" >&2
     exit 2
@@ -615,6 +620,7 @@ if [ "${1:-}" = codex ] && [ "${2:-}" = hook ]; then
   case "${3:-}" in
     pre_tool_use|user_prompt_submit|permission_request) native_hook=1 ;;
   esac
+  [ "${AOS_HOOK_OUTPUT_FORMAT:-context}" != json ] || native_hook=1
 fi
 if [ "$native_hook" -eq 0 ] && aos_resolve_apply 2>/dev/null; then
   if ! capsule_ready; then

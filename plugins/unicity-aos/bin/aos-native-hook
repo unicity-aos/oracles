@@ -8,11 +8,95 @@ import subprocess
 import signal
 import sys
 
+# Native event, canonical bus event, response semantics. This is also the
+# registration generator's inventory; do not maintain a second JSON-only list.
+COMMON_HOOKS = {
+    "session_start": ("SessionStart", "session_start", "context"),
+    "session_end": ("SessionEnd", "session_end", "observe"),
+    "user_prompt_submit": ("UserPromptSubmit", "message_received", "block"),
+    "pre_tool_use": ("PreToolUse", "before_tool_call", "pretool"),
+    "post_tool_use": ("PostToolUse", "after_tool_call", "block"),
+    "subagent_start": ("SubagentStart", "subagent_start", "context"),
+    "subagent_stop": ("SubagentStop", "subagent_stop", "block"),
+    "stop": ("Stop", "message_sent", "block"),
+    "pre_compact": ("PreCompact", "on_compaction_started", "observe"),
+    "post_compact": ("PostCompact", "on_compaction_completed", "observe"),
+}
+CLAUDE_HOOKS = {
+    "setup": ("Setup", "session_setup", "observe"),
+    "user_prompt_expansion": ("UserPromptExpansion", "message_expanded", "block"),
+    "permission_request": ("PermissionRequest", "before_tool_call", "permission"),
+    "permission_denied": ("PermissionDenied", "permission_denied", "observe"),
+    "post_tool_use_failure": ("PostToolUseFailure", "after_tool_call_failed", "block"),
+    "post_tool_batch": ("PostToolBatch", "after_tool_batch", "block"),
+    "notification": ("Notification", "notification", "observe"),
+    "message_display": ("MessageDisplay", "message_displayed", "observe"),
+    "task_created": ("TaskCreated", "task_created", "block"),
+    "task_completed": ("TaskCompleted", "task_completed", "exit2"),
+    "stop_failure": ("StopFailure", "message_failed", "observe"),
+    "teammate_idle": ("TeammateIdle", "teammate_idle", "exit2"),
+    "instructions_loaded": ("InstructionsLoaded", "instructions_loaded", "observe"),
+    "config_change": ("ConfigChange", "config_changed", "block"),
+    "cwd_changed": ("CwdChanged", "cwd_changed", "observe"),
+    "directory_added": ("DirectoryAdded", "directory_added", "observe"),
+    "file_changed": ("FileChanged", "file_changed", "observe"),
+    # Replacing worktree creation is opt-in, never installed as a listener.
+    "worktree_create": ("WorktreeCreate", "worktree_create_requested", "worktree"),
+    "worktree_remove": ("WorktreeRemove", "worktree_removed", "worktree"),
+    "pre_model_switch": ("PreModelSwitch", "before_model_switch", "block"),
+    "post_model_switch": ("PostModelSwitch", "after_model_switch", "context"),
+    "elicitation": ("Elicitation", "elicitation_requested", "elicitation"),
+    "elicitation_result": ("ElicitationResult", "elicitation_resolved", "elicitation"),
+}
+GROK_HOOKS = {
+    # These events are passive in Grok: stdout is ignored, so collecting
+    # context or a blocking verdict would add latency without enforcing it.
+    "session_start": ("SessionStart", "session_start", "observe"),
+    "subagent_start": ("SubagentStart", "subagent_start", "observe"),
+    "user_prompt_submit": ("UserPromptSubmit", "message_received", "observe"),
+    "post_tool_use": ("PostToolUse", "after_tool_call", "observe"),
+    "post_tool_use_failure": ("PostToolUseFailure", "after_tool_call_failed", "observe"),
+    "permission_denied": ("PermissionDenied", "permission_denied", "observe"),
+    "stop_failure": ("StopFailure", "message_failed", "observe"),
+    "stop_cancelled": ("StopCancelled", "message_cancelled", "observe"),
+    "notification": ("Notification", "notification", "observe"),
+}
 
-def refusal(event):
+
+def hook_contract(host, event):
+    hooks = dict(COMMON_HOOKS)
+    if host == "claude":
+        hooks.update(CLAUDE_HOOKS)
+        hooks["pre_compact"] = ("PreCompact", "on_compaction_started", "block")
+    elif host == "grok":
+        hooks.update(GROK_HOOKS)
+    elif host == "codex":
+        hooks["permission_request"] = ("PermissionRequest", "before_tool_call", "permission")
+        hooks["interrupt"] = ("Interrupt", "message_cancelled", "observe")
+        hooks["pre_compact"] = ("PreCompact", "on_compaction_started", "continue")
+    else:
+        raise ValueError("unsupported host")
+    return hooks[event]
+
+
+def hook_inventory(host):
+    return {event: hook_contract(host, event) for event in
+            set(COMMON_HOOKS) | set(CLAUDE_HOOKS if host == "claude" else
+                                   GROK_HOOKS if host == "grok" else
+                                   ("permission_request", "interrupt"))}
+
+
+def refusal(event, host="claude"):
     reason = "AOS policy could not be checked. Check AOS status and retry."
-    if event == "user_prompt_submit":
+    name, _, mode = hook_contract(host, event)
+    if mode in ("observe", "context"):
+        return {}
+    if mode in ("block", "exit2", "worktree"):
         return {"decision": "block", "reason": reason}
+    if mode == "continue":
+        return {"continue": False, "stopReason": reason}
+    if mode == "elicitation":
+        return {"hookSpecificOutput": {"hookEventName": name, "action": "decline"}}
     specific = {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                 "permissionDecisionReason": reason}
     if event == "permission_request":
@@ -26,15 +110,18 @@ def valid_output(host, event, value):
         return True  # No objection: native host permissions remain in control.
     if not isinstance(value, dict):
         return False
-    if event == "user_prompt_submit" and value.get("decision") == "block":
+    expected, _, mode = hook_contract(host, event)
+    if mode in ("block", "exit2", "worktree") and value.get("decision") == "block":
         return set(value) <= {"decision", "reason"} and isinstance(value.get("reason"), str)
+    if mode == "continue":
+        return set(value) == {"continue", "stopReason"} and value["continue"] is False and isinstance(value["stopReason"], str)
     specific = value.get("hookSpecificOutput")
     if set(value) != {"hookSpecificOutput"} or not isinstance(specific, dict):
         return False
-    expected = {"pre_tool_use": "PreToolUse", "user_prompt_submit": "UserPromptSubmit",
-                "permission_request": "PermissionRequest"}[event]
     if specific.get("hookEventName") != expected:
         return False
+    if mode == "elicitation":
+        return set(specific) == {"hookEventName", "action"} and specific["action"] == "decline"
     if event == "permission_request":
         decision = specific.get("decision")
         return (set(specific) == {"hookEventName", "decision"}
@@ -60,7 +147,10 @@ def native_output(host, event, reply):
             or type(reply["schema_version"]) is not int or reply["schema_version"] != 1
             or reply["event"] != event):
         raise ValueError("invalid policy reply")
+    name, _, mode = hook_contract(host, event)
     decision, context = reply["decision"], reply["context"]
+    if decision is None and mode in ("observe", "context"):
+        decision = {"skip": False}
     if (not isinstance(decision, dict)
             or set(decision) - {"skip", "ask", "reason"}
             or type(decision.get("skip")) is not bool
@@ -71,13 +161,16 @@ def native_output(host, event, reply):
         raise ValueError("invalid policy reason")
     if context is not None and not isinstance(context, str):
         raise ValueError("invalid context")
-    if host == "grok" and event == "permission_request":
-        raise ValueError("unsupported host event")
     reason = reason if reason is not None else "AOS policy requires approval"
     output = {}
     if decision["skip"] or decision.get("ask", False):
-        if event == "user_prompt_submit":
+        if mode in ("block", "exit2", "worktree"):
             output = {"decision": "block", "reason": reason}
+        elif mode == "continue":
+            output = {"continue": False, "stopReason": reason}
+        elif mode == "elicitation":
+            if decision["skip"]:
+                output = {"hookSpecificOutput": {"hookEventName": name, "action": "decline"}}
         elif event == "permission_request":
             if decision["skip"]:
                 output = {"hookSpecificOutput": {"hookEventName": "PermissionRequest",
@@ -86,15 +179,12 @@ def native_output(host, event, reply):
             output = {"hookSpecificOutput": {"hookEventName": "PreToolUse",
                       "permissionDecision": "deny" if decision["skip"] or host == "codex" else "ask",
                       "permissionDecisionReason": reason}}
-        else:
+        elif mode not in ("observe", "context"):
             raise ValueError("unsupported binding event")
     if context and context.strip():
-        name = None
-        if event == "pre_tool_use":
-            name = "PreToolUse"
-        elif event == "user_prompt_submit" and host != "grok" and "decision" not in output:
-            name = "UserPromptSubmit"
-        if name:
+        supports_context = (mode == "context" or event == "pre_tool_use"
+                            or event == "user_prompt_submit" and host != "grok")
+        if supports_context and (not output or event == "pre_tool_use"):
             output.setdefault("hookSpecificOutput", {"hookEventName": name})["additionalContext"] = context
     return output
 
@@ -103,25 +193,40 @@ def main():
     if len(sys.argv) != 3:
         return 2
     host, event = sys.argv[1:]
-    if host not in ("codex", "claude", "grok") or event not in (
-            "pre_tool_use", "user_prompt_submit", "permission_request"):
+    try:
+        _, _, mode = hook_contract(host, event)
+    except (KeyError, ValueError):
         return 2
-    if host == "grok" and event == "permission_request":
+    # A listener must never accidentally replace a client's worktree creator.
+    if mode == "worktree":
+        print("Oracle does not own worktree lifecycle; retain native creation and cleanup.", file=sys.stderr)
         return 2
-    result = refusal(event)
+    result = refusal(event, host)
     try:
         payload = sys.stdin.buffer.read(1024 * 1024 + 1)
         if len(payload) > 1024 * 1024:
             raise ValueError("oversized hook input")
+        value = json.loads(payload)
+        if not isinstance(value, dict):
+            raise ValueError("invalid native input")
+        # Do not expose elicited form values to generic bus subscribers.
+        if event == "elicitation_result" and "content" in value:
+            value["content"] = {"redacted": True}
+            payload = json.dumps(value).encode()
         launcher = Path(__file__).resolve().with_name("aos-up")
         command = [str(launcher)] + (["codex"] if host == "codex" else [])
         command += ["hook", event]
         # Below the shortest registered binding-hook timeout (15 seconds),
         # leaving the host time to consume an explicit refusal on failure.
+        child_type = value.get("subagentType")
+        child_session = (host == "grok" and event == "session_end"
+                         and isinstance(child_type, str) and bool(child_type))
+        environment = dict(os.environ, AOS_HOOK_OUTPUT_FORMAT="json",
+                           AOS_HOOK_RETAIN_SESSION_ROUTE="1" if child_session else "0")
         with subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                              stderr=subprocess.DEVNULL, start_new_session=True) as child:
+                              stderr=subprocess.DEVNULL, start_new_session=True, env=environment) as child:
             try:
-                output, _ = child.communicate(payload, timeout=10)
+                output, _ = child.communicate(payload, timeout=2 if mode in ("observe", "context") else 10)
             except subprocess.TimeoutExpired:
                 # The launcher may be waiting on an AOS subprocess. Retire the
                 # invocation group, not an unrelated persistent daemon.
@@ -140,7 +245,12 @@ def main():
         if not valid_output(host, event, result):
             raise ValueError("invalid hook output")
     except (OSError, ValueError, subprocess.SubprocessError):
-        result = refusal(event)
+        result = refusal(event, host)
+        if mode in ("observe", "context"):
+            print("AOS hook observation could not be delivered.", file=sys.stderr)
+    if mode == "exit2" and result.get("decision") == "block":
+        print(result["reason"], file=sys.stderr)
+        return 2
     print(json.dumps(result, separators=(",", ":")))
     return 0
 

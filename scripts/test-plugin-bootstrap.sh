@@ -283,8 +283,9 @@ def command(event):
     return hooks[event][0]["hooks"][0]["command"]
 
 assert 'bin/aos-native-hook" codex user_prompt_submit' in command("UserPromptSubmit")
-assert "hook stop" in command("Stop")
-assert "hook session_end" in command("SessionEnd")
+assert 'bin/aos-native-hook" codex stop' in command("Stop")
+assert 'bin/aos-native-hook" codex session_end' in command("SessionEnd")
+assert hooks["SessionEnd"][0]["hooks"][0]["timeout"] == 3
 PY
 
 # Runtime IPC always uses the product workspace, but hook context retains the

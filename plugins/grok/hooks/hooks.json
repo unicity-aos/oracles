@@ -1,13 +1,101 @@
 {
   "hooks": {
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok notification",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok permission_denied",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok post_compact",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok post_tool_use",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok post_tool_use_failure",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok pre_compact",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok pre_tool_use",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok session_end",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${GROK_PLUGIN_ROOT}/bin/aos-mcp-start\" --hook",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-mcp-start\" --hook",
             "timeout": 5,
-            "statusMessage": "Checking Unicity AOS setup status"
+            "statusMessage": "Checking AOS setup status"
           }
         ]
       },
@@ -15,7 +103,62 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"/bin/aos-up hook session_start",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok session_start",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok stop",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "StopCancelled": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok stop_cancelled",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok stop_failure",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok subagent_start",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok subagent_stop",
             "timeout": 15
           }
         ]
@@ -27,12 +170,10 @@
           {
             "type": "command",
             "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok user_prompt_submit",
-            "timeout": 15
+            "timeout": 3
           }
         ]
       }
-    ],
-    "PreToolUse": [{"hooks": [{"type": "command", "command": "python3 \"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/bin/aos-native-hook\" grok pre_tool_use", "timeout": 15}]}],
-    "SessionEnd": [{"hooks": [{"type": "command", "command": "\"${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}\"/bin/aos-up hook session_end", "timeout": 15}]}]
+    ]
   }
 }

@@ -16,7 +16,7 @@ CalSemVer here. The month is not zero-padded.
   is the minimum compatible installed runtime. Exact artifact identity still comes
   from the signed AOS inventory, not from pinning that floor as the only runtime.
 
-Oracle's next patch is `2026.9.2`. Product release numbers advance independently;
+Oracle's next monthly release is `2026.10.0`. Product release numbers advance independently;
 the runtime floor does not have to equal the Oracle release number. Git tags
 retain their existing conventions: Astrid and Oracle use a `v` prefix; AOS
 does not.

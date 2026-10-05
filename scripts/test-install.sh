@@ -600,11 +600,11 @@ grep -Fqx "oracle-version = \"$ORACLE_VERSION\"" "$plugin_only_home/extensions/o
 grep -Fqx 'host = "codex"' "$plugin_only_home/extensions/oracles/codex/PluginRegistration.toml"
 test ! -e "$plugin_only_home/extensions/oracles/claude/PluginRegistration.toml"
 test ! -e "$plugin_only_home/extensions/oracles/.install.lock"
-python3 - "$plugin_only_home" <<'PY'
+python3 - "$plugin_only_home" "$ORACLE_VERSION" <<'PY'
 import json
 from pathlib import Path
 import sys
-plugin = Path(sys.argv[1]) / "extensions/oracles/plugins/2026.9.2/plugins/unicity-aos"
+plugin = Path(sys.argv[1]) / "extensions/oracles/plugins" / sys.argv[2] / "plugins/unicity-aos"
 server = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["aos"]
 assert server["command"] == "python3", server
 assert server["args"] == [str(plugin / "bin/aos-codex-mcp"), "--principal", "codex-code"], server

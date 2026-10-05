@@ -66,7 +66,9 @@ class ProtectedHookDelivery(unittest.TestCase):
                     result = self.invoke(host, event, script)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     value = json.loads(result.stdout)
-                    if mode == "allow":
+                    if mode == "allow" or (host == "grok" and event == "user_prompt_submit"):
+                        # Grok ignores prompt-hook stdout; protected custody
+                        # does not give this callback native veto authority.
                         self.assertEqual(value, {})
                     elif event == "user_prompt_submit":
                         self.assertEqual(value["decision"], "block")

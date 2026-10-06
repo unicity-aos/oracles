@@ -21,7 +21,7 @@ VERSION_FILE="$PLUGIN_ROOT/.aos-oracle-version"
 [ -f "$VERSION_FILE" ] && [ ! -L "$VERSION_FILE" ] \
   || die "plugin snapshot has no Oracle release identity"
 BUNDLED_ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
-printf '%s\n' "$BUNDLED_ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+printf '%s\n' "$BUNDLED_ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$' \
   || die "plugin snapshot has an invalid Oracle release identity"
 
 INSTALL_URL="${AOS_ORACLES_INSTALL_URL:-https://aos.unicity.ai/oracle-install.sh}"

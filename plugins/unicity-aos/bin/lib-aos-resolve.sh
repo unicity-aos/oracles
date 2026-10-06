@@ -224,7 +224,7 @@ aos_resolve_active_runtime() {
     return 1
   }
   IFS= read -r _aos_oracle_version < "$_aos_oracle_version_file" || return 1
-  printf '%s\n' "$_aos_oracle_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+  printf '%s\n' "$_aos_oracle_version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$' || {
     echo "aos-resolve: plugin snapshot has an invalid Oracle release identity" >&2
     return 1
   }

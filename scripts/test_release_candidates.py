@@ -13,6 +13,28 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleaseCandidateTests(unittest.TestCase):
+    def test_shipped_plugin_identity_guards_accept_only_numbered_candidates(self) -> None:
+        # Execute each shipped guard, not a replacement regex in the test.
+        for host in ("claude", "grok", "unicity-aos"):
+            for name in ("aos-install", "aos-up", "aos-doctor", "lib-aos-resolve.sh"):
+                path = ROOT / "plugins" / host / "bin" / name
+                guards = [line.split(" ||", 1)[0].rstrip(" \\") for line in path.read_text().splitlines()
+                          if "grep -Eq" in line and any(variable in line for variable in
+                          ("$ORACLE_VERSION", "$BUNDLED_ORACLE_VERSION", "$_aos_oracle_version"))]
+                # The common resolver has no release-identity guard; its
+                # callers above own that check. Codex's resolver has one.
+                self.assertEqual(len(guards), 0 if name == "lib-aos-resolve.sh" and host != "unicity-aos" else 1, str(path))
+                for version, accepted in (("2026.10.0", True), ("2026.10.0-rc.1", True),
+                                          ("2026.10.0-rc.12", True), ("2026.10.0-rc.0", False),
+                                          ("2026.10.0-rc.01", False), ("2026.10.0-beta.1", False),
+                                          ("2026.10.0-rc.1+build", False)):
+                    for guard in guards:
+                        with self.subTest(path=str(path), version=version):
+                            result = subprocess.run(["sh", "-c", guard], capture_output=True,
+                                env=dict(os.environ, ORACLE_VERSION=version,
+                                         BUNDLED_ORACLE_VERSION=version, _aos_oracle_version=version))
+                            self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
     def test_oracle_channel_does_not_request_a_second_aos_install(self) -> None:
         source = (ROOT / "install.sh").read_text()
         function = "ensure_aos() {" + source.split("ensure_aos() {", 1)[1].split("\ncalendar_version_at_least()", 1)[0]

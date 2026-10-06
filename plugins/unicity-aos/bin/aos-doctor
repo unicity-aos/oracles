@@ -45,7 +45,7 @@ VERSION_FILE="$AOS_PLUGIN_ROOT/.aos-oracle-version"
   exit 0
 }
 ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
-printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$' || {
   printf '%s\n' "Unicity AOS plugin snapshot has an invalid Oracle release identity. Reinstall the Codex plugin."
   exit 0
 }

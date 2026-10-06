@@ -13,6 +13,23 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleaseCandidateTests(unittest.TestCase):
+    def test_oracle_channel_does_not_request_a_second_aos_install(self) -> None:
+        source = (ROOT / "install.sh").read_text()
+        function = "ensure_aos() {" + source.split("ensure_aos() {", 1)[1].split("\ncalendar_version_at_least()", 1)[0]
+        # Retain exactly the real function, without subsequent installer helpers.
+        function = function[:function.index("\n}\n") + 3]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "bin").mkdir()
+            binary = root / "bin/aos"
+            binary.write_text("#!/bin/sh\nexit 0\n")
+            binary.chmod(0o700)
+            program = 'set -eu\nhave() { command -v "$1" >/dev/null 2>&1; }\ndie() { echo "$*" >&2; exit 1; }\n' + function + '\nensure_aos\n'
+            result = subprocess.run(["sh", "-c", program], text=True, capture_output=True,
+                env=dict(os.environ, AOS_HOME_DIR=str(root), NO_INSTALL_AOS="1",
+                         AOS_CHANNEL="", AOS_VERSION="", ORACLE_CHANNEL="dev"))
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_staging_preserves_numeric_source_and_rejects_wrong_base(self) -> None:
         spec = importlib.util.spec_from_file_location("stage_rc", ROOT / "scripts/stage_release_candidate.py")
         module = importlib.util.module_from_spec(spec)

@@ -957,7 +957,7 @@ def main() -> None:
         original_compatibility = compatibility.read_text()
         write_authenticated_runtime(home, environment, "2026.9.1")
 
-        for accepted in ("2026.9.1", "2026.9.2", "2026.9.4", "2026.10.0"):
+        for accepted in ("2026.9.1", "2026.9.2", "2026.9.4", "2026.10.0", "2026.10.0-rc.1"):
             write_authenticated_runtime(home, environment, accepted)
             accepted_env = dict(environment)
             accepted_env["TEST_RUNTIME_VERSION"] = accepted
@@ -972,7 +972,11 @@ def main() -> None:
         for rejected_version, needle in (
             ("2026.9.0", "does not satisfy >=2026.9.1"),
             ("2026.8.9", "does not satisfy >=2026.9.1"),
-            ("2026.9.1-rc.1", "runtime version is invalid"),
+            ("2026.9.1-rc.1", "does not satisfy >=2026.9.1"),
+            ("2026.10.0-rc.0", "runtime version is invalid"),
+            ("2026.10.0-rc.01", "runtime version is invalid"),
+            ("2026.10.0-rc.1+build", "runtime version is invalid"),
+            ("2026.10.0-beta.1", "runtime version is invalid"),
             ("2026.09.1", "runtime version is invalid"),
             ("v2026.9.1", "runtime version is invalid"),
             ("0.11.0", "runtime version is invalid"),

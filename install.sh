@@ -214,7 +214,7 @@ Usage: install.sh [options]
   --host HOST       install claude, codex, or grok (repeatable)
   --all             install every supported host
   --yes, -y         non-interactive host-pack provisioning
-  --oracle-version V exact signed oracle pack version (default: latest published)
+  --oracle-version V exact signed oracle pack version (default: latest stable; latest RC with --aos-channel dev)
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
@@ -321,7 +321,29 @@ printf '%s\n' "$ORACLES_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9
 if [ -z "$LOCAL_ASSETS" ]; then
   have curl || die "curl is required to download Oracle releases"
 fi
-if [ "$ORACLES_VERSION" = latest ]; then
+if [ "$ORACLES_VERSION" = latest ] && [ "$AOS_CHANNEL" = dev ]; then
+  [ -z "$LOCAL_ASSETS" ] || die "local assets require an explicit --oracle-version"
+  # Discovery is untrusted; every selected artifact is verified against its
+  # exact tag identity below. The Atom feed avoids the public API rate limit.
+  have python3 || die "python3 is required to select the dev Oracle candidate"
+  candidate_feed=$(curl --proto '=https' --tlsv1.2 -fsSL --max-time 30 \
+    "https://github.com/$ORACLES_REPO/releases.atom") \
+    || die "could not discover dev Oracle candidates"
+  ORACLES_VERSION=$(printf '%s' "$candidate_feed" | python3 -c '
+import re, sys, xml.etree.ElementTree as ET
+root = ET.fromstring(sys.stdin.read())
+prefix = "https://github.com/" + sys.argv[1] + "/releases/tag/v"
+for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
+    for link in entry.findall("{http://www.w3.org/2005/Atom}link"):
+        url = link.get("href", "")
+        if url.startswith(prefix):
+            version = url[len(prefix):]
+            if re.fullmatch(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-rc\.[1-9][0-9]*", version):
+                print(version)
+                sys.exit(0)
+raise SystemExit("no published numbered Oracle RC in the release feed")
+' "$ORACLES_REPO") || die "could not select a published dev Oracle candidate"
+elif [ "$ORACLES_VERSION" = latest ]; then
   [ -z "$LOCAL_ASSETS" ] || die "local assets require an explicit --oracle-version"
   # Resolve once without the rate-limited GitHub API, then verify all artifacts
   # against that exact release tag's Sigstore identity below.
@@ -335,7 +357,7 @@ if [ "$ORACLES_VERSION" = latest ]; then
     *) die "latest Oracle release redirected outside the expected repository" ;;
   esac
 fi
-printf '%s\n' "$ORACLES_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' \
+printf '%s\n' "$ORACLES_VERSION" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$' \
   || die "invalid oracle version '$ORACLES_VERSION'"
 [ -z "$AOS_CHANNEL" ] || [ -z "$AOS_VERSION" ] \
   || die "--aos-channel and --aos-version are mutually exclusive"
@@ -345,7 +367,7 @@ case "$AOS_CHANNEL" in
 esac
 if [ -n "$AOS_VERSION" ]; then
   printf '%s\n' "$AOS_VERSION" \
-    | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    | grep -Eq '^(202[6-9]|20[3-9][0-9])\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$' \
     || die "invalid AOS version '$AOS_VERSION'"
 fi
 if [ -n "$LOCAL_ASSETS" ]; then
@@ -572,11 +594,14 @@ calendar_version_at_least() {
   actual=$1
   floor=$2
   awk -v actual="$actual" -v floor="$floor" 'BEGIN {
+    prerelease = (actual ~ /-rc\./)
+    sub(/-rc\.[0-9]+$/, "", actual)
     split(actual, a, ".")
     split(floor, f, ".")
     ok = (a[1] > f[1]) ||
          (a[1] == f[1] && a[2] > f[2]) ||
-         (a[1] == f[1] && a[2] == f[2] && a[3] >= f[3])
+         (a[1] == f[1] && a[2] == f[2] && a[3] > f[3]) ||
+         (a[1] == f[1] && a[2] == f[2] && a[3] == f[3] && !prerelease)
     exit !ok
   }'
 }
@@ -1486,7 +1511,7 @@ validate_pack() {
     || die "signed pack has invalid AOS version floor '$aos_floor'"
   installed_aos=$(aos --version | awk 'NF { value = $NF } END { print value }')
   printf '%s\n' "$installed_aos" \
-    | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
+    | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$' \
     || die "could not determine the installed Unicity AOS version"
   calendar_version_at_least "$installed_aos" "$aos_floor" \
     || die "Unicity AOS $installed_aos does not satisfy pack requirement >=$aos_floor"

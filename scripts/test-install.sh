@@ -230,7 +230,7 @@ case " $* " in
     }
     record="$TEST_STATE/installed-$principal-$capsule"
     if [ ! -f "$record" ]; then
-      printf '%s\n' '! Update available: v2026.9.1 → v2026.9.0. Run `astrid update` to upgrade.' >&2
+      printf '%s\n' "${TEST_CAPSULE_SHOW_NOTICE:-! Update available: v2026.9.1 → v2026.9.0. Run \`astrid update\` to upgrade.}" >&2
       printf "✗ capsule '%s' is not installed for agent '%s'\n" \
         "$capsule" "$principal" >&2
       exit 1
@@ -881,6 +881,20 @@ test ! -e "$malformed_identity_state/granted-codex-code-aos-skills"
 test ! -e "$malformed_identity_home/runtime"
 test ! -e "$malformed_identity_home/extensions/oracles/plugins/$ORACLE_VERSION"
 test ! -e "$malformed_identity_home/extensions/oracles/codex/current"
+
+# An RC update notice does not turn the exact absent-capsule response into
+# a transport failure. Provisioning must still create the selected host only.
+rc_notice_home="$home/rc-notice/.aos"
+rc_notice_state="$work/rc-notice-state"
+mkdir -p "$rc_notice_state"
+TEST_CAPSULE_SHOW_NOTICE='! Update available: v2026.10.0-rc.2 → v2026.9.4. Run `astrid update` to upgrade.' \
+  TEST_STATE="$rc_notice_state" AOS_HOME="$rc_notice_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos \
+  >"$work/rc-notice.out" 2>&1
+test -e "$rc_notice_state/agent-codex-code"
+test -e "$rc_notice_home/extensions/oracles/codex/current"
+test ! -e "$rc_notice_state/agent-claude-code"
+test ! -e "$rc_notice_state/agent-grok-code"
 
 # A failed read is not proof of absence. Even with no prior capsule record,
 # a daemon/transport failure must stop before AOS workspace selection, first

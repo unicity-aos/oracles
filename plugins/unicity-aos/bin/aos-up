@@ -137,7 +137,7 @@ trap cleanup_bootstrap_log EXIT HUP INT TERM
   exit 1
 }
 ORACLE_VERSION=$(sed -n '1p' "$VERSION_FILE")
-printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$' || {
+printf '%s\n' "$ORACLE_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-rc\.[1-9][0-9]*)?$' || {
   echo "aos-up: plugin snapshot has an invalid Oracle release identity" >&2
   exit 1
 }
@@ -159,7 +159,7 @@ capsule_ready() {
   [ "$capsule_status" -eq 0 ] && return 0
   # Cached update notices are advisory, not capsule transport diagnostics.
   # Remove only the known notice; all other unexpected output stays fatal.
-  capsule_output=$(printf '%s\n' "$capsule_output" | sed '/^! Update available: v[0-9][0-9.]* → v[0-9][0-9.]*\. Run `astrid update` to upgrade\.$/d')
+  capsule_output=$(printf '%s\n' "$capsule_output" | sed '/^! Update available: v[0-9][0-9.]*\(-rc\.[1-9][0-9]*\)\{0,1\} → v[0-9][0-9.]*\(-rc\.[1-9][0-9]*\)\{0,1\}\. Run `astrid update` to upgrade\.$/d')
   if [ "$capsule_status" -eq 1 ] \
     && { [ "$capsule_output" = "capsule 'aos-mcp' is not installed for agent 'codex-code'" ] \
       || [ "$capsule_output" = "✗ capsule 'aos-mcp' is not installed for agent 'codex-code'" ]; }

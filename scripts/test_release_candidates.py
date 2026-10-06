@@ -13,6 +13,51 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleaseCandidateTests(unittest.TestCase):
+    def test_shipped_capsule_readiness_preserves_absence_and_transport_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_aos = root / "aos"
+            fake_aos.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_OUTPUT"\nexit "$TEST_STATUS"\n')
+            fake_aos.chmod(0o700)
+            absence = "✗ capsule 'aos-mcp' is not installed for agent 'codex-code'"
+            for host in ("common", "claude", "grok", "unicity-aos"):
+                for name in ("aos-up", "aos-doctor"):
+                    source = (ROOT / "plugins" / host / "bin" / name).read_text()
+                    function = "capsule_ready() {" + source.split("capsule_ready() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+                    for notice in ("! Update available: v2026.9.3 → v2026.9.4. Run `astrid update` to upgrade.",
+                                   "! Update available: v2026.10.0-rc.2 → v2026.9.4. Run `astrid update` to upgrade.",
+                                   "! Update available: v2026.10.0-rc.1 → v2026.10.0-rc.2. Run `astrid update` to upgrade."):
+                        for status, diagnostic, expected in ((1, absence, 1), (2, absence, 93),
+                                                            (1, "daemon transport unavailable", 93)):
+                            with self.subTest(host=host, name=name, notice=notice, status=status, diagnostic=diagnostic):
+                                result = subprocess.run(["sh", "-c", function + "capsule_ready\n"],
+                                    text=True, capture_output=True, env=dict(os.environ,
+                                    AOS=str(fake_aos), AOS_HOME=str(root / "absent-home"), AOS_HOST="codex",
+                                    PRINCIPAL="codex-code", TEST_STATUS=str(status), TEST_OUTPUT=notice + "\n" + diagnostic))
+                                self.assertEqual(result.returncode, expected, result.stderr)
+
+    def test_shipped_plugin_identity_guards_accept_only_numbered_candidates(self) -> None:
+        # Execute each shipped guard, not a replacement regex in the test.
+        for host in ("claude", "grok", "unicity-aos"):
+            for name in ("aos-install", "aos-up", "aos-doctor", "lib-aos-resolve.sh"):
+                path = ROOT / "plugins" / host / "bin" / name
+                guards = [line.split(" ||", 1)[0].rstrip(" \\") for line in path.read_text().splitlines()
+                          if "grep -Eq" in line and any(variable in line for variable in
+                          ("$ORACLE_VERSION", "$BUNDLED_ORACLE_VERSION", "$_aos_oracle_version"))]
+                # The common resolver has no release-identity guard; its
+                # callers above own that check. Codex's resolver has one.
+                self.assertEqual(len(guards), 0 if name == "lib-aos-resolve.sh" and host != "unicity-aos" else 1, str(path))
+                for version, accepted in (("2026.10.0", True), ("2026.10.0-rc.1", True),
+                                          ("2026.10.0-rc.12", True), ("2026.10.0-rc.0", False),
+                                          ("2026.10.0-rc.01", False), ("2026.10.0-beta.1", False),
+                                          ("2026.10.0-rc.1+build", False)):
+                    for guard in guards:
+                        with self.subTest(path=str(path), version=version):
+                            result = subprocess.run(["sh", "-c", guard], capture_output=True,
+                                env=dict(os.environ, ORACLE_VERSION=version,
+                                         BUNDLED_ORACLE_VERSION=version, _aos_oracle_version=version))
+                            self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
     def test_oracle_channel_does_not_request_a_second_aos_install(self) -> None:
         source = (ROOT / "install.sh").read_text()
         function = "ensure_aos() {" + source.split("ensure_aos() {", 1)[1].split("\ncalendar_version_at_least()", 1)[0]

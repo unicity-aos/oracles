@@ -183,7 +183,14 @@ jobs:
             | sort > remote-assets.txt
           diff -u expected-assets.txt remote-assets.txt
 
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          # Reused drafts must not retain an incorrect stable/prerelease class.
+          gh release edit "$GITHUB_REF_NAME" --prerelease="$PRERELEASE"
+          test "$(gh release view "$GITHUB_REF_NAME" --json isPrerelease --jq .isPrerelease)" = "$PRERELEASE"
+          if [ "$PRERELEASE" = true ]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false
+          fi
           test "$(gh release view "$GITHUB_REF_NAME" --json isImmutable --jq .isImmutable)" = true || {
             echo "published release is not immutable; enable repository release immutability before retrying with a new version" >&2
             exit 1

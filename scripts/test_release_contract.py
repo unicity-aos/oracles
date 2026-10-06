@@ -100,6 +100,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertLess(stage, build)
         self.assertIn("if: env.PRERELEASE == 'true'", self.workflow)
         self.assertIn('--prerelease="$PRERELEASE"', self.workflow)
+        self.assertIn('gh release edit "$GITHUB_REF_NAME" --prerelease="$PRERELEASE"', self.workflow)
+        self.assertIn('--json isPrerelease --jq .isPrerelease', self.workflow)
+        self.assertIn('--draft=false --latest=false', self.workflow)
         self.assertIn('notes="release/notes/${version%%-*}.md"', self.workflow)
 
     def test_published_release_must_be_platform_immutable(self) -> None:

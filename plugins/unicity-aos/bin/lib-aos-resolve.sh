@@ -333,6 +333,7 @@ PY
     inside && $1 == "version-requirement" { value = $2; gsub(/"/, "", value); print value }
   ' "$_aos_compat")
   _aos_calver_re='^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+  _aos_runtime_release_re='^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
   _aos_official_identity="https://github.com/astrid-runtime/astrid/.github/workflows/release.yml@refs/tags/v${_aos_expected_runtime}"
   grep -Fqx 'repository = "astrid-runtime/astrid"' "$_aos_compat" \
     && printf '%s\n' "$_aos_expected_runtime" | grep -Eq "$_aos_calver_re" \
@@ -404,7 +405,7 @@ import pathlib
 import re
 import sys
 
-CALVER = re.compile(r"^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
+RUNTIME_RELEASE = re.compile(r"^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$")
 OFFICIAL_RELEASE_WORKFLOW = (
     "https://github.com/astrid-runtime/astrid/.github/workflows/release.yml"
 )
@@ -435,7 +436,7 @@ if not isinstance(runtime, dict):
 if runtime.get("repository") != "astrid-runtime/astrid":
     raise SystemExit("aos-resolve: active AOS manifest runtime identity mismatch")
 actual = runtime.get("version")
-if not isinstance(actual, str) or CALVER.fullmatch(actual) is None:
+if not isinstance(actual, str) or RUNTIME_RELEASE.fullmatch(actual) is None:
     raise SystemExit("aos-resolve: installed Astrid runtime version is invalid")
 target = manifest.get("target")
 if not isinstance(target, str) or not target:
@@ -461,9 +462,9 @@ if requirement == f"={floor_version}":
             f"aos-resolve: installed Astrid runtime {actual} does not match required ={floor_version}"
         )
 elif requirement == f">={floor_version}":
-    actual_parts = tuple(int(part) for part in actual.split("."))
+    actual_parts = tuple(int(part) for part in actual.split("-", 1)[0].split("."))
     floor_parts = tuple(int(part) for part in floor_version.split("."))
-    if actual_parts < floor_parts:
+    if actual_parts < floor_parts or (actual_parts == floor_parts and "-rc." in actual):
         raise SystemExit(
             f"aos-resolve: installed Astrid runtime {actual} does not satisfy >={floor_version}"
         )
@@ -472,7 +473,7 @@ else:
 print(actual)
 PY
   ) || return 1
-  printf '%s\n' "$_aos_actual_runtime" | grep -Eq "$_aos_calver_re" || {
+  printf '%s\n' "$_aos_actual_runtime" | grep -Eq "$_aos_runtime_release_re" || {
     echo "aos-resolve: active AOS manifest runtime identity mismatch" >&2
     return 1
   }

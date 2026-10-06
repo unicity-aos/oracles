@@ -92,6 +92,16 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
             self.workflow,
         )
 
+    def test_rc_staging_follows_source_checks_and_publication_is_prerelease(self) -> None:
+        validate = self.workflow.index("Validate release source")
+        stage = self.workflow.index("Stage candidate identity in the build checkout")
+        build = self.workflow.index("Build host adapter pack manifests")
+        self.assertLess(validate, stage)
+        self.assertLess(stage, build)
+        self.assertIn("if: env.PRERELEASE == 'true'", self.workflow)
+        self.assertIn('--prerelease="$PRERELEASE"', self.workflow)
+        self.assertIn('notes="release/notes/${version%%-*}.md"', self.workflow)
+
     def test_published_release_must_be_platform_immutable(self) -> None:
         publish = self.workflow.index(
             'gh release edit "$GITHUB_REF_NAME" --draft=false'

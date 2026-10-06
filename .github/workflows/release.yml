@@ -40,10 +40,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REF_TYPE" = tag || {
-            echo "release workflow must be dispatched with a vX.Y.Z tag selected" >&2
+            echo "release workflow must be dispatched with a stable or numbered RC tag selected" >&2
             exit 1
           }
-          printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          printf '%s\n' "$GITHUB_REF_NAME" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$'
           test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$GITHUB_REF_NAME")"
           git fetch --no-tags origin main
           git merge-base --is-ancestor HEAD origin/main || {
@@ -53,11 +53,14 @@ jobs:
           git diff --exit-code
           python3 - <<'PY' >> "$GITHUB_ENV"
           import pathlib
+          import os
           import tomllib
 
-          version = "${{ github.ref_name }}".removeprefix("v")
-          if pathlib.Path("release/oracle-version").read_text().strip() != version:
-              raise SystemExit("release/oracle-version does not match tag")
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          source_version = version.split("-", 1)[0]
+          if pathlib.Path("release/oracle-version").read_text().strip() != source_version:
+              raise SystemExit("release/oracle-version does not match tag numeric base")
+          print(f"PRERELEASE={'true' if '-rc.' in version else 'false'}")
           runtime = tomllib.loads(pathlib.Path("release/runtime-compatibility.toml").read_text())["runtime"]
           if runtime["release-ready"] is not True:
               raise SystemExit("runtime compatibility pin is not release-ready")
@@ -73,7 +76,7 @@ jobs:
               raise SystemExit("runtime compatibility identity does not match its Astrid floor")
           for host in ("claude", "codex", "grok"):
               pack = tomllib.loads(pathlib.Path(f"packs/{host}.toml").read_text())["pack"]
-              if pack["version"] != version:
+              if pack["version"] != source_version:
                   raise SystemExit(f"packs/{host}.toml version does not match tag")
           print(f"RUNTIME_REPOSITORY={runtime['repository']}")
           print(f"RUNTIME_VERSION={runtime['version']}")
@@ -115,7 +118,12 @@ jobs:
           python3 scripts/test_brand_boundary.py
           python3 scripts/test_wit_contract.py
           python3 scripts/test_release_contract.py
+          python3 scripts/test_release_candidates.py
           scripts/test-install.sh
+
+      - name: Stage candidate identity in the build checkout
+        if: env.PRERELEASE == 'true'
+        run: python3 scripts/stage_release_candidate.py "${GITHUB_REF_NAME#v}"
 
       - name: Install pinned BLAKE3 tool
         run: cargo install b3sum --locked --version "$B3SUM_VERSION"
@@ -151,7 +159,8 @@ jobs:
           set -euo pipefail
           marker="<!-- aos-oracles-source:${GITHUB_SHA} -->"
           if [ "$REUSE_RELEASE_DRAFT" != true ]; then
-            notes="release/notes/${GITHUB_REF_NAME#v}.md"
+            version="${GITHUB_REF_NAME#v}"
+            notes="release/notes/${version%%-*}.md"
             test -s "$notes"
             printf '%s\n\n' "$marker" > "$RUNNER_TEMP/oracle-release-notes.md"
             cat "$notes" >> "$RUNNER_TEMP/oracle-release-notes.md"
@@ -159,6 +168,7 @@ jobs:
               --verify-tag \
               --target "$GITHUB_SHA" \
               --draft \
+              --prerelease="$PRERELEASE" \
               --title "Unicity AOS Oracles ${GITHUB_REF_NAME#v}" \
               --notes-file "$RUNNER_TEMP/oracle-release-notes.md"
           fi

@@ -13,6 +13,29 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleaseCandidateTests(unittest.TestCase):
+    def test_shipped_capsule_readiness_preserves_absence_and_transport_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            fake_aos = root / "aos"
+            fake_aos.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_OUTPUT"\nexit "$TEST_STATUS"\n')
+            fake_aos.chmod(0o700)
+            absence = "✗ capsule 'aos-mcp' is not installed for agent 'codex-code'"
+            for host in ("common", "claude", "grok", "unicity-aos"):
+                for name in ("aos-up", "aos-doctor"):
+                    source = (ROOT / "plugins" / host / "bin" / name).read_text()
+                    function = "capsule_ready() {" + source.split("capsule_ready() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+                    for notice in ("! Update available: v2026.9.3 → v2026.9.4. Run `astrid update` to upgrade.",
+                                   "! Update available: v2026.10.0-rc.2 → v2026.9.4. Run `astrid update` to upgrade.",
+                                   "! Update available: v2026.10.0-rc.1 → v2026.10.0-rc.2. Run `astrid update` to upgrade."):
+                        for status, diagnostic, expected in ((1, absence, 1), (2, absence, 93),
+                                                            (1, "daemon transport unavailable", 93)):
+                            with self.subTest(host=host, name=name, notice=notice, status=status, diagnostic=diagnostic):
+                                result = subprocess.run(["sh", "-c", function + "capsule_ready\n"],
+                                    text=True, capture_output=True, env=dict(os.environ,
+                                    AOS=str(fake_aos), AOS_HOME=str(root / "absent-home"), AOS_HOST="codex",
+                                    PRINCIPAL="codex-code", TEST_STATUS=str(status), TEST_OUTPUT=notice + "\n" + diagnostic))
+                                self.assertEqual(result.returncode, expected, result.stderr)
+
     def test_shipped_plugin_identity_guards_accept_only_numbered_candidates(self) -> None:
         # Execute each shipped guard, not a replacement regex in the test.
         for host in ("claude", "grok", "unicity-aos"):

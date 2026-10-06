@@ -2352,7 +2352,7 @@ all_state="$work/provisioned-hosts-state"
 mkdir -p "$all_state"
 AOS_HOME="$all_home" TEST_STATE="$all_state" AOS_BIN_DIR="$fake_bin" \
   "$repo_root/install.sh" --host claude --host codex --host grok --yes --no-install-aos \
-    --result-file "$work/all-hosts.json"
+    --oracle-channel dev --result-file "$work/all-hosts.json"
 python3 - "$work/all-hosts.json" "$all_home" <<'PY'
 import json, pathlib, sys
 result = json.loads(pathlib.Path(sys.argv[1]).read_text())

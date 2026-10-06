@@ -5,6 +5,7 @@ umask 077
 
 ORACLES_REPO="${AOS_ORACLES_REPO:-unicity-aos/oracles}"
 ORACLES_VERSION="${AOS_ORACLES_VERSION:-latest}"
+ORACLE_CHANNEL=""
 AOS_INSTALL_URL="${AOS_INSTALL_URL:-https://aos.unicity.ai/base-install.sh}"
 AOS_HOME_DIR="${AOS_HOME:-$HOME/.aos}"
 AOS_CHANNEL=""
@@ -214,7 +215,8 @@ Usage: install.sh [options]
   --host HOST       install claude, codex, or grok (repeatable)
   --all             install every supported host
   --yes, -y         non-interactive host-pack provisioning
-  --oracle-version V exact signed oracle pack version (default: latest stable; latest RC with --aos-channel dev)
+  --oracle-version V exact signed oracle pack version (default: latest stable; latest RC with --oracle-channel dev)
+  --oracle-channel C select stable or dev Oracle releases independently of AOS installation
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
@@ -247,6 +249,14 @@ while [ "$#" -gt 0 ]; do
       shift
       ORACLES_VERSION="${1:-}"
       [ -n "$ORACLES_VERSION" ] || die "--oracle-version requires a version"
+      ;;
+    --oracle-channel)
+      shift
+      ORACLE_CHANNEL=${1:-}
+      case "$ORACLE_CHANNEL" in
+        stable|dev) ;;
+        *) die "--oracle-channel requires stable or dev" ;;
+      esac
       ;;
     --aos-channel)
       shift
@@ -321,7 +331,10 @@ printf '%s\n' "$ORACLES_REPO" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9
 if [ -z "$LOCAL_ASSETS" ]; then
   have curl || die "curl is required to download Oracle releases"
 fi
-if [ "$ORACLES_VERSION" = latest ] && [ "$AOS_CHANNEL" = dev ]; then
+if [ -z "$ORACLE_CHANNEL" ]; then
+  if [ "$AOS_CHANNEL" = dev ]; then ORACLE_CHANNEL=dev; else ORACLE_CHANNEL=stable; fi
+fi
+if [ "$ORACLES_VERSION" = latest ] && [ "$ORACLE_CHANNEL" = dev ]; then
   [ -z "$LOCAL_ASSETS" ] || die "local assets require an explicit --oracle-version"
   # Discovery is untrusted; every selected artifact is verified against its
   # exact tag identity below. The Atom feed avoids the public API rate limit.

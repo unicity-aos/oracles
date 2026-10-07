@@ -27,6 +27,37 @@ def emit(value):
 
 
 class NativeHookDelivery(unittest.TestCase):
+    def test_packaged_claude_collection_commands_preserve_prompt_and_tool_payloads(self):
+        plugin = ROOT / "plugins/claude"
+        hooks = json.loads((plugin / "hooks/hooks.json").read_text())["hooks"]
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            fake = root / "aos-fixture"
+            fake.write_text(
+                f'#!{sys.executable}\nimport json, sys\n'
+                'event=sys.argv[sys.argv.index("--event")+1]\n'
+                'payload=json.load(sys.stdin)\n'
+                'assert payload["session_id"] == "collection-fixture"\n'
+                'if event == "user_prompt_submit": assert payload["prompt"] == "synthetic prompt"\n'
+                'elif event == "pre_tool_use": assert payload["tool_input"]["command"] == "echo synthetic"\n'
+                'else: raise AssertionError(event)\n'
+                'print(json.dumps({"schema_version":1,"event":event,"decision":{"skip":False},"context":None}))\n'
+            )
+            fake.chmod(0o700)
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith(("AOS_", "ASTRID_", "CLAUDE_", "PLUGIN_"))}
+            env.update(AOS_HOME=str(root / "aos"), AOS_BIN=str(fake), AOS_PLUGIN_ROOT=str(plugin),
+                       CLAUDE_PLUGIN_ROOT=str(plugin), ASTRID_HOOK_TOKEN="e" * 64, TMPDIR=scratch)
+            for event, fields in (("UserPromptSubmit", {"prompt": "synthetic prompt"}),
+                                  ("PreToolUse", {"tool_name": "Bash", "tool_input": {"command": "echo synthetic"}})):
+                commands = [hook["command"] for group in hooks[event] for hook in group["hooks"]]
+                self.assertEqual(len(commands), 1, "one callback owns collection")
+                result = subprocess.run(["/bin/sh", "-c", commands[0]],
+                    input=json.dumps(dict(session_id="collection-fixture", **fields)),
+                    env=env, cwd=root, text=True, capture_output=True, timeout=12)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {})
+
     def test_grok_passive_hooks_do_not_claim_decision_or_context_authority(self):
         for event in ("session_start", "subagent_start", "user_prompt_submit",
                       "post_tool_use", "post_tool_use_failure"):

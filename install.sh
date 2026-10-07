@@ -437,7 +437,21 @@ ensure_b3sum() {
 }
 
 blake3_file() {
-  "$B3SUM" "$1" | awk '{print $1}'
+  if [ -n "$B3SUM" ]; then
+    bf_digest=$("$B3SUM" "$1") || return 1
+    bf_digest=$(printf '%s\n' "$bf_digest" | awk '{print $1}')
+  else
+    # AOS owns the authenticated bundled implementation. No daemon or global
+    # package installation is needed; older AOS without it fails explicitly.
+    bf_digest=$(aos checksum "$1") \
+      || die "installed AOS cannot compute capsule identities; update AOS or provide b3sum"
+  fi
+  [ "${#bf_digest}" -eq 64 ] \
+    || die "BLAKE3 verifier returned an invalid digest"
+  case "$bf_digest" in
+    *[!0-9a-f]*) die "BLAKE3 verifier returned an invalid digest" ;;
+  esac
+  printf '%s\n' "$bf_digest"
 }
 
 release_capsule_wasm_blake3() {
@@ -445,7 +459,6 @@ release_capsule_wasm_blake3() {
   rcw_name=$2
   rcw_member=$(printf '%s\n' "$rcw_name" | tr '-' '_')
   rcw_output="$WORK/release-$rcw_name.wasm"
-  [ -n "$B3SUM" ] || die "b3sum is required to authenticate AOS capsule '$rcw_name'"
   tar -xOf "$rcw_archive" "$rcw_member.wasm" >"$rcw_output" \
     || die "AOS capsule '$rcw_name' has no readable WASM member"
   blake3_file "$rcw_output"

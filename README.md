@@ -41,6 +41,11 @@ release, then its artifacts are verified against that exact tag's Sigstore
 identity. `--oracle-version` or `AOS_ORACLES_VERSION` explicitly pins a version;
 local asset fixtures require an explicit version and never resolve online.
 
+Capsule identities are checked with an existing b3sum or AOS's bundled
+checksum command; no manual hashing-tool installation is needed with an
+AOS release that provides that command. Older AOS installations without it
+still need b3sum or an AOS update; identities are never accepted unchecked.
+
 The installer is idempotent. It provisions a least-authority host principal,
 installs the exact signed oracle pack, grants that principal only its selected
 AOS services, and installs the host marketplace plugin. It writes product state

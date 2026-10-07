@@ -121,7 +121,7 @@ def verify_runtime_before_popen() -> None:
             raise SystemExit("aos-mcp-frame: active AOS release path is not canonical")
     release_version = relative.parts[0]
     if not re.fullmatch(
-        r"20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", release_version
+        r"20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?", release_version
     ):
         raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
     checked_directories = (

@@ -43,7 +43,8 @@ Usage: aos-install [--host claude|codex|grok] [installer options]
   --oracle-version V   install an exact signed oracle-pack release
   --yes, -y            non-interactive provisioning
 
-By default it follows stable AOS and the latest published Oracle release.
+By default it reuses installed AOS, or installs stable AOS on a fresh home,
+and follows the latest published Oracle release.
 Explicit version options remain available for deliberate reproducibility.
 USAGE
 }
@@ -103,6 +104,12 @@ fi
 chmod 700 "$TMP/install.sh"
 
 set -- --host "$HOST" --skip-host-plugin
+# Repairing a host pack is not authority to switch the installed product's
+# channel. Leave runtime compatibility checks to the signed pack installer.
+if [ -z "$AOS_CHANNEL" ] && [ -z "$AOS_VERSION" ] \
+  && [ -x "${AOS_BIN_DIR:-${AOS_HOME:-$HOME/.aos}/bin}/aos" ]; then
+  set -- "$@" --no-install-aos
+fi
 [ "$ASSUME_YES" -eq 0 ] || set -- "$@" --yes
 [ -z "$AOS_CHANNEL" ] || set -- "$@" --aos-channel "$AOS_CHANNEL"
 [ -z "$AOS_VERSION" ] || set -- "$@" --aos-version "$AOS_VERSION"

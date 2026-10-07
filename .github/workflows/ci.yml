@@ -139,6 +139,7 @@ jobs:
             .mcpServers.aos.startup_timeout_sec == 20
           ' plugins/unicity-aos/.mcp.json
           python3 scripts/test_codex_mcp_startup.py
+          python3 scripts/test_oracle_installer_reuse.py
           jq -e '
             .name == "unicity-aos-oracles" and
             .plugins[0].name == "unicity-aos" and

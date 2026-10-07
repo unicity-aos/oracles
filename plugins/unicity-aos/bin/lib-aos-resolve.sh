@@ -231,7 +231,7 @@ aos_resolve_active_runtime() {
   _aos_version=$("$AOS" --version 2>/dev/null \
     | awk 'NF { value = $NF } END { print value }')
   printf '%s\n' "$_aos_version" \
-    | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || {
+    | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$' || {
       echo "aos-resolve: active AOS command reported an invalid release version" >&2
       return 1
     }

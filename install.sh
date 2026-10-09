@@ -1815,6 +1815,42 @@ reconcile_managed_aos_capsules() {
   done < "$RESOLVED_AOS_IDENTITIES"
 }
 
+bind_native_hook_adapter() {
+  nh_principal=$1
+  # Older signed packs do not declare the native hook adapter at all.
+  nh_declared=0
+  grep -q '^aos-hook-adapter-oracle ' "$RESOLVED_AOS_IDENTITIES" || nh_declared=$?
+  case "$nh_declared" in
+    0) ;;
+    1) return 0 ;;
+    *) die "could not read resolved Oracle hook adapter identities" ;;
+  esac
+  nh_hash=$(binding_hash "$RESOLVED_AOS_IDENTITIES" aos-hook-adapter-oracle) \
+    || die "signed operator distribution has no Oracle hook adapter identity"
+  # Registry identity, not an installer-derived UUID, authorizes policy replies.
+  # A newly granted principal can still be warming when installation reaches here.
+  nh_attempt=0
+  while :; do
+    load_capsule_record "$nh_principal" aos-hook-adapter-oracle \
+      || die "Oracle hook adapter has no readable identity for $nh_principal"
+    [ "$CAPSULE_HASH" = "$nh_hash" ] \
+      || die "Oracle hook adapter differs from the signed operator distribution"
+    if printf '%s\n' "$CAPSULE_SOURCE" \
+      | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    then
+      break
+    fi
+    [ "$CAPSULE_SOURCE" = unloaded ] \
+      || die "Oracle hook adapter has an invalid registry source for $nh_principal"
+    nh_attempt=$((nh_attempt + 1))
+    [ "$nh_attempt" -lt 10 ] \
+      || die "Oracle hook adapter did not load for $nh_principal; retry installation"
+    sleep 1
+  done
+  aos --principal default capsule config aos-mcp --agent "$nh_principal" \
+    --set "AOS_ORACLE_ADAPTER_SOURCE_ID=$CAPSULE_SOURCE" >/dev/null
+}
+
 install_pack() {
   host=$1
   principal=$(principal_for "$host")
@@ -1880,6 +1916,8 @@ install_pack() {
       && [ "$CAPSULE_HASH" = "$expected_hash" ] \
       || die "AOS capsule grant '$capsule' for $principal differs from the signed operator distribution"
   done < "$RESOLVED_AOS_IDENTITIES"
+
+  bind_native_hook_adapter "$principal"
 
   while read -r previous_name previous_hash previous_extra; do
     [ -n "$previous_name" ] || continue

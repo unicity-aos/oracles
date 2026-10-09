@@ -117,6 +117,7 @@ jobs:
           python3 scripts/test_host_mcp_startup.py
           python3 scripts/test_host_hook_lifecycle.py
           python3 scripts/test_native_hook_delivery.py
+          python3 scripts/test_hook_adapter_binding.py
           python3 scripts/sync-hook-registrations.py --check
           python3 scripts/test_protected_hook_delivery.py
           python3 scripts/test_protected_settings.py

@@ -583,16 +583,20 @@ def exercise_default_host_without_injection(host: str, root: Path) -> None:
     test_root = root / f"{host}-default-host"
     test_root.mkdir()
     installer = test_root / "missing-installer"
-    write_executable(installer, "#!/bin/sh\nexit 77\n")
+    installer_args = test_root / "installer-args"
+    write_executable(installer, '#!/bin/sh\nprintf "%s\\n" "$*" > "$TEST_INSTALLER_ARGS"\nexit 77\n')
     environment = {
         "HOME": str(test_root / "home"),
         "AOS_HOME": str(test_root / "home/.aos"),
-        str(HOSTS[host]["root_var"]): str(ROOT / f"plugins/{host}"),
+        # Grok's Claude-compatible loader also uses CLAUDE_PLUGIN_ROOT.
+        # The packaged marker must identify the host without host injection.
+        "CLAUDE_PLUGIN_ROOT": str(ROOT / f"plugins/{host}"),
         "AOS_ORACLES_INSTALLER": str(installer),
+        "TEST_INSTALLER_ARGS": str(installer_args),
         "PATH": "/usr/bin:/bin",
     }
     result = subprocess.run(
-        [str(ROOT / f"plugins/{host}/bin/aos-up"), "--help"],
+        [str(ROOT / f"plugins/{host}/bin/aos-up"), "--principal", HOSTS[host]["principal"], "--help"],
         cwd=test_root,
         env=environment,
         text=True,
@@ -602,9 +606,16 @@ def exercise_default_host_without_injection(host: str, root: Path) -> None:
         check=False,
     )
     assert result.returncode == 1, (result.returncode, result.stdout, result.stderr)
-    assert "automatic claude provisioning failed" in result.stderr or (
-        "automatic grok provisioning failed" in result.stderr
+    assert f"automatic {host} provisioning failed" in result.stderr
+    assert f"--host {host}" in installer_args.read_text()
+    installer_args.unlink()
+    doctor = subprocess.run(
+        [str(ROOT / f"plugins/{host}/bin/aos-doctor"), "--format", "hook"],
+        cwd=test_root, env=environment, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5, check=False,
     )
+    assert doctor.returncode == 0, (doctor.stdout, doctor.stderr)
+    assert f"--host {host}" in installer_args.read_text()
 
 
 def exercise_transport_failure(host: str, root: Path) -> None:

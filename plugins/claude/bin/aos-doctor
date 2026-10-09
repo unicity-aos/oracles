@@ -82,10 +82,15 @@ export AOS_PLUGIN_ROOT
 case "${AOS_HOST:-}" in
   claude|grok) ;;
   '')
-    if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
+    if [ -f "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ] \
+      && [ ! -L "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ]; then
       AOS_HOST=grok
-    else
+    elif [ -f "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ] \
+      && [ ! -L "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ]; then
       AOS_HOST=claude
+    else
+      printf 'aos-doctor: plugin snapshot has no regular host identity\n' >&2
+      exit 2
     fi
     ;;
   *)

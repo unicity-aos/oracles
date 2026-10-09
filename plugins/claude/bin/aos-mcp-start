@@ -59,9 +59,26 @@ def session_hook(context):
 STATUS_NAME = "aos_setup_status"
 STATUS_TOOL = {
     "name": STATUS_NAME,
-    "description": "Report whether AOS setup is starting, ready, or failed. Retry while starting; runtime tools appear when ready.",
+    "description": "Report whether AOS setup is starting, ready, or failed. When ready, use aos_list_tools and aos_call_tool if your client has not refreshed its tool list.",
     "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
 }
+LIST_TOOLS_NAME = "aos_list_tools"
+CALL_TOOL_NAME = "aos_call_tool"
+COMPATIBILITY_TOOLS = [
+    STATUS_TOOL,
+    {
+        "name": LIST_TOOLS_NAME,
+        "description": "List the currently available AOS tools and their input schemas. Use before invoking a capability that is not visible in your client's tool list.",
+        "inputSchema": {"type": "object", "properties": {"cursor": {"type": "string"}}, "additionalProperties": False},
+        "annotations": {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True},
+    },
+    {
+        "name": CALL_TOOL_NAME,
+        "description": "Invoke an AOS tool by exact name using this connection's existing principal and runtime policy. Effects depend on the selected tool.",
+        "inputSchema": {"type": "object", "properties": {"name": {"type": "string", "minLength": 1}, "arguments": {"type": "object"}}, "required": ["name", "arguments"], "additionalProperties": False},
+        "annotations": {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True},
+    },
+]
 # Match the versions supported by the authenticated Astrid backend. The proxy
 # must not accept an older version that the backend will renegotiate later.
 VERSIONS = ("2025-11-25", "2026-07-28")
@@ -135,6 +152,11 @@ class Connection:
     def result(self, request, result):
         self.send({"jsonrpc": "2.0", "id": request["id"], "result": result})
 
+    def compatibility_result(self, request, value, is_error=False):
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=True)
+        self.result(request, {"resultType": "complete", "content": [{"type": "text", "text": text}],
+                             "isError": is_error})
+
     def status_payload(self):
         status = {"state": self.state, "message": self.detail}
         notice = cached_update_notice()
@@ -163,6 +185,34 @@ class Connection:
         self.pending.clear()
         self.changed()
 
+    def forward_request(self, request):
+        # Remap client request IDs, including the private initialize ID.
+        self.serial += 1
+        child_id = f"aos-request-{self.serial}"
+        self.pending[child_id] = request
+        self.to_child(dict(request, id=child_id))
+
+    def forward_compatibility_request(self, request, method, params, compatibility_method):
+        self.serial += 1
+        child_id = f"aos-request-{self.serial}"
+        self.pending[child_id] = dict(request, _aos_compatibility_method=compatibility_method)
+        self.to_child(dict(request, id=child_id, method=method, params=params))
+
+    @staticmethod
+    def with_compatibility_tools(result):
+        result = dict(result)
+        backend_tools = result.get("tools")
+        if not isinstance(backend_tools, list):
+            return result
+        reserved = {tool["name"] for tool in COMPATIBILITY_TOOLS}
+        # These adapter names are reserved so a runtime tool cannot shadow the
+        # stable discovery/dispatch path on hosts that cache tools/list.
+        runtime_tools = [tool for tool in backend_tools
+                         if not (isinstance(tool, dict) and isinstance(tool.get("name"), str)
+                                 and tool["name"] in reserved)]
+        result["tools"] = COMPATIBILITY_TOOLS + runtime_tools
+        return result
+
     def start(self, request):
         params = dict(request.get("params", {}))
         proposed = params.get("protocolVersion")
@@ -173,7 +223,7 @@ class Connection:
             "protocolVersion": self.version,
             "capabilities": {"tools": {"listChanged": True}},
             "serverInfo": {"name": "aos", "version": "1.0.0"},
-            "instructions": "AOS may still be provisioning. Use aos_setup_status; runtime tools become available on this connection when ready.",
+            "instructions": "AOS may still be provisioning. Tool inventory returns immediately. Use aos_setup_status for readiness; if your client does not refresh its tool list, use aos_list_tools and aos_call_tool once setup is ready.",
         })
         try:
             # Own only this launcher process group; never signal other daemons.
@@ -205,22 +255,55 @@ class Connection:
         if method == "ping" and "id" in message:
             self.result(message, {})
             return
-        if method == "tools/call" and message.get("params", {}).get("name") == STATUS_NAME:
-            self.result(message, {"resultType": "complete", "content": [{"type": "text", "text": json.dumps(self.status_payload())}],
-                                  "isError": self.state == "failed"})
+        if method == "tools/call" and "id" in message:
+            params = message.get("params", {})
+            if not isinstance(params, dict):
+                self.error(message, "Tool call parameters must be an object", -32602)
+                return
+            name = params.get("name")
+            args = params.get("arguments", {})
+            if name == STATUS_NAME:
+                self.result(message, {"resultType": "complete", "content": [{"type": "text", "text": json.dumps(self.status_payload())}],
+                                      "isError": self.state == "failed"})
+                return
+            if name == LIST_TOOLS_NAME:
+                if not isinstance(args, dict) or set(args) - {"cursor"} or ("cursor" in args and not isinstance(args["cursor"], str)):
+                    self.error(message, "Expected only an optional string cursor", -32602)
+                    return
+                if self.state != "ready":
+                    self.compatibility_result(message, self.status_payload(), is_error=True)
+                    return
+                forwarded = {}
+                if "_meta" in params:
+                    forwarded["_meta"] = params["_meta"]
+                forwarded.update(args)
+                self.forward_compatibility_request(message, "tools/list", forwarded, LIST_TOOLS_NAME)
+                return
+            if name == CALL_TOOL_NAME:
+                if (not isinstance(args, dict) or set(args) != {"name", "arguments"}
+                        or not isinstance(args.get("name"), str) or not args["name"]
+                        or not isinstance(args.get("arguments"), dict)):
+                    self.error(message, "Expected a tool name and object arguments from aos_list_tools", -32602)
+                    return
+                if self.state != "ready":
+                    self.compatibility_result(message, self.status_payload(), is_error=True)
+                    return
+                forwarded = {"name": args["name"], "arguments": args["arguments"]}
+                if "_meta" in params:
+                    forwarded["_meta"] = params["_meta"]
+                self.forward_compatibility_request(message, "tools/call", forwarded, CALL_TOOL_NAME)
+                return
+        if method == "tools/list" and "id" in message and self.state == "starting":
+            self.result(message, {"tools": COMPATIBILITY_TOOLS})
             return
         if self.state != "ready":
             if method == "tools/list" and "id" in message:
-                self.result(message, {"tools": [STATUS_TOOL]})
+                self.result(message, {"tools": COMPATIBILITY_TOOLS})
             elif "id" in message and method:
                 self.error(message, self.detail)
             return
         if method and "id" in message:
-            # Remap client request IDs, including the private initialize ID.
-            self.serial += 1
-            child_id = f"aos-request-{self.serial}"
-            self.pending[child_id] = message
-            self.to_child(dict(message, id=child_id))
+            self.forward_request(message)
         elif method == "notifications/cancelled":
             params = dict(message.get("params", {}))
             for child_id, request in self.pending.items():
@@ -251,9 +334,15 @@ class Connection:
         request = self.pending.pop(message.get("id"), None)
         if request is None:
             return
+        compatibility_method = request.pop("_aos_compatibility_method", None)
+        if compatibility_method == LIST_TOOLS_NAME and "result" in message:
+            self.compatibility_result(request, message["result"])
+            return
+        if compatibility_method == CALL_TOOL_NAME:
+            self.send(dict(message, id=request["id"]))
+            return
         if request["method"] == "tools/list" and "result" in message:
-            result = dict(message["result"])
-            result["tools"] = [STATUS_TOOL] + result.get("tools", [])
+            result = self.with_compatibility_tools(message["result"])
             message = dict(message, result=result)
         self.send(dict(message, id=request["id"]))
 

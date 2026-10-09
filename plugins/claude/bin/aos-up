@@ -8,13 +8,34 @@
 # belongs exclusively to the MCP JSON-RPC transport.
 set -eu
 
-if [ -z "${AOS_HOST:-}" ]; then
-  if [ -n "${GROK_PLUGIN_ROOT:-}" ]; then
-    AOS_HOST=grok
-  else
-    AOS_HOST=claude
-  fi
+log() { printf 'aos-up: %s\n' "$*" >&2; }
+
+if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
+  AOS_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}}"
 fi
+if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
+  AOS_PLUGIN_ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." 2>/dev/null && pwd -P)" \
+    || AOS_PLUGIN_ROOT="$(dirname "$(dirname "$0")")"
+fi
+export AOS_PLUGIN_ROOT
+
+# Grok can expose the Claude-compatible plugin root variable. The packaged
+# marker, not the environment variable's spelling, identifies the host.
+packaged_host=""
+if [ ! -L "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ] \
+  && [ -f "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ]
+then
+  packaged_host=claude
+elif [ ! -L "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ] \
+  && [ -f "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ]
+then
+  packaged_host=grok
+fi
+if [ -z "$packaged_host" ]; then
+  log "plugin identity is not ${AOS_HOST:-claude}: snapshot has no regular host identity"
+  exit 2
+fi
+AOS_HOST=${AOS_HOST:-$packaged_host}
 case "$AOS_HOST" in
   claude) expected_principal=claude-code ;;
   grok) expected_principal=grok-code ;;
@@ -138,27 +159,6 @@ else
   done
 fi
 
-log() { printf 'aos-up: %s\n' "$*" >&2; }
-
-if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
-  AOS_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-${GROK_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}}"
-fi
-if [ -z "${AOS_PLUGIN_ROOT:-}" ]; then
-  AOS_PLUGIN_ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." 2>/dev/null && pwd -P)" \
-    || AOS_PLUGIN_ROOT="$(dirname "$(dirname "$0")")"
-fi
-export AOS_PLUGIN_ROOT
-
-packaged_host=""
-if [ ! -L "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ] \
-  && [ -f "$AOS_PLUGIN_ROOT/.claude-plugin/plugin.json" ]
-then
-  packaged_host=claude
-elif [ ! -L "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ] \
-  && [ -f "$AOS_PLUGIN_ROOT/.grok-plugin/plugin.json" ]
-then
-  packaged_host=grok
-fi
 if [ "$packaged_host" != "$AOS_HOST" ]; then
   log "plugin identity is not $AOS_HOST"
   exit 2

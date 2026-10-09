@@ -362,6 +362,26 @@ class SetupTests(unittest.TestCase):
             finally:
                 client.close()
 
+    def test_failed_backend_releases_held_initial_list_as_status_only(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            (root / "fail").touch()
+            client = self.fixture(root, "claude", initial_list_wait=.75)
+            try:
+                client.initialize()
+                list_reply = queue.Queue()
+                list_thread = threading.Thread(
+                    target=lambda: list_reply.put(client.request("tools/list")), daemon=True)
+                list_thread.start()
+                time.sleep(.03)
+                (root / "release").touch()
+                tools = list_reply.get(timeout=3)["result"]["tools"]
+                list_thread.join(timeout=1)
+                self.assertEqual([tool["name"] for tool in tools], [adapter.STATUS_NAME])
+                self.assertEqual(client.status()[0]["state"], "failed")
+            finally:
+                client.close()
+
     def test_disconnect_reaps_own_slow_launcher(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

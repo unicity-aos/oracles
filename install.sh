@@ -1541,6 +1541,12 @@ validate_pack() {
     || die "could not determine the installed Unicity AOS version"
   calendar_version_at_least "$installed_aos" "$aos_floor" \
     || die "Unicity AOS $installed_aos does not satisfy pack requirement >=$aos_floor"
+  if [ "$host" = codex ]; then
+    attach_help=$(aos mcp attach --help 2>&1) \
+      || die "Unicity AOS does not support the authenticated Codex MCP attach command; update AOS and retry"
+    printf '%s\n' "$attach_help" | grep -Fq -- '--interaction <INTERACTION>' \
+      || die "Unicity AOS MCP attach lacks native interaction support required by Codex; update AOS and retry"
+  fi
   CURRENT_PACK_BINDINGS="$WORK/current-$host.bindings"
   pack_capsules_tsv "$pack" > "$CURRENT_PACK_BINDINGS"
   actual=$(awk '{print $1}' "$CURRENT_PACK_BINDINGS")

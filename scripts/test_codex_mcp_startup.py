@@ -545,7 +545,13 @@ def check_runtime_target_detection() -> None:
 def main() -> None:
     check_runtime_target_detection()
     assert SERVER["command"] == "python3"
-    assert SERVER["args"] == ["${PLUGIN_ROOT}/bin/aos-codex-mcp", "--principal", "codex-code"]
+    assert SERVER["args"] == [
+        "${PLUGIN_ROOT}/bin/aos-codex-mcp",
+        "--principal",
+        "codex-code",
+        "--interaction",
+        "native",
+    ]
     assert "cwd" not in SERVER
     assert SERVER["startup_timeout_sec"] == 20
     assert SERVER["env_vars"] == [
@@ -608,9 +614,14 @@ def main() -> None:
         )
 
         interaction_socket = str(root / "qa-consent.sock")
-        first = launch(environment, host_workspace, arguments=(
-            "--interaction", "native", "--interaction-socket", interaction_socket,
-        ))
+        # Exercise the exact arguments after the configured MCP executable.
+        # This proves Oracle's Codex config selects AOS-owned consent and that
+        # aos-up forwards that mode to the shared-gateway attach command.
+        first = launch(
+            environment,
+            host_workspace,
+            arguments=tuple(SERVER["args"][3:]) + ("--interaction-socket", interaction_socket),
+        )
         assert first.returncode == 0, (first.returncode, first.stdout, first.stderr)
         assert first.stderr == "", first.stderr
         assert first.stdout.strip() in {"mcp-ready", ""}, first.stdout
@@ -1144,7 +1155,13 @@ def main() -> None:
         )
         generated = json.loads((plugin_copy / ".mcp.json").read_text())["mcpServers"]["aos"]
         assert generated["command"] == SERVER["command"]
-        assert generated["args"] == [str(plugin_copy / "bin/aos-codex-mcp"), "--principal", "codex-code"]
+        assert generated["args"] == [
+            str(plugin_copy / "bin/aos-codex-mcp"),
+            "--principal",
+            "codex-code",
+            "--interaction",
+            "native",
+        ]
         assert "cwd" not in generated
         assert generated["startup_timeout_sec"] == SERVER["startup_timeout_sec"]
         assert generated["env_vars"] == SERVER["env_vars"]

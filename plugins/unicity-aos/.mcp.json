@@ -5,7 +5,9 @@
       "args": [
         "${PLUGIN_ROOT}/bin/aos-codex-mcp",
         "--principal",
-        "codex-code"
+        "codex-code",
+        "--interaction",
+        "native"
       ],
       "startup_timeout_sec": 20,
       "env_vars": [

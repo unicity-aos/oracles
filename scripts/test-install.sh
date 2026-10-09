@@ -466,6 +466,31 @@ export TEST_PRODUCT_ASSETS="$product_assets"
 mkdir -p "$TEST_STATE"
 : > "$TEST_LOG"
 
+# A missing b3sum stops the installer before it downloads or changes
+# anything. The PATH below hides every b3sum, including a system one.
+no_b3sum_bin="$work/no-b3sum-bin"
+mkdir -p "$no_b3sum_bin"
+for tool_dir in /usr/bin /bin "$fake_bin"; do
+  for tool in "$tool_dir"/*; do
+    name=${tool##*/}
+    [ "$name" != b3sum ] && [ -x "$tool" ] && [ ! -e "$no_b3sum_bin/$name" ] || continue
+    ln -s "$tool" "$no_b3sum_bin/$name"
+  done
+done
+test ! -e "$no_b3sum_bin/b3sum"
+no_b3sum_home="$home/no-b3sum/.aos"
+no_b3sum_log_start=$(wc -l < "$TEST_LOG")
+if env PATH="$no_b3sum_bin" AOS_HOME="$no_b3sum_home" \
+  "$repo_root/install.sh" --host claude --yes 2>"$work/no-b3sum.err"
+then
+  echo "installer without b3sum unexpectedly completed" >&2
+  exit 1
+fi
+grep -Fq "b3sum is required; install it and run the installer again" "$work/no-b3sum.err"
+grep -Fq "there is no way to skip it" "$work/no-b3sum.err"
+test ! -e "$no_b3sum_home"
+test "$(wc -l < "$TEST_LOG")" -eq "$no_b3sum_log_start"
+
 write_test_capsule() {
   state=$1
   principal=$2

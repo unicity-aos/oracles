@@ -243,6 +243,7 @@ jobs:
           python3 scripts/test_release_candidates.py
       - name: Exercise the non-interactive pack installer twice
         run: |
+          python3 scripts/test_bundled_checksums.py
           scripts/test-install.sh
           scripts/test-plugin-bootstrap.sh
       - name: Validate the root installer shell

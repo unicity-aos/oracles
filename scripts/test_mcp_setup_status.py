@@ -196,10 +196,18 @@ class SetupTests(unittest.TestCase):
                 finally:
                     client.close()
 
-    def fixture(self, root, host, framed=False):
+    def fixture(self, root, host, framed=False, initial_list_wait=None):
         plugin = root / host
         (plugin / "bin").mkdir(parents=True)
-        shutil.copyfile(SOURCE, plugin / "bin/aos-mcp-start")
+        adapter_path = plugin / "bin/aos-mcp-start"
+        if initial_list_wait is None:
+            shutil.copyfile(SOURCE, adapter_path)
+        else:
+            source = SOURCE.read_text()
+            marker = "INITIAL_TOOL_LIST_WAIT_SECONDS = 8.0"
+            if marker not in source:
+                raise AssertionError("initial tools/list wait constant changed without updating the test")
+            adapter_path.write_text(source.replace(marker, f"INITIAL_TOOL_LIST_WAIT_SECONDS = {initial_list_wait!r}"))
         if host == "unicity-aos":
             shutil.copyfile(ROOT / "plugins" / host / "bin/aos-codex-mcp", plugin / "bin/aos-codex-mcp")
             shutil.copyfile(ROOT / "plugins" / host / "bin/aos-configure-mcp",
@@ -223,7 +231,65 @@ class SetupTests(unittest.TestCase):
         command = [expand(server["command"]), *[expand(arg) for arg in server["args"]]]
         return Client(command, env, framed)
 
-    def test_all_packaged_commands_answer_before_install_then_call_same_connection(self):
+    def test_initial_tools_list_waits_briefly_for_runtime_tools(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            client = self.fixture(root, "claude", initial_list_wait=.75)
+            try:
+                client.initialize()
+                self.assertEqual(client.status()[0]["state"], "starting")
+                threading.Timer(.05, lambda: (root / "release").touch()).start()
+                started = time.monotonic()
+                tools = client.request("tools/list")["result"]["tools"]
+                elapsed = time.monotonic() - started
+                self.assertGreater(elapsed, .03)
+                self.assertLess(elapsed, .75)
+                self.assertEqual([tool["name"] for tool in tools],
+                                 [adapter.STATUS_NAME, "fixture_echo"])
+            finally:
+                client.close()
+
+    def test_initial_tools_list_falls_back_to_status_after_bounded_wait(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            client = self.fixture(root, "claude", initial_list_wait=.05)
+            try:
+                client.initialize()
+                started = time.monotonic()
+                tools = client.request("tools/list")["result"]["tools"]
+                elapsed = time.monotonic() - started
+                self.assertGreaterEqual(elapsed, .04)
+                self.assertLess(elapsed, .5)
+                self.assertEqual([tool["name"] for tool in tools], [adapter.STATUS_NAME])
+                self.assertEqual(client.status()[0]["state"], "starting")
+                (root / "release").touch()
+                self.assertEqual(client.receive()["method"], "notifications/tools/list_changed")
+                self.assertEqual(client.status()[0]["state"], "ready")
+            finally:
+                client.close()
+
+    def test_cancelled_initial_tools_list_is_not_replied_after_startup(self):
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            client = self.fixture(root, "claude", initial_list_wait=.5)
+            try:
+                client.initialize()
+                client.send({"jsonrpc": "2.0", "id": "cancel-me", "method": "tools/list"})
+                time.sleep(.03)
+                client.send({"jsonrpc": "2.0", "method": "notifications/cancelled",
+                             "params": {"requestId": "cancel-me"}})
+                time.sleep(.03)
+                (root / "release").touch()
+                self.assertEqual(client.receive()["method"], "notifications/tools/list_changed")
+                with self.assertRaises(queue.Empty):
+                    client.events.get(timeout=.1)
+                tools = client.request("tools/list", identity="after-startup")["result"]["tools"]
+                self.assertEqual([tool["name"] for tool in tools],
+                                 [adapter.STATUS_NAME, "fixture_echo"])
+            finally:
+                client.close()
+
+    def test_all_packaged_commands_keep_initialize_and_status_responsive(self):
         for host in ("unicity-aos", "claude", "grok"):
             for framed in (False, True):
                 with self.subTest(host=host, framed=framed), tempfile.TemporaryDirectory() as raw:
@@ -235,15 +301,31 @@ class SetupTests(unittest.TestCase):
                         self.assertLess(time.monotonic() - start, 2)
                         self.assertFalse((root / "release").exists())
                         self.assertEqual(client.status()[0]["state"], "starting")
-                        tools = client.request("tools/list")["result"]["tools"]
                         expected = [adapter.STATUS_NAME, "aos_list_tools", "aos_call_tool"] if host == "unicity-aos" else [adapter.STATUS_NAME]
-                        self.assertEqual([tool["name"] for tool in tools], expected)
                         self.assertIn("error", client.request("tools/call", {"name": "fixture_echo"}))
                         self.assertEqual(client.request("ping")["result"], {})
+                        if host == "unicity-aos":
+                            # Codex's own adapter exposes its stable management
+                            # tools while the shared Claude/Grok adapter defers
+                            # its first runtime-tool inventory.
+                            tools = client.request("tools/list")["result"]["tools"]
+                            self.assertEqual([tool["name"] for tool in tools], expected)
+                        else:
+                            list_reply = queue.Queue()
+                            list_thread = threading.Thread(
+                                target=lambda: list_reply.put(client.request("tools/list")), daemon=True)
+                            list_thread.start()
+                            time.sleep(.05)
+                            self.assertTrue(list_reply.empty(), "initial tools/list should wait for ready tools")
                         (root / "release").touch()
-                        self.assertEqual(client.receive()["method"], "notifications/tools/list_changed")
+                        if host != "unicity-aos":
+                            tools = list_reply.get(timeout=3)["result"]["tools"]
+                            list_thread.join(timeout=1)
+                        ready_deadline = time.monotonic() + 2
+                        while client.status()[0]["state"] == "starting":
+                            self.assertLess(time.monotonic(), ready_deadline)
+                            time.sleep(.01)
                         self.assertEqual(client.status()[0]["state"], "ready")
-                        tools = client.request("tools/list")["result"]["tools"]
                         self.assertEqual([tool["name"] for tool in tools], expected if host == "unicity-aos" else [adapter.STATUS_NAME, "fixture_echo"])
                         # Host IDs may equal the adapter's private initialization ID.
                         params = {"name": "aos_call_tool", "arguments": {"name": "fixture_echo", "arguments": {}}} if host == "unicity-aos" else {"name": "fixture_echo"}

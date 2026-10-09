@@ -66,6 +66,10 @@ STATUS_TOOL = {
 # must not accept an older version that the backend will renegotiate later.
 VERSIONS = ("2025-11-25", "2026-07-28")
 MAX_MESSAGE = 16 * 1024 * 1024
+# Give the ordinary background bootstrap a short chance to finish before a
+# client takes its initial tool snapshot. MCP hosts that ignore list_changed
+# would otherwise stay stuck with setup-only tools for the entire session.
+INITIAL_TOOL_LIST_WAIT_SECONDS = 8.0
 
 
 def read_message(stream):
@@ -121,6 +125,7 @@ class Connection:
         self.initialized = False
         self.host_initialized = False
         self.pending = {}
+        self.pending_initial_tool_lists = []
         self.serial = 0
         self.version = None
 
@@ -161,7 +166,38 @@ class Connection:
         for request in self.pending.values():
             self.error(request, detail)
         self.pending.clear()
+        self.complete_initial_tool_lists(ready=False)
         self.changed()
+
+    def forward_request(self, request):
+        # Remap client request IDs, including the private initialize ID.
+        self.serial += 1
+        child_id = f"aos-request-{self.serial}"
+        self.pending[child_id] = request
+        self.to_child(dict(request, id=child_id))
+
+    def complete_initial_tool_lists(self, ready):
+        waiting, self.pending_initial_tool_lists = self.pending_initial_tool_lists, []
+        for request, _deadline in waiting:
+            if ready:
+                self.forward_request(request)
+            else:
+                self.result(request, {"tools": [STATUS_TOOL]})
+
+    def expire_initial_tool_lists(self):
+        now = time.monotonic()
+        waiting, self.pending_initial_tool_lists = self.pending_initial_tool_lists, []
+        for request, deadline in waiting:
+            if deadline <= now:
+                self.result(request, {"tools": [STATUS_TOOL]})
+            else:
+                self.pending_initial_tool_lists.append((request, deadline))
+
+    def next_initial_tool_list_timeout(self):
+        if not self.pending_initial_tool_lists:
+            return None
+        return max(0.0, min(deadline for _request, deadline in self.pending_initial_tool_lists)
+                    - time.monotonic())
 
     def start(self, request):
         params = dict(request.get("params", {}))
@@ -209,6 +245,17 @@ class Connection:
             self.result(message, {"resultType": "complete", "content": [{"type": "text", "text": json.dumps(self.status_payload())}],
                                   "isError": self.state == "failed"})
             return
+        if method == "notifications/cancelled" and self.state == "starting":
+            request_id = message.get("params", {}).get("requestId")
+            self.pending_initial_tool_lists = [
+                (request, deadline) for request, deadline in self.pending_initial_tool_lists
+                if request.get("id") != request_id
+            ]
+            return
+        if method == "tools/list" and "id" in message and self.state == "starting":
+            self.pending_initial_tool_lists.append(
+                (message, time.monotonic() + INITIAL_TOOL_LIST_WAIT_SECONDS))
+            return
         if self.state != "ready":
             if method == "tools/list" and "id" in message:
                 self.result(message, {"tools": [STATUS_TOOL]})
@@ -216,11 +263,7 @@ class Connection:
                 self.error(message, self.detail)
             return
         if method and "id" in message:
-            # Remap client request IDs, including the private initialize ID.
-            self.serial += 1
-            child_id = f"aos-request-{self.serial}"
-            self.pending[child_id] = message
-            self.to_child(dict(message, id=child_id))
+            self.forward_request(message)
         elif method == "notifications/cancelled":
             params = dict(message.get("params", {}))
             for child_id, request in self.pending.items():
@@ -244,6 +287,7 @@ class Connection:
                 return
             self.state, self.detail = "ready", "AOS is ready. Runtime tools are available on this connection."
             self.changed()
+            self.complete_initial_tool_lists(ready=True)
             return
         if message.get("method"):
             self.send(message)
@@ -281,7 +325,12 @@ class Connection:
         threading.Thread(target=read_events, args=(sys.stdin.buffer, "host", self.events), daemon=True).start()
         try:
             while True:
-                source, mode, message = self.events.get()
+                try:
+                    source, mode, message = self.events.get(
+                        timeout=self.next_initial_tool_list_timeout())
+                except queue.Empty:
+                    self.expire_initial_tool_lists()
+                    continue
                 if source == "host":
                     if message is None:
                         return 0
@@ -291,6 +340,7 @@ class Connection:
                     self.fail("AOS setup or connection failed. Check MCP launcher diagnostics; reconnect to retry.")
                 else:
                     self.backend(message)
+                self.expire_initial_tool_lists()
         finally:
             self.close()
 

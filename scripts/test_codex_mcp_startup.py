@@ -37,7 +37,8 @@ def python_path() -> str:
 
 
 def launch(
-    environment: dict[str, str], cwd: Path, plugin: Path = PLUGIN
+    environment: dict[str, str], cwd: Path, plugin: Path = PLUGIN,
+    arguments: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     env = dict(environment)
     env["CODEX_PLUGIN_ROOT"] = str(plugin)
@@ -45,7 +46,7 @@ def launch(
     return subprocess.run(
         # These tests exercise the verified backend launcher directly. The
         # configured nonblocking MCP entrypoint has real-wire tests separately.
-        [str(plugin / "bin/aos-up"), "--principal", "codex-code"],
+        [str(plugin / "bin/aos-up"), "--principal", "codex-code", *arguments],
         cwd=cwd,
         env=env,
         text=True,
@@ -170,6 +171,10 @@ def write_authenticated_runtime(
         "mode": 0o755,
         "sha256": sha256,
     }
+    product_blake3, product_sha256 = file_digests(home / "bin/aos", environment)
+    payload["release_files"]["bin/aos"] = {
+        "blake3": product_blake3, "sha256": product_sha256, "mode": 0o755,
+    }
     (release / "release-manifest.json").write_text(
         json.dumps(payload, indent=2) + "\n"
     )
@@ -216,6 +221,7 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         'case " $* " in\n'
         '  " --principal default start --ephemeral ") touch "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started"; exit 0 ;;\n'
         '  *" capsule show aos-mcp --agent codex-code "*) [ -f "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started" ] || exit 94; exit 0 ;;\n'
+        '  *" mcp attach "*) exec "$AOS_HOME/releases/${TEST_AOS_VERSION:-2026.9.1}/runtime/bin/astrid" "$@" ;;\n'
         '  *) exit 92 ;;\n'
         "esac\n"
         "AOS\n"
@@ -247,15 +253,18 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         'runtime_sha256=$(shasum -a 256 "$release/runtime/bin/astrid" | awk \'{print $1}\')\n'
         'daemon_blake3=$(b3sum "$release/runtime/bin/astrid-daemon" | awk \'{print $1}\')\n'
         'daemon_sha256=$(shasum -a 256 "$release/runtime/bin/astrid-daemon" | awk \'{print $1}\')\n'
-        'python3 - "$release/release-manifest.json" "$runtime_blake3" "$runtime_sha256" <<\'PY\'\n'
+        'product_blake3=$(b3sum "$AOS_HOME/bin/aos" | awk \'{print $1}\')\n'
+        'product_sha256=$(shasum -a 256 "$AOS_HOME/bin/aos" | awk \'{print $1}\')\n'
+        'python3 - "$release/release-manifest.json" "$runtime_blake3" "$runtime_sha256" "$product_blake3" "$product_sha256" <<\'PY\'\n'
         "import json, pathlib, sys\n"
-        "path, blake3, sha256 = sys.argv[1:]\n"
+        "path, blake3, sha256, product_blake3, product_sha256 = sys.argv[1:]\n"
         "manifest = json.loads(pathlib.Path(path).read_text())\n"
         'manifest["release_files"]["runtime/bin/astrid"] = {\n'
         '    "blake3": blake3,\n'
         '    "mode": 0o755,\n'
         '    "sha256": sha256,\n'
         "}\n"
+        'manifest["release_files"]["bin/aos"] = {"blake3": product_blake3, "sha256": product_sha256, "mode": 0o755}\n'
         "pathlib.Path(path).write_text(json.dumps(manifest, indent=2) + \"\\n\")\n"
         "PY\n"
         'ln -s "releases/2026.10.0" "$receipt_root/current"\n'
@@ -598,7 +607,10 @@ def main() -> None:
             'esac\n',
         )
 
-        first = launch(environment, host_workspace)
+        interaction_socket = str(root / "qa-consent.sock")
+        first = launch(environment, host_workspace, arguments=(
+            "--interaction", "native", "--interaction-socket", interaction_socket,
+        ))
         assert first.returncode == 0, (first.returncode, first.stdout, first.stderr)
         assert first.stderr == "", first.stderr
         assert first.stdout.strip() in {"mcp-ready", ""}, first.stdout
@@ -607,7 +619,8 @@ def main() -> None:
         ]
         attach = [line for line in astrid_log.read_text().splitlines() if "mcp attach" in line]
         assert attach == [
-            f"--principal codex-code mcp attach --workspace {host_workspace.resolve()}"
+            f"--principal codex-code mcp attach --workspace {host_workspace.resolve()} "
+            f"--interaction native --interaction-socket {interaction_socket}"
         ], attach
         assert not legacy_used.exists(), "mutable runtime/bin Astrid was executed"
         runtime_home = (home / "runtime").resolve()

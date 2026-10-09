@@ -198,6 +198,39 @@ PY
     }
 }
 
+# Select the product's consent bridge only after the active release and runtime
+# have been authenticated. The frame rechecks these executable digests at exec.
+aos_resolve_mcp_product() {
+  [ "$AOS" = "$_aos_home/bin/aos" ] && [ -d "$_aos_home/bin" ] \
+    && [ ! -L "$_aos_home/bin" ] && [ -f "$AOS" ] && [ ! -L "$AOS" ] || {
+      echo "aos-resolve: MCP consent requires the canonical installed AOS command" >&2
+      return 1
+    }
+  _aos_product_digests=$(python3 - "$_aos_manifest" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+record = json.loads(pathlib.Path(sys.argv[1]).read_text())["release_files"].get("bin/aos")
+if not isinstance(record, dict) or set(record) != {"blake3", "mode", "sha256"}:
+    raise SystemExit("aos-resolve: missing AOS executable inventory record")
+if record["mode"] != 0o755 or any(
+    not isinstance(record[key], str) or re.fullmatch(r"[0-9a-f]{64}", record[key]) is None
+    for key in ("blake3", "sha256")
+):
+    raise SystemExit("aos-resolve: invalid AOS executable inventory record")
+print(record["blake3"], record["sha256"])
+PY
+  ) || return 1
+  read -r AOS_RUNTIME_BLAKE3 AOS_RUNTIME_SHA256 <<EOF
+$_aos_product_digests
+EOF
+  AOS_MCP_EXECUTABLE_KIND=product
+  AOS_MCP_PRODUCT_VERSION=$_aos_version
+  export AOS_RUNTIME_BLAKE3 AOS_RUNTIME_SHA256 AOS_MCP_EXECUTABLE_KIND AOS_MCP_PRODUCT_VERSION
+}
+
 _aos_execute_active_runtime() {
   _aos_verify_active_runtime_bytes || return $?
   exec "$ASTRID" "$@"

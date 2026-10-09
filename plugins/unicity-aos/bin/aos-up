@@ -590,7 +590,7 @@ mcp_attach() {
     ASTRID_SESSION_ID="$(new_session_id)"
   fi
   export ASTRID_SESSION_ID ASTRID_PRINCIPAL_ID="$principal"
-  cli=$(mcp_cli) || {
+  mcp_cli >/dev/null || {
     echo "aos-up: could not resolve the AOS/Astrid CLI for MCP attach" >&2
     exit 127
   }
@@ -598,16 +598,13 @@ mcp_attach() {
   CDPATH= cd -P -- "$runtime" 2>/dev/null || true
   _aos_verify_active_runtime_bytes || exit $?
   "$ASTRID" --principal "$principal" mcp ready --format json >/dev/null
+  aos_resolve_mcp_product || exit $?
   frame="$HERE/aos-mcp-frame"
   if [ -x "$frame" ] && command -v python3 >/dev/null 2>&1; then
-    AOS_RUNTIME_BLAKE3="$_aos_expected_blake3"
-    AOS_RUNTIME_SHA256="$_aos_expected_sha256"
-    AOS_RUNTIME_PATH="$ASTRID"
-    export AOS_RUNTIME_BLAKE3 AOS_RUNTIME_SHA256 AOS_RUNTIME_PATH
-    exec python3 -u "$frame" "$cli" --principal "$principal" mcp attach --workspace "$workspace"
+    exec python3 -u "$frame" "$AOS" --principal "$principal" mcp attach --workspace "$workspace" "$@"
   fi
-  set -- --principal "$principal" mcp attach --workspace "$workspace"
-  _aos_execute_active_runtime "$@"
+  echo "aos-up: authenticated MCP consent bridge requires aos-mcp-frame and python3" >&2
+  exit 127
 }
 
 # Pack.lock can be absent, unreadable, or mid-swap. Probe the capsule transport

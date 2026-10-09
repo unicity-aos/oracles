@@ -23,13 +23,6 @@ the Codex marketplace plugin. Legacy Codex MCP configuration does not expand
 plugin-root placeholders or supply a plugin-root environment variable. The
 configured command keeps the session's working directory, answers initialization
 before provisioning completes, and exposes `aos_setup_status` while setup runs.
-Codex connections explicitly use AOS-native interaction handling so a host that
-advertises MCP elicitation but declines a request cannot silently become the
-approval surface. The shared AOS gateway and the existing `codex-code`
-principal remain unchanged.
-The installer also verifies that the selected AOS binary exposes
-`aos mcp attach --interaction` before provisioning Codex; calendar version
-alone cannot identify this feature across prereleases.
 For a local checkout, run this plugin's `install.sh` before enabling it; do not
 register the unconfigured template directly.
 

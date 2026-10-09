@@ -104,17 +104,6 @@ if [ "${1:-}" = --version ]; then
   printf 'Unicity AOS %s\n' "${TEST_AOS_VERSION:-2026.9.1}"
   exit 0
 fi
-if [ "${1:-}" = mcp ] && [ "${2:-}" = attach ] && [ "${3:-}" = --help ]; then
-  if [ "${TEST_AOS_ATTACH_MODE:-native}" = missing ]; then
-    printf '%s\n' 'error: unrecognized subcommand attach' >&2
-    exit 2
-  fi
-  printf '%s\n' 'Usage: aos mcp attach [OPTIONS]'
-  if [ "${TEST_AOS_ATTACH_MODE:-native}" = native ]; then
-    printf '%s\n' '      --interaction <INTERACTION>'
-  fi
-  exit 0
-fi
 printf 'aos' >> "$TEST_LOG"
 printf ' %q' "$@" >> "$TEST_LOG"
 printf '\n' >> "$TEST_LOG"
@@ -635,10 +624,7 @@ import sys
 plugin = Path(sys.argv[1]) / "extensions/oracles/plugins" / sys.argv[2] / "plugins/unicity-aos"
 server = json.loads((plugin / ".mcp.json").read_text())["mcpServers"]["aos"]
 assert server["command"] == "python3", server
-assert server["args"] == [
-    str(plugin / "bin/aos-codex-mcp"), "--principal", "codex-code",
-    "--interaction", "native",
-], server
+assert server["args"] == [str(plugin / "bin/aos-codex-mcp"), "--principal", "codex-code"], server
 assert "cwd" not in server, "do not replace the host project with the plugin directory"
 PY
 
@@ -1863,55 +1849,6 @@ if grep -Eq 'capsule install|distro apply' "$work/incompatible.log"; then
   exit 1
 fi
 test ! -e "$incompatible_home/extensions/oracles/codex/Pack.lock"
-
-# A numeric AOS version cannot identify source-level CLI features because a
-# prerelease may retain the same product version after its tag was cut. Codex
-# requires the authenticated shared-gateway attach command's native-interaction
-# option; fail before writes if the installed AOS binary predates that command.
-unsupported_attach_home="$home/unsupported-attach/.aos"
-unsupported_attach_start=$(wc -l < "$TEST_LOG")
-if TEST_AOS_VERSION=2026.10.0 TEST_AOS_ATTACH_MODE=missing \
-  AOS_HOME="$unsupported_attach_home" \
-  "$repo_root/install.sh" --host codex --yes --no-install-aos
-then
-  echo "Codex Oracle unexpectedly installed without native AOS attach support" >&2
-  exit 1
-fi
-tail -n "+$((unsupported_attach_start + 1))" "$TEST_LOG" \
-  > "$work/unsupported-attach.log"
-if grep -Eq '^aos .* (capsule install|distro apply)( |$)' "$work/unsupported-attach.log"; then
-  echo "Codex Oracle changed AOS capsule state before checking native attach support" >&2
-  exit 1
-fi
-test ! -e "$unsupported_attach_home/extensions/oracles/codex/Pack.lock"
-
-# AOS may expose `mcp attach` without the specific native-interaction bridge;
-# command presence alone is not enough to install this Codex plugin config.
-unsupported_interaction_home="$home/unsupported-interaction/.aos"
-unsupported_interaction_start=$(wc -l < "$TEST_LOG")
-if TEST_AOS_VERSION=2026.10.0 TEST_AOS_ATTACH_MODE=without-interaction \
-  AOS_HOME="$unsupported_interaction_home" \
-  "$repo_root/install.sh" --host codex --yes --no-install-aos
-then
-  echo "Codex Oracle unexpectedly installed without native AOS interaction support" >&2
-  exit 1
-fi
-tail -n "+$((unsupported_interaction_start + 1))" "$TEST_LOG" \
-  > "$work/unsupported-interaction.log"
-if grep -Eq '^aos .* (capsule install|distro apply)( |$)' "$work/unsupported-interaction.log"; then
-  echo "Codex Oracle changed AOS capsule state before checking native interaction support" >&2
-  exit 1
-fi
-test ! -e "$unsupported_interaction_home/extensions/oracles/codex/Pack.lock"
-
-# Claude and Grok keep their existing MCP serve path; the Codex attach
-# capability check must not become a blanket AOS requirement for every host.
-claude_without_attach_home="$home/claude-without-attach/.aos"
-TEST_AOS_VERSION=2026.9.1 TEST_AOS_ATTACH_MODE=missing \
-  AOS_HOME="$claude_without_attach_home" \
-  "$repo_root/install.sh" --host claude --yes --no-install-aos \
-  > "$work/claude-without-attach.log"
-test -f "$claude_without_attach_home/extensions/oracles/claude/Pack.lock"
 
 # An exact product version request cannot silently settle on another version
 # that merely satisfies the pack floor.

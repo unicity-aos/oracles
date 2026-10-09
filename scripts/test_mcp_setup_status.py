@@ -268,6 +268,17 @@ class SetupTests(unittest.TestCase):
             finally:
                 client.close()
 
+    def test_readiness_after_initial_tools_deadline_keeps_status_fallback(self):
+        connection = adapter.Connection([])
+        request = {"jsonrpc": "2.0", "id": "late", "method": "tools/list"}
+        replies, forwarded = [], []
+        connection.result = lambda _request, result: replies.append(result)
+        connection.forward_request = lambda pending: forwarded.append(pending)
+        connection.pending_initial_tool_lists = [(request, time.monotonic() - .01)]
+        connection.complete_initial_tool_lists(ready=True)
+        self.assertEqual(forwarded, [])
+        self.assertEqual(replies, [{"tools": [adapter.STATUS_TOOL]}])
+
     def test_cancelled_initial_tools_list_is_not_replied_after_startup(self):
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

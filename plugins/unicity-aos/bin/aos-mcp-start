@@ -178,8 +178,9 @@ class Connection:
 
     def complete_initial_tool_lists(self, ready):
         waiting, self.pending_initial_tool_lists = self.pending_initial_tool_lists, []
-        for request, _deadline in waiting:
-            if ready:
+        now = time.monotonic()
+        for request, deadline in waiting:
+            if ready and deadline > now:
                 self.forward_request(request)
             else:
                 self.result(request, {"tools": [STATUS_TOOL]})

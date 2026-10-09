@@ -238,6 +238,11 @@ case " $* " in
     if printf ' %s ' "$*" | grep -Fq ' --format toml '; then
       hash=$(sed -n '1p' "$record")
       source=$(sed -n '2p' "$record")
+      # This fixture also covers historical path-shaped source metadata.
+      # Native policy binding specifically needs a loaded adapter registry UUID.
+      if [ "$capsule" = aos-hook-adapter-oracle ]; then
+        source=$(printf '%s\n' "$hash" | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/\1-\2-\3-\4-\5/')
+      fi
       installed=$(sed -n '3p' "$record")
       updated=$(sed -n '4p' "$record")
       printf 'name = "%s"\n' "$capsule"
@@ -247,6 +252,18 @@ case " $* " in
       printf 'installed_at = "%s"\n' "$installed"
       printf 'updated_at = "%s"\n' "$updated"
     fi
+    ;;
+  *" capsule config "*)
+    principal=""
+    previous=""
+    binding=""
+    for argument in "$@"; do
+      [ "$previous" != --agent ] || principal=$argument
+      [ "$previous" != --set ] || binding=$argument
+      previous=$argument
+    done
+    [ -n "$principal" ] && [ -n "$binding" ] || exit 97
+    printf '%s\n' "$binding" > "$TEST_STATE/hook-binding-$principal"
     ;;
   *" distro apply "*)
     principal=default
@@ -726,6 +743,10 @@ test -d "$AOS_HOME/extensions/oracles/plugins/$ORACLE_VERSION"
 test -L "$AOS_HOME/extensions/oracles/codex/current"
 test -f "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
 test -f "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml"
+adapter_hash=$(sed -n '1p' "$TEST_STATE/installed-codex-code-aos-hook-adapter-oracle")
+adapter_source=$(printf '%s\n' "$adapter_hash" | sed -E 's/^(.{8})(.{4})(.{4})(.{4})(.{12}).*$/\1-\2-\3-\4-\5/')
+test "$(cat "$TEST_STATE/hook-binding-codex-code")" \
+  = "AOS_ORACLE_ADAPTER_SOURCE_ID=$adapter_source"
 grep -Fq 'source = "local"' "$AOS_HOME/extensions/oracles/codex/current/Receipt.toml"
 test "$(cat "$AOS_HOME/extensions/oracles/codex/current/ManagedCapsules.toml")" \
   = 'schema-version = 1'

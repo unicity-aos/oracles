@@ -206,6 +206,36 @@ def test_lexically_canceled_symlink_home_rejected() -> None:
         )
 
 
+def test_product_bridge_is_byte_gated_and_rejects_symlinked_bin() -> None:
+    with tempfile.TemporaryDirectory() as raw:
+        root = Path(raw).resolve()
+        runtime = canonical_release(root)
+        product = root / "bin/aos"
+        product.parent.mkdir()
+        shutil.copyfile("/bin/sh", product)
+        product.chmod(0o700)
+        environment = runtime_env(str(product))
+        environment.update({
+            "AOS_HOME": str(root), "AOS_MCP_EXECUTABLE_KIND": "product",
+            "AOS_MCP_PRODUCT_VERSION": "2026.9.1",
+        })
+        completed = subprocess.run(
+            [sys.executable, str(FRAME), str(product), "-c", "exit 0"],
+            input=b"", capture_output=True, env=environment, timeout=2,
+        )
+        assert completed.returncode == 0, completed.stderr
+        with product.open("ab") as output:
+            output.write(b"changed executable bytes")
+        assert_rejected(str(product), environment, b"runtime digest does not match")
+        product.unlink()
+        product.symlink_to(runtime)
+        assert_rejected(str(product), environment, b"not the canonical release executable")
+        product.unlink()
+        product.parent.rename(root / "real-bin")
+        product.parent.symlink_to(root / "real-bin", target_is_directory=True)
+        assert_rejected(str(product), environment, b"release path is not canonical")
+
+
 def main() -> None:
     assert FRAME.is_file()
     test_child_exit_with_open_stdin()
@@ -214,6 +244,7 @@ def main() -> None:
     test_symlinked_release_ancestor_rejected()
     test_symlinked_home_ancestor_rejected()
     test_lexically_canceled_symlink_home_rejected()
+    test_product_bridge_is_byte_gated_and_rejects_symlinked_bin()
 
 
 if __name__ == "__main__":

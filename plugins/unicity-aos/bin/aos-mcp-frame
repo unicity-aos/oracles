@@ -106,30 +106,39 @@ def verify_runtime_before_popen() -> None:
     releases = aos_home / "releases"
     if aos_home.is_symlink() or not aos_home.is_dir() or releases.is_symlink() or not releases.is_dir():
         raise SystemExit("aos-mcp-frame: active AOS release home is not canonical")
-    try:
-        relative = executable_path.relative_to(releases)
-    except (ValueError, OSError):
-        raise SystemExit(
-            "aos-mcp-frame: runtime is not the canonical release executable"
-        ) from None
-    if len(relative.parts) != 4 or relative.parts[1:] != ("runtime", "bin", "astrid"):
-        raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
+    kind = os.environ.get("AOS_MCP_EXECUTABLE_KIND", "runtime")
+    if kind == "product":
+        if executable_path != aos_home / "bin" / "aos":
+            raise SystemExit("aos-mcp-frame: product is not the canonical installed executable")
+        release_version = os.environ.get("AOS_MCP_PRODUCT_VERSION", "")
+        checked_directories = (releases, releases / release_version, aos_home / "bin")
+    elif kind == "runtime":
+        try:
+            relative = executable_path.relative_to(releases)
+        except (ValueError, OSError):
+            raise SystemExit(
+                "aos-mcp-frame: runtime is not the canonical release executable"
+            ) from None
+        if len(relative.parts) != 4 or relative.parts[1:] != ("runtime", "bin", "astrid"):
+            raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
+        release_version = relative.parts[0]
+        checked_directories = (
+            releases,
+            releases / release_version,
+            releases / release_version / "runtime",
+            releases / release_version / "runtime" / "bin",
+        )
+    else:
+        raise SystemExit("aos-mcp-frame: unsupported executable kind")
     current = Path(aos_home.anchor)
     for component in aos_home.parts[1:]:
         current /= component
         if current.is_symlink() or not current.is_dir():
             raise SystemExit("aos-mcp-frame: active AOS release path is not canonical")
-    release_version = relative.parts[0]
     if not re.fullmatch(
         r"20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?", release_version
     ):
         raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
-    checked_directories = (
-        releases,
-        releases / release_version,
-        releases / release_version / "runtime",
-        releases / release_version / "runtime" / "bin",
-    )
     try:
         unsafe_path = any(path.is_symlink() or not path.is_dir() for path in checked_directories)
     except OSError:

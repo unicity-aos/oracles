@@ -1708,6 +1708,24 @@ capture_receipt_rollback_state() {
   fi
 }
 
+# Reuse promises usable installed files, not just equal contents. Executable
+# helpers and private receipts must retain the staged permission masks too.
+installed_tree_matches() {
+  itm_source=$1
+  itm_destination=$2
+  diff -qr "$itm_source" "$itm_destination" >/dev/null || return 1
+  find "$itm_source" -print > "$WORK/tree-mode-paths" || return 1
+  while IFS= read -r itm_entry; do
+    itm_relative=${itm_entry#"$itm_source"}
+    itm_source_mode=$(stat -c '%a' "$itm_entry" 2>/dev/null \
+      || stat -f '%Lp' "$itm_entry" 2>/dev/null) || return 1
+    itm_destination_mode=$(stat -c '%a' "$itm_destination$itm_relative" 2>/dev/null \
+      || stat -f '%Lp' "$itm_destination$itm_relative" 2>/dev/null) || return 1
+    case "$itm_source_mode" in ''|*[!0-7]*) return 1 ;; esac
+    [ "$itm_source_mode" = "$itm_destination_mode" ] || return 1
+  done < "$WORK/tree-mode-paths"
+}
+
 activate_plugin_snapshot() {
   stage="$WORK/plugin-stage"
   destination="$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION"
@@ -1719,7 +1737,7 @@ activate_plugin_snapshot() {
     if find "$destination" ! -type f ! -type d -print -quit | grep . >/dev/null; then
       die "installed plugin snapshot $ORACLES_VERSION contains a link or special entry"
     fi
-    if diff -qr "$stage" "$destination" >/dev/null; then
+    if installed_tree_matches "$stage" "$destination"; then
       say "Using verified existing Oracle plugin snapshot $ORACLES_VERSION." >&2
       rm -rf "$stage"
     else
@@ -2202,19 +2220,19 @@ source = os.path.join(root, "plugins", "claude")
 def files(path):
     if not os.path.isabs(path) or not os.path.isdir(path) or os.path.islink(path):
         raise ValueError("invalid plugin directory")
-    result = {}
+    result = {"./": stat.S_IMODE(os.lstat(path).st_mode)}
     for current, dirs, names in os.walk(path, followlinks=False):
         for name in dirs + names:
             entry = os.path.join(current, name)
             mode = os.lstat(entry).st_mode
             if stat.S_ISDIR(mode):
-                result[os.path.relpath(entry, path) + "/"] = None
+                result[os.path.relpath(entry, path) + "/"] = stat.S_IMODE(mode)
             elif stat.S_ISREG(mode):
                 digest = hashlib.sha256()
                 with open(entry, "rb") as stream:
                     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                         digest.update(chunk)
-                result[os.path.relpath(entry, path)] = digest.digest()
+                result[os.path.relpath(entry, path)] = (stat.S_IMODE(mode), digest.digest())
             else:
                 raise ValueError("plugin tree contains a link or special file")
     return result
@@ -2343,7 +2361,7 @@ write_receipt() {
     if find "$destination" ! -type f ! -type d -print -quit | grep . >/dev/null; then
       die "installed $host receipt $ORACLES_VERSION contains a link or special entry"
     fi
-    if diff -qr "$stage" "$destination" >/dev/null; then
+    if installed_tree_matches "$stage" "$destination"; then
       say "Using verified existing $host Oracle receipt $ORACLES_VERSION." >&2
       rm -rf "$stage"
     else

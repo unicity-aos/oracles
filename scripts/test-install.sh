@@ -1880,6 +1880,16 @@ grep -Fq 'claude plugin marketplace add ' "$work/claude-registration-repair.log"
 grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' \
   "$work/claude-registration-repair.log"
 changed_plugin_file=$(find "$claude_json_state/cache" -type f -print -quit)
+claude_helper=$(find "$claude_json_state/cache" -path '*/bin/aos-doctor' -type f -print -quit)
+test -n "$claude_helper"
+chmod 644 "$claude_helper"
+claude_mode_start=$(wc -l < "$TEST_LOG")
+TEST_STATE="$claude_reuse_state" AOS_HOME="$claude_reuse_home" \
+  TEST_CLAUDE_JSON_STATE="$claude_json_state" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos
+tail -n "+$((claude_mode_start + 1))" "$TEST_LOG" > "$work/claude-mode-repair.log"
+grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' "$work/claude-mode-repair.log"
+test -x "$claude_helper"
 test -n "$changed_plugin_file"
 printf 'locally changed\n' >> "$changed_plugin_file"
 claude_repair_start=$(wc -l < "$TEST_LOG")
@@ -1973,7 +1983,9 @@ grep -Fxq 'authenticated prior generation' "$prior_receipt/prior-marker"
 cat > "$fake_bin/stat" <<'STAT'
 #!/usr/bin/env bash
 if [ "$1" = -c ]; then
-  printf '%s\n' 604
+  # Model GNU octal output for each actual file, not a constant Pack.lock
+  # permission that would hide unrelated snapshot/receipt mode damage.
+  /usr/bin/stat "$@" 2>/dev/null || /usr/bin/stat -f '%Lp' "$3"
 elif [ "$1" = -f ]; then
   cat <<'GNU'
   File: "/fixture/Pack.lock"
@@ -2308,6 +2320,11 @@ rm "$snapshot_manifest"
 TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 test -f "$snapshot_manifest"
+snapshot_helper="$immutable_home/extensions/oracles/plugins/$ORACLE_VERSION/plugins/claude/bin/aos-doctor"
+chmod 644 "$snapshot_helper"
+TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+test -x "$snapshot_helper"
 
 receipt_home="$home/immutable-receipt/.aos"
 receipt_state="$work/immutable-receipt-state"
@@ -2315,6 +2332,10 @@ mkdir -p "$receipt_state"
 TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 receipt="$receipt_home/extensions/oracles/codex/releases/$ORACLE_VERSION/Receipt.toml"
+chmod 644 "$receipt"
+TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+test "$(stat -c '%a' "$receipt" 2>/dev/null || stat -f '%Lp' "$receipt")" = 600
 printf '\nmodified = true\n' >> "$receipt"
 TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos

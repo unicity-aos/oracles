@@ -57,6 +57,8 @@ RUNTIME_STARTED_PID=""
 DAEMON_STATUS_STATE=""
 DAEMON_STATUS_PID=""
 DAEMON_STATUS_ERROR_DETAIL=""
+DOWNLOAD_PID=""
+DOWNLOAD_TICKER_PID=""
 
 say() { printf '%s\n' "$*"; }
 die() { say "aos-oracles: $*" >&2; exit 1; }
@@ -111,6 +113,14 @@ restore_runtime_state() {
 
 cleanup() {
   cleanup_status=$?
+  if [ -n "$DOWNLOAD_TICKER_PID" ]; then
+    kill "$DOWNLOAD_TICKER_PID" 2>/dev/null || :
+    wait "$DOWNLOAD_TICKER_PID" 2>/dev/null || :
+  fi
+  if [ -n "$DOWNLOAD_PID" ]; then
+    kill "$DOWNLOAD_PID" 2>/dev/null || :
+    wait "$DOWNLOAD_PID" 2>/dev/null || :
+  fi
   if [ "$cleanup_status" -ne 0 ]; then
     mark_transaction_failure
   fi
@@ -1216,7 +1226,18 @@ load_previous_bindings() {
   : > "$PREVIOUS_BINDINGS"
   [ -r "$lp_pack" ] || return 0
   PREVIOUS_PACK="$lp_pack"
-  [ -r "$lp_receipt" ] || die "installed $lp_host Oracle pack has no receipt"
+  if [ -L "$lp_root/current" ] \
+    && [ "$(readlink "$lp_root/current")" = "releases/$ORACLES_VERSION" ] \
+    && cmp -s "$lp_pack" "$STAGED_PACK/Pack.toml"; then
+    # Same-version managed ownership is established by the freshly verified
+    # pack even if a mutable receipt member is missing or damaged.
+    cp "$CURRENT_PACK_BINDINGS" "$PREVIOUS_BINDINGS"
+    return 0
+  fi
+  if [ ! -r "$lp_receipt" ]; then
+    say "Preserving untracked capsules from the incomplete $lp_host Oracle receipt."
+    return 0
+  fi
   grep -Fqx "host = \"$lp_host\"" "$lp_pack" \
     || die "installed $lp_host Oracle pack has the wrong host"
   grep -Fqx "principal = \"$lp_principal\"" "$lp_pack" \
@@ -1267,7 +1288,6 @@ ensure_principal() {
 }
 
 ensure_cosign() {
-  if have cosign; then COSIGN=$(command -v cosign); return; fi
   have curl || die "curl is required to fetch the Sigstore verifier"
   WORK=${WORK:-$(mktemp -d 2>/dev/null || mktemp -d -t aos-oracles)}
   target=$(platform) || die "unsupported platform for Sigstore verification"
@@ -1277,6 +1297,15 @@ ensure_cosign() {
     linux-arm64) digest=2ec865872e331c32fd12b08dae15332d3f92c0aa029219589684a4903ca85d11 ;;
     linux-amd64) digest=ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc ;;
   esac
+  if have cosign; then
+    path_cosign=$(command -v cosign)
+    if [ -f "$path_cosign" ] && [ ! -L "$path_cosign" ] && [ -x "$path_cosign" ] \
+      && [ "$(sha256_file "$path_cosign")" = "$digest" ]; then
+      COSIGN=$path_cosign
+      say "Using checksum-verified Sigstore verifier from PATH." >&2
+      return
+    fi
+  fi
   COSIGN="$WORK/cosign"
   [ ! -L "$COSIGN" ] || die "Sigstore verifier path is a symlink"
   if [ -f "$COSIGN" ] && [ "$(sha256_file "$COSIGN")" = "$digest" ]; then
@@ -1299,10 +1328,8 @@ ensure_cosign() {
   else
     # Bound stalled transfers separately from a healthy download on a slow link.
     say "Downloading the pinned Sigstore verifier (approximately 140 MB)..."
-    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fSL \
-      --connect-timeout 15 --speed-limit 1024 --speed-time 60 --max-time 1800 \
-      "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-$target" \
-      -o "$COSIGN" || die "could not download the Sigstore verifier"
+    download_large "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-$target" "$COSIGN" \
+      || die "could not download the Sigstore verifier"
   fi
   [ "$(sha256_file "$COSIGN")" = "$digest" ] || die "Sigstore verifier checksum mismatch"
   chmod 700 "$COSIGN"
@@ -1319,6 +1346,70 @@ ensure_cosign() {
   fi
 }
 
+download_large() {
+  if [ -t 2 ]; then
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fSL --progress-bar \
+      --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+      --retry 3 --retry-delay 2 --retry-max-time 1800 --max-time 1800 "$1" -o "$2"
+  else
+    download_ready=$(mktemp "${2}.progress.XXXXXX") || return 1
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+      --connect-timeout 30 --speed-limit 1024 --speed-time 60 \
+      --retry 3 --retry-delay 2 --retry-max-time 1800 --max-time 1800 "$1" -o "$2" &
+    DOWNLOAD_PID=$!
+    download_start=$(date +%s)
+    download_label=${1##*/}
+    {
+      ticker_sleep_pid=
+      trap 'if [ -n "$ticker_sleep_pid" ]; then kill "$ticker_sleep_pid" 2>/dev/null || :; wait "$ticker_sleep_pid" 2>/dev/null || :; fi; exit 0' HUP INT TERM
+      previous_bytes=0
+      previous_sample=$download_start
+      last_progress=$download_start
+      while :; do
+        sleep 15 &
+        ticker_sleep_pid=$!
+        # Publish readiness only after the trap owns the current timer PID.
+        printf 'ready\n' > "$download_ready"
+        wait "$ticker_sleep_pid" || exit 0
+        ticker_sleep_pid=
+        kill -0 "$DOWNLOAD_PID" 2>/dev/null || exit 0
+        received=0
+        if [ -f "$2" ]; then
+          received=$(wc -c < "$2" | tr -d ' ')
+        fi
+        now=$(date +%s)
+        elapsed=$((now - download_start))
+        if [ "$received" -gt "$previous_bytes" ]; then
+          interval=$((now - previous_sample))
+          [ "$interval" -gt 0 ] || interval=1
+          rate=$(((received - previous_bytes) / interval))
+          last_progress=$now
+          printf '[download] %s: %s bytes received, %s bytes/s, elapsed %ss\n' \
+            "$download_label" "$received" "$rate" "$elapsed" >&2
+        else
+          age=$((now - last_progress))
+          printf '[download] %s: no progress reported for %ss, elapsed %ss\n' \
+            "$download_label" "$age" "$elapsed" >&2
+        fi
+        previous_bytes=$received
+        previous_sample=$now
+      done
+    } &
+    DOWNLOAD_TICKER_PID=$!
+    while [ ! -s "$download_ready" ]; do
+      kill -0 "$DOWNLOAD_TICKER_PID" 2>/dev/null || break
+      sleep 0.01
+    done
+    if wait "$DOWNLOAD_PID"; then download_status=0; else download_status=$?; fi
+    DOWNLOAD_PID=
+    kill "$DOWNLOAD_TICKER_PID" 2>/dev/null || :
+    wait "$DOWNLOAD_TICKER_PID" 2>/dev/null || :
+    DOWNLOAD_TICKER_PID=
+    rm -f "$download_ready"
+    return "$download_status"
+  fi
+}
+
 verify_release_asset() {
   asset=$1
   bundle=$2
@@ -1326,19 +1417,102 @@ verify_release_asset() {
   "$COSIGN" verify-blob --bundle "$bundle" \
     --certificate-identity "$identity" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-    --use-signed-timestamps "$asset" >/dev/null \
-    || die "Sigstore verification failed for $(basename "$asset")"
+    --use-signed-timestamps "$asset" >/dev/null
 }
 
 download_verified() {
   name=$1
   out=$2
   base="https://github.com/$ORACLES_REPO/releases/download/v$ORACLES_VERSION"
-  curl -fsSL --max-time 120 "$base/$name" -o "$out" \
+  if [ "$CHECK_ONLY" -eq 0 ]; then
+    cache_target=$(platform) || die "unsupported platform for Oracle cache"
+    cache_root="$AOS_HOME_DIR/cache/oracles/$ORACLES_VERSION/$cache_target"
+    for cache_dir in "$AOS_HOME_DIR" "$AOS_HOME_DIR/cache" \
+      "$AOS_HOME_DIR/cache/oracles" "$AOS_HOME_DIR/cache/oracles/$ORACLES_VERSION" "$cache_root"; do
+      [ ! -L "$cache_dir" ] && { [ ! -e "$cache_dir" ] || [ -d "$cache_dir" ]; } \
+        || die "unsafe Oracle asset cache directory: $cache_dir"
+      [ -d "$cache_dir" ] || mkdir "$cache_dir" \
+        || die "could not create Oracle asset cache"
+      chmod 700 "$cache_dir" || die "could not protect Oracle asset cache"
+    done
+    cache_pointer="$cache_root/$name.sha256"
+    [ ! -L "$cache_pointer" ] \
+      && { [ ! -e "$cache_pointer" ] || [ -f "$cache_pointer" ]; } \
+      || die "unsafe Oracle asset cache pointer: $name"
+    if [ -f "$cache_pointer" ]; then
+      cache_digest=$(cat "$cache_pointer")
+      if ! printf '%s\n' "$cache_digest" | grep -Eq '^[0-9a-f]{64}$'; then
+        rm -f "$cache_pointer" || die "could not repair Oracle asset cache pointer"
+        cache_digest=
+      fi
+    else
+      cache_digest=
+    fi
+    if [ -n "$cache_digest" ]; then
+      cache_entry="$cache_root/$cache_digest"
+      [ ! -L "$cache_entry" ] \
+        && { [ ! -e "$cache_entry" ] || [ -d "$cache_entry" ]; } \
+        || die "unsafe Oracle asset cache directory: $cache_entry"
+      cached="$cache_entry/$name"
+      cached_bundle="$cached.sigstore.json"
+      if [ -L "$cached" ] || [ -L "$cached_bundle" ] \
+        || { [ -e "$cached" ] && [ ! -f "$cached" ]; } \
+        || { [ -e "$cached_bundle" ] && [ ! -f "$cached_bundle" ]; }; then
+        die "unsafe Oracle asset cache entry: $name"
+      fi
+      if [ -f "$cached" ] && [ -f "$cached_bundle" ] \
+        && [ "$(sha256_file "$cached")" = "$cache_digest" ]; then
+        cp "$cached" "$out"
+        cp "$cached_bundle" "$out.sigstore.json"
+        if verify_release_asset "$out" "$out.sigstore.json" 2>/dev/null; then
+          say "Using authenticated Oracle asset cache: $name" >&2
+          return
+        fi
+      fi
+      rm -f "$cached" "$cached_bundle"
+    fi
+  fi
+  download_large "$base/$name" "$out" \
     || die "could not download $name from v$ORACLES_VERSION"
-  curl -fsSL --max-time 60 "$base/$name.sigstore.json" -o "$out.sigstore.json" \
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fsSL \
+    --connect-timeout 30 --max-time 120 "$base/$name.sigstore.json" -o "$out.sigstore.json" \
     || die "could not download the Sigstore bundle for $name"
-  verify_release_asset "$out" "$out.sigstore.json"
+  verify_release_asset "$out" "$out.sigstore.json" \
+    || die "Sigstore verification failed for $name"
+  if [ "$CHECK_ONLY" -eq 0 ]; then
+    cache_digest=$(sha256_file "$out")
+    printf '%s\n' "$cache_digest" | grep -Eq '^[0-9a-f]{64}$' \
+      || die "invalid Oracle asset cache digest"
+    cache_entry="$cache_root/$cache_digest"
+    [ ! -L "$cache_entry" ] \
+      && { [ ! -e "$cache_entry" ] || [ -d "$cache_entry" ]; } \
+      || die "unsafe Oracle asset cache directory: $cache_entry"
+    [ -d "$cache_entry" ] || mkdir "$cache_entry" \
+      || die "could not create Oracle asset cache entry"
+    chmod 700 "$cache_entry"
+    cached="$cache_entry/$name"
+    cached_bundle="$cached.sigstore.json"
+    if [ -L "$cached" ] || [ -L "$cached_bundle" ] \
+      || { [ -e "$cached" ] && [ ! -f "$cached" ]; } \
+      || { [ -e "$cached_bundle" ] && [ ! -f "$cached_bundle" ]; }; then
+      die "unsafe Oracle asset cache entry: $name"
+    fi
+    if [ -f "$cached" ] && [ "$(sha256_file "$cached")" != "$cache_digest" ]; then
+      rm -f "$cached" "$cached_bundle"
+    fi
+    staged_asset=$(mktemp "$cache_entry/.asset.XXXXXX")
+    staged_bundle=$(mktemp "$cache_entry/.bundle.XXXXXX")
+    cp "$out" "$staged_asset"
+    cp "$out.sigstore.json" "$staged_bundle"
+    chmod 600 "$staged_asset" "$staged_bundle"
+    ln "$staged_asset" "$cached" 2>/dev/null || :
+    ln "$staged_bundle" "$cached_bundle" 2>/dev/null || :
+    rm -f "$staged_asset" "$staged_bundle"
+    cache_pointer_stage=$(mktemp "$cache_root/.pointer.XXXXXX")
+    printf '%s\n' "$cache_digest" > "$cache_pointer_stage"
+    chmod 600 "$cache_pointer_stage"
+    mv -f "$cache_pointer_stage" "$cache_pointer"
+  fi
 }
 
 validate_checksum_manifest() {
@@ -1545,9 +1719,21 @@ activate_plugin_snapshot() {
     if find "$destination" ! -type f ! -type d -print -quit | grep . >/dev/null; then
       die "installed plugin snapshot $ORACLES_VERSION contains a link or special entry"
     fi
-    diff -qr "$stage" "$destination" >/dev/null \
-      || die "installed plugin snapshot $ORACLES_VERSION differs from the staged release"
-    rm -rf "$stage"
+    if diff -qr "$stage" "$destination" >/dev/null; then
+      say "Using verified existing Oracle plugin snapshot $ORACLES_VERSION." >&2
+      rm -rf "$stage"
+    else
+      backup="$destination.rollback.$$"
+      [ ! -e "$backup" ] && [ ! -L "$backup" ] \
+        || die "stale plugin snapshot repair state exists"
+      mv "$destination" "$backup" || die "could not stage plugin snapshot repair"
+      if ! mv "$stage" "$destination"; then
+        mv "$backup" "$destination" || die "could not restore plugin snapshot after repair failure"
+        die "could not repair the plugin snapshot"
+      fi
+      rm -rf "$backup"
+      say "Repaired Oracle plugin snapshot $ORACLES_VERSION." >&2
+    fi
   else
     reject_destination_link "$destination" "plugin snapshot destination"
     mv "$stage" "$destination" || die "could not activate the plugin snapshot"
@@ -1998,15 +2184,82 @@ reconcile_obsolete_bindings() {
   say "✓ obsolete Oracle capsule bindings reconciled for $ro_principal"
 }
 
+claude_plugin_reusable() {
+  cpr_root=$1
+  have python3 || return 1
+  claude plugin list --json > "$WORK/claude-plugins.json" 2>/dev/null || return 1
+  claude plugin marketplace list --json > "$WORK/claude-marketplaces.json" 2>/dev/null || return 1
+  python3 - "$WORK/claude-plugins.json" "$WORK/claude-marketplaces.json" "$cpr_root" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+
+plugins_file, marketplaces_file, root = sys.argv[1:]
+source = os.path.join(root, "plugins", "claude")
+
+def files(path):
+    if not os.path.isabs(path) or not os.path.isdir(path) or os.path.islink(path):
+        raise ValueError("invalid plugin directory")
+    result = {}
+    for current, dirs, names in os.walk(path, followlinks=False):
+        for name in dirs + names:
+            entry = os.path.join(current, name)
+            mode = os.lstat(entry).st_mode
+            if stat.S_ISDIR(mode):
+                result[os.path.relpath(entry, path) + "/"] = None
+            elif stat.S_ISREG(mode):
+                digest = hashlib.sha256()
+                with open(entry, "rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                result[os.path.relpath(entry, path)] = digest.digest()
+            else:
+                raise ValueError("plugin tree contains a link or special file")
+    return result
+
+try:
+    with open(plugins_file) as stream:
+        plugins = json.load(stream)
+    with open(marketplaces_file) as stream:
+        marketplaces = json.load(stream)
+    if not isinstance(plugins, list) or not isinstance(marketplaces, list):
+        raise ValueError("unrecognized Claude plugin listing")
+    matches = [entry for entry in plugins if isinstance(entry, dict)
+               and entry.get("id") == "unicity-aos@unicity-aos-oracles"]
+    markets = [entry for entry in marketplaces if isinstance(entry, dict)
+               and entry.get("name") == "unicity-aos-oracles"]
+    if len(matches) != 1 or len(markets) != 1:
+        raise ValueError("Claude plugin registration missing or ambiguous")
+    plugin, market = matches[0], markets[0]
+    installed = plugin.get("installPath")
+    if not (plugin.get("scope") == "user" and plugin.get("enabled") is True
+            and plugin.get("readFromFolder") == source
+            and isinstance(installed, str) and installed != source
+            and market.get("source") == "directory"
+            and market.get("path") == root
+            and market.get("installLocation") == root
+            and files(source) == files(installed)):
+        raise ValueError("Claude plugin registration has drifted")
+except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    sys.exit(1)
+PY
+}
+
 install_plugin() {
   host=$1
   plugin_root="$AOS_HOME_DIR/extensions/oracles/plugins/$ORACLES_VERSION"
   case "$host" in
     claude)
       have claude || die "Claude Code is not installed"
-      claude plugin marketplace remove unicity-aos-oracles >/dev/null 2>&1 || true
-      claude plugin marketplace add "$plugin_root" >/dev/null
-      claude plugin install unicity-aos@unicity-aos-oracles >/dev/null
+      if claude_plugin_reusable "$plugin_root"; then
+        say "Using verified existing Claude marketplace plugin."
+      else
+        claude plugin marketplace remove unicity-aos-oracles >/dev/null 2>&1 || true
+        claude plugin marketplace add "$plugin_root" >/dev/null
+        claude plugin install unicity-aos@unicity-aos-oracles >/dev/null
+      fi
       ;;
     codex)
       have codex || die "Codex is not installed"
@@ -2090,9 +2343,21 @@ write_receipt() {
     if find "$destination" ! -type f ! -type d -print -quit | grep . >/dev/null; then
       die "installed $host receipt $ORACLES_VERSION contains a link or special entry"
     fi
-    diff -qr "$stage" "$destination" >/dev/null \
-      || die "installed $host receipt $ORACLES_VERSION differs from the staged release"
-    rm -rf "$stage"
+    if diff -qr "$stage" "$destination" >/dev/null; then
+      say "Using verified existing $host Oracle receipt $ORACLES_VERSION." >&2
+      rm -rf "$stage"
+    else
+      backup="$destination.rollback.$$"
+      [ ! -e "$backup" ] && [ ! -L "$backup" ] \
+        || die "stale Oracle receipt repair state exists"
+      mv "$destination" "$backup" || die "could not stage Oracle receipt repair"
+      if ! mv "$stage" "$destination"; then
+        mv "$backup" "$destination" || die "could not restore Oracle receipt after repair failure"
+        die "could not repair the Oracle receipt"
+      fi
+      rm -rf "$backup"
+      say "Repaired $host Oracle receipt $ORACLES_VERSION." >&2
+    fi
   else
     verify_receipt_commit_paths "$host"
     mv "$stage" "$destination" || die "could not commit the $host oracle receipt"

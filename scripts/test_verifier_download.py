@@ -35,6 +35,7 @@ have() { [ "$1" = curl ]; }
 say() { printf '%s\n' "$*"; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
 platform() { printf 'linux-amd64\n'; }
+sleep() { /bin/sleep 0.02; }
 sha256_file() {
   if [ "$(cat "$1")" = verified ]; then printf '%s\n' "$TEST_DIGEST";
   else printf 'wrong-digest\n'; fi
@@ -57,6 +58,7 @@ curl() {
   [ "$connect" -gt 0 ] && [ "$connect" -le 30 ] || return 90
   [ "$speed" -gt 0 ] && [ "$interval" -gt 0 ] || return 91
   [ "$TEST_MODE" != stalled ] || return 28
+  if [ "$TEST_MODE" = delayed ]; then /bin/sleep 0.2; fi
   if [ "$TEST_MODE" = corrupt ]; then printf corrupt > "$output";
   else printf verified > "$output"; fi
 }
@@ -75,6 +77,14 @@ curl() {
         result, count = self.run_bootstrap()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(count, 1)
+
+    def test_progress_before_first_byte_has_no_shell_errors(self):
+        result, count = self.run_bootstrap("delayed")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(count, 1)
+        self.assertIn("no progress reported", result.stderr)
+        self.assertNotIn("No such file", result.stderr)
+        self.assertNotIn("integer expression", result.stderr)
 
     def test_stalled_download_refused(self):
         result, _ = self.run_bootstrap("stalled")

@@ -1278,7 +1278,16 @@ ensure_cosign() {
     linux-amd64) digest=ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc ;;
   esac
   COSIGN="$WORK/cosign"
-  curl -fsSL --max-time 120 \
+  [ ! -L "$COSIGN" ] || die "Sigstore verifier path is a symlink"
+  if [ -f "$COSIGN" ] && [ "$(sha256_file "$COSIGN")" = "$digest" ]; then
+    chmod 700 "$COSIGN"
+    return
+  fi
+  # The pinned verifier is approximately 140 MB. Bound connection failures and
+  # stalled transfers separately from a healthy download on a slower link.
+  say "Downloading the pinned Sigstore verifier (approximately 140 MB)..."
+  curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fSL \
+    --connect-timeout 15 --speed-limit 1024 --speed-time 60 --max-time 1800 \
     "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-$target" \
     -o "$COSIGN" || die "could not download the Sigstore verifier"
   [ "$(sha256_file "$COSIGN")" = "$digest" ] || die "Sigstore verifier checksum mismatch"

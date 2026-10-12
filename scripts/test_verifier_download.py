@@ -12,16 +12,25 @@ DIGEST = "ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc"
 
 
 class VerifierDownloadTest(unittest.TestCase):
-    def run_bootstrap(self, mode="slow", initial=None):
+    def run_bootstrap(self, mode="slow", initial=None, cache=None):
         source = (ROOT / "install.sh").read_text()
         function = source[source.index("ensure_cosign() {"):source.index("verify_release_asset() {")]
         with tempfile.TemporaryDirectory(prefix="oracle-verifier-") as raw:
             root = Path(raw)
+            home = root / "aos"
+            cached = home / "cache/verifiers" / DIGEST
+            if cache is not None:
+                cached.parent.mkdir(parents=True)
+                if cache == "symlink":
+                    cached.symlink_to(root / "foreign")
+                else:
+                    cached.write_text(cache)
             if initial is not None:
                 (root / "cosign").write_text(initial)
             script = r'''
 set -eu
 COSIGN_VERSION=v3.1.1
+CHECK_ONLY=0
 have() { [ "$1" = curl ]; }
 say() { printf '%s\n' "$*"; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
@@ -54,7 +63,8 @@ curl() {
 '''
             result = subprocess.run(
                 ["sh", "-c", script + function + "\nensure_cosign\nensure_cosign\n"],
-                env={**os.environ, "WORK": raw, "TEST_MODE": mode, "TEST_DIGEST": DIGEST},
+                env={**os.environ, "WORK": raw, "AOS_HOME_DIR": str(home),
+                     "TEST_MODE": mode, "TEST_DIGEST": DIGEST},
                 text=True, capture_output=True, timeout=5, check=False,
             )
             downloads = root / "downloads"
@@ -80,6 +90,21 @@ curl() {
         result, count = self.run_bootstrap(initial="corrupt")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(count, 1)
+
+    def test_checksum_verified_shared_cache_avoids_download(self):
+        result, count = self.run_bootstrap(cache="verified")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(count, 0)
+
+    def test_corrupt_cache_requires_verified_download(self):
+        result, count = self.run_bootstrap(cache="corrupt")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(count, 1)
+
+    def test_symlinked_cache_refused_before_download(self):
+        result, count = self.run_bootstrap(cache="symlink")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

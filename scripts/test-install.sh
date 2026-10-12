@@ -457,6 +457,42 @@ set -euo pipefail
 printf 'claude' >> "$TEST_LOG"
 printf ' %q' "$@" >> "$TEST_LOG"
 printf '\n' >> "$TEST_LOG"
+if [ -n "${TEST_CLAUDE_JSON_STATE:-}" ]; then
+  mkdir -p "$TEST_CLAUDE_JSON_STATE"
+  case " $* " in
+    ' plugin marketplace list --json ')
+      python3 - "$TEST_CLAUDE_JSON_STATE" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+marketplace = root / "marketplace"
+path = marketplace.read_text().strip() if marketplace.exists() else None
+print(json.dumps([{"name": "unicity-aos-oracles", "source": "directory",
+                   "path": path, "installLocation": path}] if path else []))
+PY
+      exit 0 ;;
+    ' plugin list --json ')
+      python3 - "$TEST_CLAUDE_JSON_STATE" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+marketplace = root / "marketplace"
+path = marketplace.read_text().strip() if marketplace.exists() else None
+cache = root / "cache"
+print(json.dumps([{"id": "unicity-aos@unicity-aos-oracles", "scope": "user",
+                   "enabled": True, "installPath": str(cache),
+                   "readFromFolder": path + "/plugins/claude"}]
+                 if path and cache.is_dir() else []))
+PY
+      exit 0 ;;
+    ' plugin marketplace remove unicity-aos-oracles ')
+      rm -f "$TEST_CLAUDE_JSON_STATE/marketplace" ;;
+    ' plugin marketplace add '* )
+      printf '%s\n' "$4" > "$TEST_CLAUDE_JSON_STATE/marketplace" ;;
+    ' plugin install unicity-aos@unicity-aos-oracles ')
+      root=$(cat "$TEST_CLAUDE_JSON_STATE/marketplace")
+      rm -rf "$TEST_CLAUDE_JSON_STATE/cache"
+      cp -R "$root/plugins/claude" "$TEST_CLAUDE_JSON_STATE/cache" ;;
+  esac
+fi
 [ "${TEST_FAIL_PLUGIN:-0}" -eq 0 ] || exit 70
 EOF
 cat > "$fake_bin/grok" <<'EOF'
@@ -481,6 +517,154 @@ export TEST_LOG="$work/commands.log"
 export TEST_STATE="$work/state"
 export TEST_PRODUCT_ASSETS="$product_assets"
 mkdir -p "$TEST_STATE"
+: > "$TEST_LOG"
+
+# Remote fixture exercises the pinned verifier and signed release cache without
+# network access. The curl stand-in rejects the old 120-second verifier cap.
+remote_bin="$work/remote-bin"
+remote_assets="$work/remote-assets"
+remote_home="$home/remote/.aos"
+remote_log="$work/remote-curl.log"
+mkdir -p "$remote_bin" "$remote_assets"
+cp "$assets/BLAKE3SUMS.txt" "$assets/runtime-compatibility.toml" \
+  "$assets/aos-oracle-plugins.tar.gz" "$remote_assets/"
+for remote_asset in BLAKE3SUMS.txt runtime-compatibility.toml aos-oracle-plugins.tar.gz; do
+  printf 'valid Sigstore fixture\n' > "$remote_assets/$remote_asset.sigstore.json"
+done
+case "$(uname -s)/$(uname -m)" in
+  Darwin/arm64|Darwin/aarch64)
+    remote_platform=darwin-arm64
+    remote_digest=94b42a9e697be95675f6160ab031a9a5f1ec1e646d6f648d7b2f5cd59ececbc5
+    ;;
+  Darwin/x86_64)
+    remote_platform=darwin-amd64
+    remote_digest=14d2678dfbfde18798151e86fbd91ebdadbb7424b18412a42a155dd8a2df4c7a
+    ;;
+  Linux/aarch64|Linux/arm64)
+    remote_platform=linux-arm64
+    remote_digest=2ec865872e331c32fd12b08dae15332d3f92c0aa029219589684a4903ca85d11
+    ;;
+  Linux/x86_64|Linux/amd64)
+    remote_platform=linux-amd64
+    remote_digest=ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc
+    ;;
+esac
+cat > "$remote_assets/cosign-$remote_platform" <<'EOF'
+#!/bin/sh
+set -eu
+[ "$1" = verify-blob ]
+for argument in "$@"; do
+  case "$argument" in
+    *.sigstore.json) cmp "$TEST_REMOTE_ASSETS/BLAKE3SUMS.txt.sigstore.json" "$argument" ;;
+  esac
+done
+EOF
+chmod 700 "$remote_assets/cosign-$remote_platform"
+cat > "$remote_bin/cosign" <<'EOF'
+#!/bin/sh
+exit 97
+EOF
+cat > "$remote_bin/sha256sum" <<'EOF'
+#!/bin/sh
+set -eu
+case "$1" in
+  */remote-bin/cosign) printf '%064d  %s\n' 0 "$1" ;;
+  */cosign|*/.cosign.*)
+    if grep -Fqx corrupt "$1"; then
+      printf '%064d  %s\n' 0 "$1"
+    else
+      printf '%s  %s\n' "$TEST_REMOTE_COSIGN_DIGEST" "$1"
+    fi
+    ;;
+  *) exec /usr/bin/shasum -a 256 "$1" ;;
+esac
+EOF
+cat > "$remote_bin/curl" <<'EOF'
+#!/bin/sh
+set -eu
+output=
+url=
+max_time=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -o) output=$2; shift ;;
+    --max-time) max_time=$2; shift ;;
+    https://*) url=$1 ;;
+  esac
+  shift
+done
+[ -n "$output" ] && [ -n "$url" ]
+case "$url" in
+  */cosign-*) [ "$max_time" -gt 120 ] ;;
+esac
+printf '%s\n' "$url" >> "$TEST_REMOTE_CURL_LOG"
+case "$url" in
+  */cosign-*)
+    if [ "${TEST_REMOTE_SLOW_COSIGN:-0}" = 1 ]; then
+      printf '#!/bin/sh\n' > "$output"
+      /bin/sleep 0.3
+    fi
+    ;;
+esac
+cp "$TEST_REMOTE_ASSETS/${url##*/}" "$output"
+EOF
+chmod 700 "$remote_bin/cosign" "$remote_bin/sha256sum" "$remote_bin/curl"
+export TEST_REMOTE_ASSETS="$remote_assets"
+export TEST_REMOTE_COSIGN_DIGEST="$remote_digest"
+export TEST_REMOTE_CURL_LOG="$remote_log"
+remote_path="$remote_bin:$PATH"
+PATH="$remote_path" AOS_HOME="$remote_home" AOS_ORACLE_ASSETS= \
+  "$repo_root/install.sh" --check --oracle-version "$ORACLE_VERSION" \
+  > "$work/remote-check.out" 2>&1
+test ! -e "$remote_home"
+: > "$remote_log"
+PATH="$remote_path" AOS_HOME="$remote_home" AOS_ORACLE_ASSETS= \
+  "$repo_root/install.sh" --host codex --plugins-only --no-install-aos --yes \
+  --oracle-version "$ORACLE_VERSION" > "$work/remote-first.out" 2>&1
+remote_cosign_cache="$remote_home/cache/tools/cosign/v3.1.1/cosign-$remote_platform/cosign"
+test -f "$remote_cosign_cache"
+: > "$remote_log"
+PATH="$remote_path" AOS_HOME="$remote_home" AOS_ORACLE_ASSETS= \
+  "$repo_root/install.sh" --host codex --plugins-only --no-install-aos --yes \
+  --oracle-version "$ORACLE_VERSION" > "$work/remote-repeat.out" 2>&1
+if grep -Fq '/cosign-' "$remote_log" \
+  || grep -Fq '/aos-oracle-plugins.tar.gz' "$remote_log"; then
+  echo 'repeated Oracle installation redownloaded authenticated assets' >&2
+  exit 1
+fi
+printf 'corrupt\n' > "$remote_cosign_cache"
+: > "$remote_log"
+PATH="$remote_path" AOS_HOME="$remote_home" AOS_ORACLE_ASSETS= \
+  "$repo_root/install.sh" --host codex --plugins-only --no-install-aos --yes \
+  --oracle-version "$ORACLE_VERSION" > "$work/remote-repair.out" 2>&1
+grep -Fq "/cosign-$remote_platform" "$remote_log"
+rm "$remote_cosign_cache"
+ln -s "$remote_assets/cosign-$remote_platform" "$remote_cosign_cache"
+if PATH="$remote_path" AOS_HOME="$remote_home" AOS_ORACLE_ASSETS= \
+  "$repo_root/install.sh" --host codex --plugins-only --no-install-aos --yes \
+  --oracle-version "$ORACLE_VERSION" > "$work/remote-symlink.out" 2>&1; then
+  echo 'symlinked Oracle verifier cache was accepted' >&2
+  exit 1
+fi
+grep -Fq 'unsafe Sigstore verifier cache entry' "$work/remote-symlink.out"
+rm "$remote_cosign_cache"
+cp "$remote_assets/cosign-$remote_platform" "$remote_cosign_cache"
+chmod 700 "$remote_cosign_cache"
+remote_progress_bin="$work/remote-progress-bin"
+mkdir "$remote_progress_bin"
+cat > "$remote_progress_bin/sleep" <<'EOF'
+#!/bin/sh
+if [ "$1" = 15 ]; then exec /bin/sleep 0.05; fi
+exec /bin/sleep "$@"
+EOF
+chmod 700 "$remote_progress_bin/sleep"
+slow_check_home="$home/slow-check/.aos"
+PATH="$remote_progress_bin:$remote_path" AOS_HOME="$slow_check_home" \
+  AOS_ORACLE_ASSETS= TEST_REMOTE_SLOW_COSIGN=1 \
+  "$repo_root/install.sh" --check --oracle-version "$ORACLE_VERSION" \
+  > "$work/remote-progress.out" 2>&1
+test ! -e "$slow_check_home"
+grep -Fq "[download] cosign-$remote_platform:" "$work/remote-progress.out"
 : > "$TEST_LOG"
 
 write_test_capsule() {
@@ -1486,6 +1670,10 @@ test "$(grep -Fc 'aos --principal default init --yes' "$TEST_LOG" || true)" -eq 
 tail -n "+$((repeat_start + 1))" "$TEST_LOG" > "$work/repeat-install.log"
 grep -Fq 'aos --principal default start' "$work/repeat-install.log"
 grep -Fq 'aos --principal default stop' "$work/repeat-install.log"
+if grep -Fq 'capsule install' "$work/repeat-install.log"; then
+  echo 'repeated Oracle installation reinstalled a matching managed capsule' >&2
+  exit 1
+fi
 test ! -e "$AOS_HOME/runtime-running"
 
 # A daemon selected by an older host plugin from another project is stopped
@@ -1658,6 +1846,47 @@ if grep -Fq 'claude-vars ' "$work/claude-only.log"; then
   echo "external Claude plugin consumed workload authentication variables" >&2
   exit 1
 fi
+
+# Claude exposes installed plugin and marketplace JSON. Matching user-scope
+# registration and a byte-identical installed tree avoid marketplace churn;
+# missing registration or changed installed bytes still trigger repair.
+claude_reuse_home="$home/claude-reuse/.aos"
+claude_reuse_state="$work/claude-reuse-state"
+claude_json_state="$work/claude-json-state"
+mkdir -p "$claude_reuse_state"
+TEST_STATE="$claude_reuse_state" AOS_HOME="$claude_reuse_home" \
+  TEST_CLAUDE_JSON_STATE="$claude_json_state" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos
+claude_reuse_start=$(wc -l < "$TEST_LOG")
+TEST_STATE="$claude_reuse_state" AOS_HOME="$claude_reuse_home" \
+  TEST_CLAUDE_JSON_STATE="$claude_json_state" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos
+tail -n "+$((claude_reuse_start + 1))" "$TEST_LOG" > "$work/claude-reuse.log"
+grep -Fq 'claude plugin list --json' "$work/claude-reuse.log"
+grep -Fq 'claude plugin marketplace list --json' "$work/claude-reuse.log"
+if grep -Eq '^claude plugin (install|marketplace (remove|add)) ' "$work/claude-reuse.log"; then
+  echo 'matching Claude plugin was reinstalled' >&2
+  exit 1
+fi
+rm "$claude_json_state/marketplace"
+claude_repair_start=$(wc -l < "$TEST_LOG")
+TEST_STATE="$claude_reuse_state" AOS_HOME="$claude_reuse_home" \
+  TEST_CLAUDE_JSON_STATE="$claude_json_state" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos
+tail -n "+$((claude_repair_start + 1))" "$TEST_LOG" > "$work/claude-registration-repair.log"
+grep -Fq 'claude plugin marketplace add ' "$work/claude-registration-repair.log"
+grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' \
+  "$work/claude-registration-repair.log"
+changed_plugin_file=$(find "$claude_json_state/cache" -type f -print -quit)
+test -n "$changed_plugin_file"
+printf 'locally changed\n' >> "$changed_plugin_file"
+claude_repair_start=$(wc -l < "$TEST_LOG")
+TEST_STATE="$claude_reuse_state" AOS_HOME="$claude_reuse_home" \
+  TEST_CLAUDE_JSON_STATE="$claude_json_state" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos
+tail -n "+$((claude_repair_start + 1))" "$TEST_LOG" > "$work/claude-content-repair.log"
+grep -Fq 'claude plugin install unicity-aos@unicity-aos-oracles' \
+  "$work/claude-content-repair.log"
 
 # A plugin failure leaves no success receipt for a fresh installation.
 failed_plugin_home="$home/plugin-failure/.aos"
@@ -2058,8 +2287,8 @@ grep -Fq "codex receipt destination is a symlink" "$work/destination-receipt.out
 test ! -e "$receipt_escape/$ORACLE_VERSION"
 test "$(wc -l < "$TEST_LOG")" -eq "$receipt_destination_log_start"
 
-# A released version directory is immutable. Reruns may reuse identical bytes,
-# but must not replace a snapshot or receipt that differs.
+# A released version directory is checked against the staged signed bytes.
+# Missing or altered managed files are repaired on a repeated installation.
 immutable_home="$home/immutable/.aos"
 immutable_state="$work/immutable-state"
 mkdir -p "$immutable_state"
@@ -2067,13 +2296,16 @@ TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 snapshot_manifest="$immutable_home/extensions/oracles/plugins/$ORACLE_VERSION/.agents/plugins/marketplace.json"
 printf '\nmodified\n' >> "$snapshot_manifest"
-if TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
+TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-then
-  echo "modified immutable plugin snapshot was replaced" >&2
+if grep -Fq modified "$snapshot_manifest"; then
+  echo "modified managed plugin snapshot was not repaired" >&2
   exit 1
 fi
-grep -Fq modified "$snapshot_manifest"
+rm "$snapshot_manifest"
+TEST_STATE="$immutable_state" AOS_HOME="$immutable_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+test -f "$snapshot_manifest"
 
 receipt_home="$home/immutable-receipt/.aos"
 receipt_state="$work/immutable-receipt-state"
@@ -2082,13 +2314,16 @@ TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
 receipt="$receipt_home/extensions/oracles/codex/releases/$ORACLE_VERSION/Receipt.toml"
 printf '\nmodified = true\n' >> "$receipt"
-if TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
+TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos
-then
-  echo "modified immutable receipt was replaced" >&2
+if grep -Fq 'modified = true' "$receipt"; then
+  echo "modified managed receipt was not repaired" >&2
   exit 1
 fi
-grep -Fq 'modified = true' "$receipt"
+rm "$receipt"
+TEST_STATE="$receipt_state" AOS_HOME="$receipt_home" \
+  "$repo_root/install.sh" --host codex --yes --no-install-aos
+test -f "$receipt"
 
 # v0.2.0 provisioned a CE distro into each selected host principal before it
 # installed the Oracle capsules. The v0.2.2 repair detaches only bindings whose

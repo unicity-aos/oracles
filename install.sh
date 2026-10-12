@@ -1278,11 +1278,45 @@ ensure_cosign() {
     linux-amd64) digest=ae1ecd212663f3693ad9edf8b1a183900c9a52d3155ba6e354237f9a0f6463fc ;;
   esac
   COSIGN="$WORK/cosign"
-  curl -fsSL --max-time 120 \
-    "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-$target" \
-    -o "$COSIGN" || die "could not download the Sigstore verifier"
+  [ ! -L "$COSIGN" ] || die "Sigstore verifier path is a symlink"
+  if [ -f "$COSIGN" ] && [ "$(sha256_file "$COSIGN")" = "$digest" ]; then
+    chmod 700 "$COSIGN"
+    return
+  fi
+  cache_root="$AOS_HOME_DIR/cache/verifiers"
+  for cache_parent in "$AOS_HOME_DIR" "$AOS_HOME_DIR/cache" "$cache_root"; do
+    if [ -L "$cache_parent" ] || { [ -e "$cache_parent" ] && [ ! -d "$cache_parent" ]; }; then
+      die "unsafe Sigstore verifier cache directory: $cache_parent"
+    fi
+  done
+  cache_file="$cache_root/$digest"
+  if [ -L "$cache_file" ] || { [ -e "$cache_file" ] && [ ! -f "$cache_file" ]; }; then
+    die "cached Sigstore verifier is not a regular file"
+  fi
+  if [ -f "$cache_file" ] && [ "$(sha256_file "$cache_file")" = "$digest" ]; then
+    say "Reusing the checksum-verified Sigstore verifier."
+    cp "$cache_file" "$COSIGN"
+  else
+    # Bound stalled transfers separately from a healthy download on a slow link.
+    say "Downloading the pinned Sigstore verifier (approximately 140 MB)..."
+    curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fSL \
+      --connect-timeout 15 --speed-limit 1024 --speed-time 60 --max-time 1800 \
+      "https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION/cosign-$target" \
+      -o "$COSIGN" || die "could not download the Sigstore verifier"
+  fi
   [ "$(sha256_file "$COSIGN")" = "$digest" ] || die "Sigstore verifier checksum mismatch"
   chmod 700 "$COSIGN"
+  # Read-only release discovery must not create an application home/cache.
+  if [ "$CHECK_ONLY" -eq 0 ] && [ -d "$AOS_HOME_DIR" ]; then
+    mkdir -p "$cache_root"
+    chmod 700 "$AOS_HOME_DIR/cache" "$cache_root"
+    cache_stage=$(mktemp "$cache_root/.cosign.XXXXXX") || die "could not stage verifier cache"
+    if ! cp "$COSIGN" "$cache_stage" || ! chmod 700 "$cache_stage" ||
+        [ "$(sha256_file "$cache_stage")" != "$digest" ] || ! mv -f "$cache_stage" "$cache_file"; then
+      rm -f "$cache_stage"
+      die "could not retain the verified Sigstore verifier"
+    fi
+  fi
 }
 
 verify_release_asset() {

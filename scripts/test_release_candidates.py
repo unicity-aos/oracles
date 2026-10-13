@@ -5,6 +5,7 @@ import os
 import importlib.util
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -194,6 +195,35 @@ class ReleaseCandidateTests(unittest.TestCase):
                     self.assertTrue(pointer.is_symlink(), (requested_host, pointer, result.stderr))
                     self.assertEqual(os.readlink(pointer), target)
                 self.assertFalse((home / "extensions/oracles/.install.lock").exists())
+
+    def test_signal_during_activation_preflight_preserves_committed_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve()
+            fake_bin = home / "fake-bin"
+            fake_bin.mkdir()
+            python = fake_bin / "python3"
+            python.write_text('#!/bin/sh\nif [ "$1" = - ] && [ "${3:-}" = 2026.10.0-rc.7 ]; then\n'
+                              '  printf "activation signal injected\\n" >&2\n'
+                              '  kill -TERM "$PPID"\n  exit 143\nfi\nexec "$TEST_REAL_PYTHON" "$@"\n')
+            python.chmod(0o700)
+            pointers = []
+            for host in ("claude", "codex", "grok"):
+                root = home / "extensions/oracles" / host
+                (root / "releases/2026.10.0-rc.8").mkdir(parents=True)
+                (root / "releases/2026.10.0-rc.8/Pack.lock").write_text('[pack]\nversion = "2026.10.0-rc.8"\n')
+                for name, target in (("current", "releases/2026.10.0-rc.8"), ("Pack.lock", "current/Pack.lock")):
+                    (root / name).symlink_to(target)
+                    pointers.append((root / name, target))
+            result = subprocess.run(["sh", str(ROOT / "install.sh"), "--host", "claude",
+                "--oracle-version", "2026.10.0-rc.7", "--no-install-aos", "--skip-host-plugin", "--yes"],
+                env=dict(os.environ, AOS_HOME=str(home), PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
+                         TEST_REAL_PYTHON=sys.executable), capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 143, result.stderr)
+            self.assertIn("activation signal injected", result.stderr)
+            for pointer, target in pointers:
+                self.assertTrue(pointer.is_symlink(), (pointer, result.stderr))
+                self.assertEqual(os.readlink(pointer), target)
+            self.assertFalse((home / "extensions/oracles/.install.lock").exists())
 
     def test_committed_host_pack_cannot_be_implicitly_downgraded(self) -> None:
         source = (ROOT / "install.sh").read_text()

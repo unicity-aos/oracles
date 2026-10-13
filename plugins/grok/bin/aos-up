@@ -331,6 +331,24 @@ render_host_hook_context() {
   fi
 }
 
+hook_runtime_state() {
+  runtime_status=$("$AOS" status --json) || return 1
+  printf '%s' "$runtime_status" | python3 -c '
+import json, sys
+def unique_fields(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate runtime status field")
+        result[key] = value
+    return result
+status = json.load(sys.stdin, object_pairs_hook=unique_fields)
+if not isinstance(status, dict) or status.get("state") not in ("running", "stopped"):
+    sys.exit(1)
+print(status["state"])
+'
+}
+
 emit_host_hook() {
   event=$(hook_segment "${1:-}")
   [ -n "$event" ] || return 2
@@ -353,8 +371,9 @@ emit_host_hook() {
     log "could not resolve the AOS command for the $host hook"
     return 127
   fi
-  # Native policy delivery never bootstraps a daemon inside a timed hook.
-  # MCP/session startup owns provisioning; an unavailable runtime is refused.
+  # Native delivery never provisions capsules. The bounded Python wrapper
+  # can request recovery of an already-installed runtime before sending an
+  # event; MCP/session startup still owns provisioning.
   if [ "$format" != native ]; then capsule_ready; fi
   if [ -n "${ASTRID_HOOK_TOKEN:-}" ]; then
     token="$ASTRID_HOOK_TOKEN"
@@ -371,6 +390,18 @@ emit_host_hook() {
     log "refusing non-$expected_principal principal for the $host plugin"
     return 1
   }
+  if [ "${2:-}" = --ensure-runtime ]; then
+    runtime_state=$(hook_runtime_state) || return 1
+    if [ "$runtime_state" = stopped ]; then
+      # The wrapper bounds this entire invocation, including startup. Keep
+      # daemon-inherited streams off the decision pipe and hook input.
+      "$AOS" --principal default start --ephemeral </dev/null >&2 || true
+      # Another hook or the MCP launcher can win a concurrent start. Trust
+      # the resulting runtime state rather than this start command's exit.
+      runtime_state=$(hook_runtime_state) || return 1
+      [ "$runtime_state" = running ] || return 1
+    fi
+  fi
   workspace=$(printf '%s\n' "$HOST_WORKSPACE" | cksum | sed 's/ .*//')
   context=""
   wire_format=context
@@ -397,7 +428,7 @@ emit_host_hook() {
 
 if [ "${1:-}" = hook ]; then
   shift
-  emit_host_hook "${1:-}"
+  emit_host_hook "$@"
   exit $?
 fi
 

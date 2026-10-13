@@ -45,13 +45,19 @@ TRANSACTION_FAILED=0
 NEW_PLUGIN_SNAPSHOT=""
 NEW_RECEIPT=""
 ROLLBACK_RECEIPT_HOST="codex"
+RECEIPT_ROLLBACK_CAPTURED=0
 PRIOR_CURRENT_EXISTS=0
 PRIOR_CURRENT_TARGET=""
 PRIOR_PACK_LOCK_KIND=""
 PRIOR_PACK_LOCK_TARGET=""
 PRIOR_PACK_LOCK_BACKUP=""
 PRIOR_PACK_LOCK_MODE=""
+PRIOR_SIGNATURE_KIND=""
+PRIOR_SIGNATURE_TARGET=""
+PRIOR_SIGNATURE_BACKUP=""
+PRIOR_SIGNATURE_MODE=""
 COMMITTED_HOSTS=""
+COMMITTED_RECEIPT_HOSTS=""
 CAPSULE_RECORD_FOUND=0
 RUNTIME_RESTORE_STOPPED=0
 RUNTIME_STARTED_PID=""
@@ -82,9 +88,11 @@ release_install_lock() {
 }
 
 mark_transaction_failure() {
-  [ "$INSTALL_TRANSACTION_ACTIVE" -eq 1 ] || return 0
+  [ "$INSTALL_TRANSACTION_ACTIVE" -eq 1 ] && [ "$LOCK_HELD" -eq 1 ] || return 0
   TRANSACTION_FAILED=1
-  [ "$AOS_HOME_EXISTED" -eq 0 ] && ROLLBACK_AOS_HOME=1 || return 0
+  if [ "$AOS_HOME_EXISTED" -eq 0 ] && [ -z "$COMMITTED_HOSTS" ]; then
+    ROLLBACK_AOS_HOME=1
+  fi
 }
 
 mark_host_committed() {
@@ -92,6 +100,16 @@ mark_host_committed() {
     *" $1 "*) ;;
     *) COMMITTED_HOSTS="$COMMITTED_HOSTS $1" ;;
   esac
+}
+
+# Plugin registration can commit before the receipt pointers are published.
+mark_receipt_committed() {
+  mark_host_committed "$1"
+  case " $COMMITTED_RECEIPT_HOSTS " in
+    *" $1 "*) ;;
+    *) COMMITTED_RECEIPT_HOSTS="$COMMITTED_RECEIPT_HOSTS $1" ;;
+  esac
+  RECEIPT_ROLLBACK_CAPTURED=0
 }
 
 restore_runtime_state() {
@@ -142,58 +160,45 @@ cleanup() {
     fi
     RUNTIME_RESTORE_STOPPED=0
   fi
-  release_install_lock
   if [ "$ROLLBACK_AOS_HOME" -eq 1 ]; then
-    rm -rf "$AOS_HOME_DIR"
+    # Keep the locked inode and its private ancestors until all deletion ends.
+    # The empty skeleton is reusable on retry; nothing is deleted after unlock.
+    for rollback_root in "$AOS_HOME_DIR" "$AOS_HOME_DIR/extensions" "$AOS_HOME_DIR/extensions/oracles"; do
+      ensure_contained_directory "$rollback_root" "fresh install rollback root"
+      find "$rollback_root" -mindepth 1 -maxdepth 1 \
+        ! -path "$AOS_HOME_DIR/extensions" ! -path "$AOS_HOME_DIR/extensions/oracles" \
+        ! -path "$INSTALL_LOCK" -exec rm -rf {} +
+    done
     ROLLBACK_AOS_HOME=0
-  elif [ "$TRANSACTION_FAILED" -eq 1 ] && [ "$AOS_HOME_EXISTED" -eq 1 ]; then
-    case " $COMMITTED_HOSTS " in
+  elif [ "$TRANSACTION_FAILED" -eq 1 ]; then
+    case " $COMMITTED_RECEIPT_HOSTS " in
       *" $ROLLBACK_RECEIPT_HOST "*)
         NEW_RECEIPT=""
+        RECEIPT_ROLLBACK_CAPTURED=0
         ;;
       *) [ -z "$NEW_RECEIPT" ] || rm -rf "$NEW_RECEIPT" ;;
     esac
     [ -z "$NEW_PLUGIN_SNAPSHOT" ] || [ -n "$COMMITTED_HOSTS" ] \
       || rm -rf "$NEW_PLUGIN_SNAPSHOT"
-    receipt_host_root="$AOS_HOME_DIR/extensions/oracles/$ROLLBACK_RECEIPT_HOST"
-    if [ "$PRIOR_CURRENT_EXISTS" -eq 1 ]; then
-      if [ -n "$PRIOR_CURRENT_TARGET" ]; then
-        atomic_symlink "$PRIOR_CURRENT_TARGET" "$receipt_host_root/current"
-      fi
-    elif [ -L "$receipt_host_root/current" ]; then
-      rm -f "$receipt_host_root/current"
-    fi
-    case "$PRIOR_PACK_LOCK_KIND" in
-      absent)
-        [ ! -L "$receipt_host_root/Pack.lock" ] || rm -f "$receipt_host_root/Pack.lock"
-        [ ! -e "$receipt_host_root/Pack.lock" ] \
-          || die "cannot restore an absent Pack.lock over existing state"
-        ;;
-      symlink)
-        [ -n "$PRIOR_PACK_LOCK_TARGET" ] || die "lost prior Pack.lock link target during rollback"
-        atomic_symlink "$PRIOR_PACK_LOCK_TARGET" "$receipt_host_root/Pack.lock"
-        ;;
-      regular)
-        [ -n "$PRIOR_PACK_LOCK_BACKUP" ] || die "lost prior Pack.lock backup during rollback"
-        restore_parent="${receipt_host_root%/*}"
-        ensure_contained_directory "$restore_parent" "receipt rollback parent"
-        [ ! -L "$receipt_host_root/Pack.lock" ] || rm -f "$receipt_host_root/Pack.lock"
-        if [ -e "$receipt_host_root/Pack.lock" ]; then
-          [ -f "$receipt_host_root/Pack.lock" ] \
-            && [ ! -L "$receipt_host_root/Pack.lock" ] \
-            || die "cannot restore a regular Pack.lock over a non-regular path"
-          rm -f "$receipt_host_root/Pack.lock"
+    if [ "$RECEIPT_ROLLBACK_CAPTURED" -eq 1 ]; then
+      receipt_host_root="$AOS_HOME_DIR/extensions/oracles/$ROLLBACK_RECEIPT_HOST"
+      if [ "$PRIOR_CURRENT_EXISTS" -eq 1 ]; then
+        if [ -n "$PRIOR_CURRENT_TARGET" ]; then
+          atomic_symlink "$PRIOR_CURRENT_TARGET" "$receipt_host_root/current"
         fi
-        mv "$PRIOR_PACK_LOCK_BACKUP" "$receipt_host_root/Pack.lock" \
-          || die "could not restore the prior regular Pack.lock"
-        chmod "$PRIOR_PACK_LOCK_MODE" "$receipt_host_root/Pack.lock" \
-          || die "could not restore the prior Pack.lock mode"
-        ;;
-    esac
+      elif [ -L "$receipt_host_root/current" ]; then
+        rm -f "$receipt_host_root/current"
+      fi
+      restore_receipt_path "$receipt_host_root/Pack.lock" "$PRIOR_PACK_LOCK_KIND" \
+        "$PRIOR_PACK_LOCK_TARGET" "$PRIOR_PACK_LOCK_BACKUP" "$PRIOR_PACK_LOCK_MODE"
+      restore_receipt_path "$receipt_host_root/Pack.lock.sigstore.json" "$PRIOR_SIGNATURE_KIND" \
+        "$PRIOR_SIGNATURE_TARGET" "$PRIOR_SIGNATURE_BACKUP" "$PRIOR_SIGNATURE_MODE"
+    fi
     fi
   [ -z "$PLUGIN_STAGE" ] || rm -rf "$PLUGIN_STAGE"
   [ -z "$RECEIPT_STAGE" ] || rm -rf "$RECEIPT_STAGE"
   [ -z "$WORK" ] || rm -rf "$WORK"
+  release_install_lock
   TRANSACTION_FAILED=0
 }
 
@@ -252,7 +257,12 @@ while [ "$#" -gt 0 ]; do
     --host)
       shift
       case "${1:-}" in
-        claude|codex|grok) REQUESTED_HOSTS="$REQUESTED_HOSTS ${1}" ;;
+        claude|codex|grok)
+          case " $REQUESTED_HOSTS " in
+            *" $1 "*) ;;
+            *) REQUESTED_HOSTS="$REQUESTED_HOSTS $1" ;;
+          esac
+          ;;
         *) die "unknown host '${1:-}'" ;;
       esac
       ;;
@@ -1724,7 +1734,59 @@ prepare_plugin_snapshot() {
   fi
 }
 
+# Receipt payload and signature pointers share the same rollback rules.
+capture_receipt_path() {
+  capture_path=$1
+  CAPTURED_PATH_KIND=absent
+  CAPTURED_PATH_TARGET=""
+  CAPTURED_PATH_BACKUP=""
+  CAPTURED_PATH_MODE=""
+  if [ -L "$capture_path" ]; then
+    CAPTURED_PATH_KIND=symlink
+    CAPTURED_PATH_TARGET=$(readlink "$capture_path")
+  elif [ -f "$capture_path" ]; then
+    CAPTURED_PATH_KIND=regular
+    CAPTURED_PATH_BACKUP=$2
+    cp -p "$capture_path" "$CAPTURED_PATH_BACKUP" \
+      || die "could not preserve prior receipt path $capture_path"
+    CAPTURED_PATH_MODE=$(stat -c '%a' "$capture_path" 2>/dev/null \
+      || stat -f '%Lp' "$capture_path" 2>/dev/null)
+    case "$CAPTURED_PATH_MODE" in
+      ''|*[!0-7]*) die "could not capture prior receipt mode $capture_path" ;;
+    esac
+  elif [ -e "$capture_path" ]; then
+    die "receipt path is neither regular nor a symlink: $capture_path"
+  fi
+}
+
+restore_receipt_path() {
+  restore_path=$1
+  case "$2" in
+    absent)
+      [ ! -L "$restore_path" ] || rm -f "$restore_path"
+      [ ! -e "$restore_path" ] || die "cannot restore absent receipt over existing state"
+      ;;
+    symlink)
+      [ -n "$3" ] || die "lost prior receipt link target"
+      atomic_symlink "$3" "$restore_path" 1
+      ;;
+    regular)
+      [ -n "$4" ] || die "lost prior receipt backup"
+      ensure_contained_directory "${restore_path%/*}" "receipt rollback parent"
+      [ ! -L "$restore_path" ] || rm -f "$restore_path"
+      if [ -e "$restore_path" ]; then
+        [ -f "$restore_path" ] || die "cannot restore regular receipt over special entry"
+        rm -f "$restore_path"
+      fi
+      mv "$4" "$restore_path" || die "could not restore prior receipt"
+      chmod "$5" "$restore_path" || die "could not restore prior receipt mode"
+      ;;
+    *) die "invalid captured receipt path kind" ;;
+  esac
+}
+
 capture_receipt_rollback_state() {
+  RECEIPT_ROLLBACK_CAPTURED=0
   capture_host=$1
   capture_root="$AOS_HOME_DIR/extensions/oracles/$capture_host"
   ROLLBACK_RECEIPT_HOST=$capture_host
@@ -1737,24 +1799,17 @@ capture_receipt_rollback_state() {
     PRIOR_CURRENT_EXISTS=1
     PRIOR_CURRENT_TARGET=$(readlink "$capture_root/current")
   fi
-  if [ -L "$capture_root/Pack.lock" ]; then
-    PRIOR_PACK_LOCK_KIND=symlink
-    PRIOR_PACK_LOCK_TARGET=$(readlink "$capture_root/Pack.lock")
-  elif [ -f "$capture_root/Pack.lock" ] && [ ! -L "$capture_root/Pack.lock" ]; then
-    PRIOR_PACK_LOCK_KIND=regular
-    PRIOR_PACK_LOCK_BACKUP="$WORK/rollback-$capture_host-Pack.lock"
-    cp -p "$capture_root/Pack.lock" "$PRIOR_PACK_LOCK_BACKUP" \
-      || die "could not preserve the prior regular Pack.lock"
-    PRIOR_PACK_LOCK_MODE=$(stat -c '%a' "$capture_root/Pack.lock" 2>/dev/null \
-      || stat -f '%Lp' "$capture_root/Pack.lock" 2>/dev/null)
-    case "$PRIOR_PACK_LOCK_MODE" in
-      ''|*[!0-7]*)
-        die "could not capture the prior $capture_host Pack.lock mode"
-        ;;
-    esac
-  elif [ -e "$capture_root/Pack.lock" ]; then
-    die "$capture_host Pack.lock is neither a regular file nor a symlink"
-  fi
+  capture_receipt_path "$capture_root/Pack.lock" "$WORK/rollback-$capture_host-Pack.lock"
+  PRIOR_PACK_LOCK_KIND=$CAPTURED_PATH_KIND
+  PRIOR_PACK_LOCK_TARGET=$CAPTURED_PATH_TARGET
+  PRIOR_PACK_LOCK_BACKUP=$CAPTURED_PATH_BACKUP
+  PRIOR_PACK_LOCK_MODE=$CAPTURED_PATH_MODE
+  capture_receipt_path "$capture_root/Pack.lock.sigstore.json" "$WORK/rollback-$capture_host-signature"
+  PRIOR_SIGNATURE_KIND=$CAPTURED_PATH_KIND
+  PRIOR_SIGNATURE_TARGET=$CAPTURED_PATH_TARGET
+  PRIOR_SIGNATURE_BACKUP=$CAPTURED_PATH_BACKUP
+  PRIOR_SIGNATURE_MODE=$CAPTURED_PATH_MODE
+  RECEIPT_ROLLBACK_CAPTURED=1
 }
 
 # Reuse promises usable installed files, not just equal contents. Executable
@@ -2460,9 +2515,9 @@ write_receipt() {
   else
     rm -f "$receipt_root/Pack.lock.sigstore.json"
   fi
-  say "✓ $host oracle pack $ORACLES_VERSION committed"
-  mark_host_committed "$host"
+  mark_receipt_committed "$host"
   NEW_RECEIPT=""
+  say "✓ $host oracle pack $ORACLES_VERSION committed"
 }
 
 if [ "$CHECK_ONLY" -eq 1 ]; then

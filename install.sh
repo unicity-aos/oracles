@@ -1125,7 +1125,6 @@ previous_pack_declares_aos_capsule() {
 aos_identity_matches_previous_local_distro_artifact() {
   pd_name=$1
   pd_hash=$2
-  previous_pack_declares_aos_capsule "$pd_name" || return 1
   for pd_manifest in "$AOS_HOME_DIR"/releases/*/Distro.toml; do
     [ -f "$pd_manifest" ] && [ ! -L "$pd_manifest" ] || continue
     grep -Fqx 'id = "unicity-ce"' "$pd_manifest" || continue
@@ -1133,7 +1132,7 @@ aos_identity_matches_previous_local_distro_artifact() {
     [ -d "$pd_release" ] && [ ! -L "$pd_release" ] || continue
     pd_version=${pd_release##*/}
     printf '%s\n' "$pd_version" \
-      | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || continue
+      | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$' || continue
     grep -Fqx "version = \"$pd_version\"" "$pd_manifest" || continue
     aos_release_has_capsule "$pd_name" "$pd_release" || continue
     pd_artifact="$pd_release/capsules/$pd_name.capsule"
@@ -1153,7 +1152,8 @@ aos_identity_matches_release_or_managed() {
     ai_previous=$(binding_hash "$PREVIOUS_BINDINGS" "$ai_name" 2>/dev/null || true)
     [ -n "$ai_previous" ] && [ "$ai_hash" = "$ai_previous" ] && return 0
   fi
-  aos_identity_matches_previous_local_distro_artifact "$ai_name" "$ai_hash"
+  previous_pack_declares_aos_capsule "$ai_name" \
+    && aos_identity_matches_previous_local_distro_artifact "$ai_name" "$ai_hash"
 }
 
 legacy_v020_hash() {
@@ -1870,6 +1870,8 @@ resolve_aos_capsules() {
   # stops before init. A host hash that exactly matches a prior managed
   # identity may later be moved onto this signed distro; that is not a
   # reason to treat unknown same-ID bytes as operator state.
+  rac_refresh="$WORK/refresh-default.aos-capsules"
+  : > "$rac_refresh"
   while read -r rac_name rac_availability rac_extra; do
     [ -n "$rac_name" ] || continue
     [ -z "${rac_extra:-}" ] || die "invalid AOS capsule dependency record"
@@ -1895,8 +1897,11 @@ resolve_aos_capsules() {
         || die "default AOS capsule dependency '$rac_name' has no registry source"
       printf '%s\n' "$CAPSULE_HASH" | grep -Eq '^[0-9a-f]{64}$' \
         || die "default AOS capsule dependency '$rac_name' has an invalid identity hash"
-      [ "$CAPSULE_HASH" = "$rac_release_hash" ] \
-        || die "default AOS capsule dependency '$rac_name' differs from the signed operator distribution"
+      if [ "$CAPSULE_HASH" != "$rac_release_hash" ]; then
+        aos_identity_matches_previous_local_distro_artifact "$rac_name" "$CAPSULE_HASH" \
+          || die "default AOS capsule dependency '$rac_name' differs from the signed operator distribution"
+        printf '%s\n' "$rac_name" >> "$rac_refresh"
+      fi
       rac_default_hash=$CAPSULE_HASH
       if load_capsule_record "$rac_principal" "$rac_name"; then
         if [ "$CAPSULE_HASH" != "$rac_default_hash" ]; then
@@ -1922,6 +1927,19 @@ resolve_aos_capsules() {
   # proven present. A release missing a required Oracle dependency must not
   # make a partial first-boot mutation.
   ensure_base
+
+  # A binary upgrade leaves existing default packages in place. Refresh only
+  # the exact prior product identities accepted above, after the entire
+  # preflight passed. AOS verifies the selected signed distribution; unfiltered
+  # init alone may preserve already-installed packages instead of updating them.
+  if [ -s "$rac_refresh" ]; then
+    set -- aos --principal default distro apply --yes
+    while IFS= read -r rac_name; do
+      set -- "$@" --capsule "$rac_name"
+    done < "$rac_refresh"
+    say "Refreshing prior AOS dependencies from the signed product distribution..."
+    "$@" </dev/null || die "could not refresh the signed Unicity AOS operator distribution"
+  fi
 
   # The default principal is the authenticated source for host grants. If its
   # installed identities do not exactly match this active product release,

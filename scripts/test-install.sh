@@ -1279,6 +1279,54 @@ EOF
   ln -sfn current/Pack.lock "$plant_home/extensions/oracles/$plant_host/Pack.lock"
 }
 
+# Updating the product binaries does not refresh the default principal's
+# installed capsules. First-time Oracle setup must recognize the exact old
+# product bytes without requiring an Oracle receipt that does not exist yet.
+stale_default_home="$home/stale-default/.aos"
+stale_default_state="$work/stale-default-state"
+mkdir -p "$stale_default_state" "$stale_default_home/runtime/var"
+: > "$stale_default_home/runtime-running"
+printf 'keep-user-data\n' > "$stale_default_home/runtime/var/sentinel"
+plant_prior_ce_release "$stale_default_home"
+plant_current_ce_release "$stale_default_home"
+write_test_capsule "$stale_default_state" default aos-skills \
+  "$prior_skills_hash" "aos://capsule/$prior_skills_hash" \
+  2026-01-03T00:00:00+00:00 2026-01-03T00:00:00+00:00
+TEST_STATE="$stale_default_state" AOS_HOME="$stale_default_home" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos
+test "$(sed -n '1p' "$stale_default_state/installed-default-aos-skills")" \
+  = "$product_skills_hash"
+test "$(sed -n '1p' "$stale_default_state/installed-claude-code-aos-skills")" \
+  = "$product_skills_hash"
+test "$(cat "$stale_default_home/runtime/var/sentinel")" = keep-user-data
+
+# Recognizing one old product member must not refresh anything if a later
+# dependency has unknown bytes. Preserve the original state on preflight error.
+mixed_default_home="$home/mixed-default/.aos"
+mixed_default_state="$work/mixed-default-state"
+mkdir -p "$mixed_default_state" "$mixed_default_home"
+: > "$mixed_default_home/runtime-running"
+plant_prior_ce_release "$mixed_default_home"
+plant_current_ce_release "$mixed_default_home"
+write_test_capsule "$mixed_default_state" default aos-skills \
+  "$prior_skills_hash" "aos://capsule/$prior_skills_hash" \
+  2026-01-03T00:00:00+00:00 2026-01-03T00:00:00+00:00
+write_test_capsule "$mixed_default_state" default aos-forge \
+  2222222222222222222222222222222222222222222222222222222222222222 \
+  aos://capsule/foreign-forge \
+  2026-01-03T00:00:00+00:00 2026-01-03T00:00:00+00:00
+if TEST_STATE="$mixed_default_state" AOS_HOME="$mixed_default_home" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos \
+  >"$work/mixed-default.out" 2>&1
+then
+  echo 'unknown default dependency was accepted during product upgrade' >&2
+  exit 1
+fi
+grep -Fq "default AOS capsule dependency 'aos-forge' differs" "$work/mixed-default.out"
+test "$(sed -n '1p' "$mixed_default_state/installed-default-aos-skills")" \
+  = "$prior_skills_hash"
+test ! -e "$mixed_default_state/agent-claude-code"
+
 for managed_host in claude codex grok; do
   case "$managed_host" in
     claude) managed_principal=claude-code ;;

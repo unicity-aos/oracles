@@ -75,6 +75,24 @@ class ReleaseCandidateTests(unittest.TestCase):
                          AOS_CHANNEL="", AOS_VERSION="", ORACLE_CHANNEL="dev"))
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_exact_aos_install_reads_product_before_labelled_runtime(self) -> None:
+        source = (ROOT / "install.sh").read_text()
+        function = "ensure_aos() {" + source.split("ensure_aos() {", 1)[1].split("\ndetect_hosts()", 1)[0]
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw)
+            (home / "bin").mkdir()
+            binary = home / "bin/aos"
+            binary.write_text("#!/bin/sh\nprintf '%s\\n' 'Unicity AOS 2026.10.0-rc.7' '  runtime: Astrid 2026.10.0-rc.6'\n")
+            binary.chmod(0o700)
+            installer = home / "source-install.sh"
+            installer.write_text("#!/bin/sh\nexit 0\n")
+            program = 'set -eu\nhave() { command -v "$1" >/dev/null 2>&1; }\ndie() { echo "$*" >&2; exit 1; }\n' + function + '\nensure_aos\n'
+            result = subprocess.run(["sh", "-c", program], capture_output=True, text=True,
+                env=dict(os.environ, AOS_HOME_DIR=str(home), AOS_INSTALL_URL=str(installer),
+                         NO_INSTALL_AOS="0", AOS_CHANNEL="", AOS_VERSION="2026.10.0-rc.7",
+                         ASSUME_YES="0", WORK=str(home)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_staging_preserves_numeric_source_and_rejects_wrong_base(self) -> None:
         spec = importlib.util.spec_from_file_location("stage_rc", ROOT / "scripts/stage_release_candidate.py")
         module = importlib.util.module_from_spec(spec)

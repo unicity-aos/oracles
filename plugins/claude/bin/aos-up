@@ -249,6 +249,10 @@ mint_host_hook_token() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 32 2>/dev/null && return
   fi
+  # Native hooks already require Python; use its OS CSPRNG on minimal hosts.
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import secrets; print(secrets.token_hex(32))' && return
+  fi
   if command -v uuidgen >/dev/null 2>&1; then
     uuidgen | tr -d '-'
     return

@@ -225,6 +225,44 @@ class ReleaseCandidateTests(unittest.TestCase):
                 self.assertEqual(os.readlink(pointer), target)
             self.assertFalse((home / "extensions/oracles/.install.lock").exists())
 
+    def test_signal_during_second_host_capture_preserves_both_hosts(self) -> None:
+        source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve()
+            pointers = []
+            for host in ("claude", "codex", "grok"):
+                root = home / "extensions/oracles" / host
+                (root / "releases/2026.10.0-rc.8").mkdir(parents=True)
+                (root / "releases/2026.10.0-rc.8/Pack.lock").write_text('[pack]\nversion = "2026.10.0-rc.8"\n')
+                (root / "current").symlink_to("releases/2026.10.0-rc.8")
+                pointers.append((root / "current", "releases/2026.10.0-rc.8"))
+                if host == "codex":
+                    (root / "Pack.lock").write_text("prior codex receipt\n")
+                else:
+                    (root / "Pack.lock").symlink_to("current/Pack.lock")
+                    pointers.append((root / "Pack.lock", "current/Pack.lock"))
+            script = source + '''
+INSTALL_TRANSACTION_ACTIVE=1
+AOS_HOME_EXISTED=1
+ensure_install_destinations "claude codex"
+acquire_install_lock
+WORK=$(mktemp -d)
+capture_receipt_rollback_state claude
+[ "$RECEIPT_ROLLBACK_CAPTURED" -eq 1 ] || exit 91
+cp() { say "second host capture signal injected" >&2; kill -TERM "$$"; }
+capture_receipt_rollback_state codex
+exit 92
+'''
+            result = subprocess.run(["sh", "-c", script, "capture", "--oracle-version", "2026.10.0-rc.8"],
+                env=dict(os.environ, AOS_HOME=str(home)), capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 143, result.stderr)
+            self.assertIn("second host capture signal injected", result.stderr)
+            for pointer, target in pointers:
+                self.assertTrue(pointer.is_symlink(), (pointer, result.stderr))
+                self.assertEqual(os.readlink(pointer), target)
+            self.assertEqual((home / "extensions/oracles/codex/Pack.lock").read_text(), "prior codex receipt\n")
+            self.assertFalse((home / "extensions/oracles/.install.lock").exists())
+
     def test_committed_host_pack_cannot_be_implicitly_downgraded(self) -> None:
         source = (ROOT / "install.sh").read_text()
         function = "validate_oracle_activation() {" + source.split("validate_oracle_activation() {", 1)[1].split("\nruntime_toml_value()", 1)[0]

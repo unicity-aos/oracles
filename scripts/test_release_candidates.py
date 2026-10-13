@@ -14,6 +14,81 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleaseCandidateTests(unittest.TestCase):
+    def test_duplicate_requested_hosts_are_installed_once(self) -> None:
+        source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
+        with tempfile.TemporaryDirectory() as raw:
+            result = subprocess.run(["sh", "-c", source + '\nselect_hosts\n', "select",
+                "--oracle-version", "2026.10.0-rc.9", "--host", "claude", "--host", "codex",
+                "--host", "claude", "--host", "grok", "--host", "codex"],
+                env=dict(os.environ, AOS_HOME=str(Path(raw).resolve())),
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.split(), ["claude", "codex", "grok"])
+
+    def test_interrupted_receipt_publication_restores_signature_state(self) -> None:
+        source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
+        for prior_kind in ("absent", "symlink", "regular"):
+            for new_signed in (False, True):
+                with self.subTest(prior_kind=prior_kind, new_signed=new_signed), tempfile.TemporaryDirectory() as raw:
+                    home = Path(raw).resolve()
+                    root = home / "extensions/oracles/claude"
+                    old = root / "releases/2026.10.0-rc.8"
+                    old.mkdir(parents=True)
+                    (old / "Pack.lock").write_text("old pack\n")
+                    (old / "Pack.toml.sigstore.json").write_text("old signature\n")
+                    (root / "current").symlink_to("releases/2026.10.0-rc.8")
+                    (root / "Pack.lock").symlink_to("current/Pack.lock")
+                    signature = root / "Pack.lock.sigstore.json"
+                    if prior_kind == "symlink":
+                        signature.symlink_to("current/Pack.toml.sigstore.json")
+                    elif prior_kind == "regular":
+                        signature.write_text("old flat signature\n")
+                        signature.chmod(0o600)
+                    stage = home / "pack-stage"
+                    stage.mkdir()
+                    (stage / "Pack.toml").write_text("new pack\n")
+                    if new_signed:
+                        (stage / "Pack.toml.sigstore.json").write_text("new signature\n")
+                    release_stage = home / "metadata-stage"
+                    release_stage.mkdir()
+                    for name in ("BLAKE3SUMS.txt", "runtime-compatibility.toml", "bindings"):
+                        (release_stage / name).write_text("")
+                    script = source + '''
+INSTALL_TRANSACTION_ACTIVE=1
+AOS_HOME_EXISTED=1
+ensure_install_destinations claude
+acquire_install_lock
+WORK=$(mktemp -d "$AOS_HOME_DIR/capture.XXXXXX")
+RELEASE_STAGE="$AOS_HOME_DIR/metadata-stage"
+CURRENT_PACK_BINDINGS="$RELEASE_STAGE/bindings"
+PLUGIN_BLAKE3=fixture
+ASSET_SOURCE=local
+capture_receipt_rollback_state claude
+mark_host_committed claude
+say() {
+  case "$*" in *"oracle pack"*"committed"*) kill -TERM "$$" ;; esac
+}
+write_receipt claude claude-code "$AOS_HOME_DIR/pack-stage"
+exit 92
+'''
+                    result = subprocess.run(["sh", "-c", script, "receipt", "--oracle-version", "2026.10.0-rc.9"],
+                        env=dict(os.environ, AOS_HOME=str(home)), capture_output=True, text=True, timeout=10)
+                    self.assertEqual(result.returncode, 143, result.stderr)
+                    self.assertEqual(os.readlink(root / "current"), "releases/2026.10.0-rc.8")
+                    self.assertEqual(os.readlink(root / "Pack.lock"), "current/Pack.lock")
+                    if prior_kind == "absent":
+                        self.assertFalse(signature.exists())
+                        self.assertFalse(signature.is_symlink())
+                    elif prior_kind == "symlink":
+                        self.assertEqual(os.readlink(signature), "current/Pack.toml.sigstore.json")
+                        self.assertEqual(signature.read_text(), "old signature\n")
+                    else:
+                        self.assertFalse(signature.is_symlink())
+                        self.assertEqual(signature.read_text(), "old flat signature\n")
+                        self.assertEqual(signature.stat().st_mode & 0o777, 0o600)
+                    self.assertFalse((root / "releases/2026.10.0-rc.9").exists())
+                    self.assertFalse((home / "extensions/oracles/.install.lock").exists())
+
     def test_shipped_capsule_readiness_preserves_absence_and_transport_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -52,6 +52,10 @@ PRIOR_PACK_LOCK_KIND=""
 PRIOR_PACK_LOCK_TARGET=""
 PRIOR_PACK_LOCK_BACKUP=""
 PRIOR_PACK_LOCK_MODE=""
+PRIOR_SIGNATURE_KIND=""
+PRIOR_SIGNATURE_TARGET=""
+PRIOR_SIGNATURE_BACKUP=""
+PRIOR_SIGNATURE_MODE=""
 COMMITTED_HOSTS=""
 COMMITTED_RECEIPT_HOSTS=""
 CAPSULE_RECORD_FOUND=0
@@ -177,33 +181,10 @@ cleanup() {
       elif [ -L "$receipt_host_root/current" ]; then
         rm -f "$receipt_host_root/current"
       fi
-      case "$PRIOR_PACK_LOCK_KIND" in
-        absent)
-          [ ! -L "$receipt_host_root/Pack.lock" ] || rm -f "$receipt_host_root/Pack.lock"
-          [ ! -e "$receipt_host_root/Pack.lock" ] \
-            || die "cannot restore an absent Pack.lock over existing state"
-          ;;
-        symlink)
-          [ -n "$PRIOR_PACK_LOCK_TARGET" ] || die "lost prior Pack.lock link target during rollback"
-          atomic_symlink "$PRIOR_PACK_LOCK_TARGET" "$receipt_host_root/Pack.lock"
-          ;;
-        regular)
-          [ -n "$PRIOR_PACK_LOCK_BACKUP" ] || die "lost prior Pack.lock backup during rollback"
-          restore_parent="${receipt_host_root%/*}"
-          ensure_contained_directory "$restore_parent" "receipt rollback parent"
-          [ ! -L "$receipt_host_root/Pack.lock" ] || rm -f "$receipt_host_root/Pack.lock"
-          if [ -e "$receipt_host_root/Pack.lock" ]; then
-            [ -f "$receipt_host_root/Pack.lock" ] \
-              && [ ! -L "$receipt_host_root/Pack.lock" ] \
-              || die "cannot restore a regular Pack.lock over a non-regular path"
-            rm -f "$receipt_host_root/Pack.lock"
-          fi
-          mv "$PRIOR_PACK_LOCK_BACKUP" "$receipt_host_root/Pack.lock" \
-            || die "could not restore the prior regular Pack.lock"
-          chmod "$PRIOR_PACK_LOCK_MODE" "$receipt_host_root/Pack.lock" \
-            || die "could not restore the prior Pack.lock mode"
-          ;;
-      esac
+      restore_receipt_path "$receipt_host_root/Pack.lock" "$PRIOR_PACK_LOCK_KIND" \
+        "$PRIOR_PACK_LOCK_TARGET" "$PRIOR_PACK_LOCK_BACKUP" "$PRIOR_PACK_LOCK_MODE"
+      restore_receipt_path "$receipt_host_root/Pack.lock.sigstore.json" "$PRIOR_SIGNATURE_KIND" \
+        "$PRIOR_SIGNATURE_TARGET" "$PRIOR_SIGNATURE_BACKUP" "$PRIOR_SIGNATURE_MODE"
     fi
     fi
   [ -z "$PLUGIN_STAGE" ] || rm -rf "$PLUGIN_STAGE"
@@ -267,7 +248,12 @@ while [ "$#" -gt 0 ]; do
     --host)
       shift
       case "${1:-}" in
-        claude|codex|grok) REQUESTED_HOSTS="$REQUESTED_HOSTS ${1}" ;;
+        claude|codex|grok)
+          case " $REQUESTED_HOSTS " in
+            *" $1 "*) ;;
+            *) REQUESTED_HOSTS="$REQUESTED_HOSTS $1" ;;
+          esac
+          ;;
         *) die "unknown host '${1:-}'" ;;
       esac
       ;;
@@ -1739,6 +1725,57 @@ prepare_plugin_snapshot() {
   fi
 }
 
+# Receipt payload and signature pointers share the same rollback rules.
+capture_receipt_path() {
+  capture_path=$1
+  CAPTURED_PATH_KIND=absent
+  CAPTURED_PATH_TARGET=""
+  CAPTURED_PATH_BACKUP=""
+  CAPTURED_PATH_MODE=""
+  if [ -L "$capture_path" ]; then
+    CAPTURED_PATH_KIND=symlink
+    CAPTURED_PATH_TARGET=$(readlink "$capture_path")
+  elif [ -f "$capture_path" ]; then
+    CAPTURED_PATH_KIND=regular
+    CAPTURED_PATH_BACKUP=$2
+    cp -p "$capture_path" "$CAPTURED_PATH_BACKUP" \
+      || die "could not preserve prior receipt path $capture_path"
+    CAPTURED_PATH_MODE=$(stat -c '%a' "$capture_path" 2>/dev/null \
+      || stat -f '%Lp' "$capture_path" 2>/dev/null)
+    case "$CAPTURED_PATH_MODE" in
+      ''|*[!0-7]*) die "could not capture prior receipt mode $capture_path" ;;
+    esac
+  elif [ -e "$capture_path" ]; then
+    die "receipt path is neither regular nor a symlink: $capture_path"
+  fi
+}
+
+restore_receipt_path() {
+  restore_path=$1
+  case "$2" in
+    absent)
+      [ ! -L "$restore_path" ] || rm -f "$restore_path"
+      [ ! -e "$restore_path" ] || die "cannot restore absent receipt over existing state"
+      ;;
+    symlink)
+      [ -n "$3" ] || die "lost prior receipt link target"
+      atomic_symlink "$3" "$restore_path" 1
+      ;;
+    regular)
+      [ -n "$4" ] || die "lost prior receipt backup"
+      ensure_contained_directory "${restore_path%/*}" "receipt rollback parent"
+      [ ! -L "$restore_path" ] || rm -f "$restore_path"
+      if [ -e "$restore_path" ]; then
+        [ -f "$restore_path" ] || die "cannot restore regular receipt over special entry"
+        rm -f "$restore_path"
+      fi
+      mv "$4" "$restore_path" || die "could not restore prior receipt"
+      chmod "$5" "$restore_path" || die "could not restore prior receipt mode"
+      ;;
+    *) die "invalid captured receipt path kind" ;;
+  esac
+}
+
 capture_receipt_rollback_state() {
   RECEIPT_ROLLBACK_CAPTURED=0
   capture_host=$1
@@ -1753,24 +1790,16 @@ capture_receipt_rollback_state() {
     PRIOR_CURRENT_EXISTS=1
     PRIOR_CURRENT_TARGET=$(readlink "$capture_root/current")
   fi
-  if [ -L "$capture_root/Pack.lock" ]; then
-    PRIOR_PACK_LOCK_KIND=symlink
-    PRIOR_PACK_LOCK_TARGET=$(readlink "$capture_root/Pack.lock")
-  elif [ -f "$capture_root/Pack.lock" ] && [ ! -L "$capture_root/Pack.lock" ]; then
-    PRIOR_PACK_LOCK_KIND=regular
-    PRIOR_PACK_LOCK_BACKUP="$WORK/rollback-$capture_host-Pack.lock"
-    cp -p "$capture_root/Pack.lock" "$PRIOR_PACK_LOCK_BACKUP" \
-      || die "could not preserve the prior regular Pack.lock"
-    PRIOR_PACK_LOCK_MODE=$(stat -c '%a' "$capture_root/Pack.lock" 2>/dev/null \
-      || stat -f '%Lp' "$capture_root/Pack.lock" 2>/dev/null)
-    case "$PRIOR_PACK_LOCK_MODE" in
-      ''|*[!0-7]*)
-        die "could not capture the prior $capture_host Pack.lock mode"
-        ;;
-    esac
-  elif [ -e "$capture_root/Pack.lock" ]; then
-    die "$capture_host Pack.lock is neither a regular file nor a symlink"
-  fi
+  capture_receipt_path "$capture_root/Pack.lock" "$WORK/rollback-$capture_host-Pack.lock"
+  PRIOR_PACK_LOCK_KIND=$CAPTURED_PATH_KIND
+  PRIOR_PACK_LOCK_TARGET=$CAPTURED_PATH_TARGET
+  PRIOR_PACK_LOCK_BACKUP=$CAPTURED_PATH_BACKUP
+  PRIOR_PACK_LOCK_MODE=$CAPTURED_PATH_MODE
+  capture_receipt_path "$capture_root/Pack.lock.sigstore.json" "$WORK/rollback-$capture_host-signature"
+  PRIOR_SIGNATURE_KIND=$CAPTURED_PATH_KIND
+  PRIOR_SIGNATURE_TARGET=$CAPTURED_PATH_TARGET
+  PRIOR_SIGNATURE_BACKUP=$CAPTURED_PATH_BACKUP
+  PRIOR_SIGNATURE_MODE=$CAPTURED_PATH_MODE
   RECEIPT_ROLLBACK_CAPTURED=1
 }
 

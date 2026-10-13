@@ -16,9 +16,15 @@ ROOT = Path(os.environ.get("ORACLE_TEST_ROOT", Path(__file__).resolve().parent.p
 
 class HostHookLifecycle(unittest.TestCase):
     def test_session_identity_survives_turn_stop_and_retires_at_session_end(self):
+        self.session_lifecycle(portable=False)
+
+    def test_session_tokens_work_without_openssl_or_uuidgen(self):
+        self.session_lifecycle(portable=True)
+
+    def session_lifecycle(self, *, portable):
         for host, session_key in (("claude", "session_id"), ("grok", "sessionId"),
                                   ("codex", "session_id")):
-            with self.subTest(host=host), tempfile.TemporaryDirectory() as scratch:
+            with self.subTest(host=host, portable=portable), tempfile.TemporaryDirectory() as scratch:
                 root = Path(scratch)
                 home = root / "aos"
                 workspace = root / "workspace"
@@ -51,11 +57,16 @@ class HostHookLifecycle(unittest.TestCase):
                              "mkdir", "chmod", "openssl", "mv", "cksum", "tr",
                              "pwd", "date", "readlink", "basename", "head", "wc",
                              "sleep", "rmdir", "grep"):
+                    if portable and name == "openssl":
+                        continue
                     executable = shutil.which(name)
                     if executable:
                         (tools / name).symlink_to(executable)
                 (tools / "python3").symlink_to(sys.executable)
                 env["PATH"] = str(tools)
+                if portable:
+                    self.assertIsNone(shutil.which("openssl", path=str(tools)))
+                    self.assertIsNone(shutil.which("uuidgen", path=str(tools)))
                 command = [str(plugin / "bin/aos-up")]
                 if host == "codex":
                     command.append("codex")
@@ -73,6 +84,8 @@ class HostHookLifecycle(unittest.TestCase):
                 self.assertEqual(len(calls), len(sequence))
                 tokens = {}
                 for (event, identity), (args, token) in zip(sequence, calls):
+                    if portable:
+                        self.assertRegex(token, r"^[0-9a-f]{64}$")
                     route = host + "-" + hashlib.sha256(identity.encode()).hexdigest()
                     self.assertIn("--session " + route + " ", args)
                     self.assertEqual(tokens.setdefault(identity, token), token,

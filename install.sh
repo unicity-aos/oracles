@@ -158,7 +158,6 @@ cleanup() {
     fi
     RUNTIME_RESTORE_STOPPED=0
   fi
-  release_install_lock
   if [ "$ROLLBACK_AOS_HOME" -eq 1 ]; then
     rm -rf "$AOS_HOME_DIR"
     ROLLBACK_AOS_HOME=0
@@ -190,6 +189,7 @@ cleanup() {
   [ -z "$PLUGIN_STAGE" ] || rm -rf "$PLUGIN_STAGE"
   [ -z "$RECEIPT_STAGE" ] || rm -rf "$RECEIPT_STAGE"
   [ -z "$WORK" ] || rm -rf "$WORK"
+  release_install_lock
   TRANSACTION_FAILED=0
 }
 

@@ -27,6 +27,8 @@ class ReleaseCandidateTests(unittest.TestCase):
 
     def test_interrupted_receipt_publication_restores_signature_state(self) -> None:
         source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
+        source = source.replace("restore_receipt_path() {\n", "restore_receipt_path() {\n"
+            '  [ "$LOCK_HELD" -eq 1 ] && [ -f "$INSTALL_LOCK" ] || exit 91\n')
         for prior_kind in ("absent", "symlink", "regular"):
             for new_signed in (False, True):
                 with self.subTest(prior_kind=prior_kind, new_signed=new_signed), tempfile.TemporaryDirectory() as raw:

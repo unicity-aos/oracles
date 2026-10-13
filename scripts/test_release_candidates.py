@@ -79,7 +79,7 @@ class ReleaseCandidateTests(unittest.TestCase):
         source = (ROOT / "install.sh").read_text()
         function = "ensure_aos() {" + source.split("ensure_aos() {", 1)[1].split("\ndetect_hosts()", 1)[0]
         with tempfile.TemporaryDirectory() as raw:
-            home = Path(raw)
+            home = Path(raw).resolve()
             (home / "bin").mkdir()
             binary = home / "bin/aos"
             binary.write_text("#!/bin/sh\nprintf '%s\\n' 'Unicity AOS 2026.10.0-rc.7' '  runtime: Astrid 2026.10.0-rc.6'\n")
@@ -172,11 +172,36 @@ class ReleaseCandidateTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
+    def test_rejected_installer_keeps_every_committed_host_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve()
+            assets = home / "assets"
+            assets.mkdir()
+            pointers = []
+            for host in ("claude", "codex", "grok"):
+                root = home / "extensions/oracles" / host
+                (root / "releases/2026.10.0-rc.8").mkdir(parents=True)
+                (root / "releases/2026.10.0-rc.8/Pack.lock").write_text('[pack]\nversion = "2026.10.0-rc.8"\n')
+                for name, target in (("current", "releases/2026.10.0-rc.8"), ("Pack.lock", "current/Pack.lock")):
+                    (root / name).symlink_to(target)
+                    pointers.append((root / name, target))
+            for requested_host in ("claude", "codex", "grok"):
+                result = subprocess.run(["sh", str(ROOT / "install.sh"), "--host", requested_host,
+                    "--oracle-version", "2026.10.0-rc.7", "--local-assets", str(assets),
+                    "--no-install-aos", "--skip-host-plugin", "--yes"],
+                    env=dict(os.environ, AOS_HOME=str(home)), capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("restart the host session", result.stderr)
+                for pointer, target in pointers:
+                    self.assertTrue(pointer.is_symlink(), (requested_host, pointer, result.stderr))
+                    self.assertEqual(os.readlink(pointer), target)
+                self.assertFalse((home / "extensions/oracles/.install.lock").exists())
+
     def test_committed_host_pack_cannot_be_implicitly_downgraded(self) -> None:
         source = (ROOT / "install.sh").read_text()
         function = "validate_oracle_activation() {" + source.split("validate_oracle_activation() {", 1)[1].split("\nruntime_toml_value()", 1)[0]
         with tempfile.TemporaryDirectory(prefix="oracle-activation-") as raw:
-            home = Path(raw)
+            home = Path(raw).resolve()
             host = home / "extensions/oracles/claude"
             host.mkdir(parents=True)
             current = host / "current"

@@ -2493,7 +2493,11 @@ fi
 INSTALL_TRANSACTION_ACTIVE=1
 ensure_install_destinations "$hosts"
 acquire_install_lock
-validate_oracle_activation "$hosts"
+if ! validate_oracle_activation "$hosts"; then
+  # No receipt rollback state has been captured during this preflight.
+  INSTALL_TRANSACTION_ACTIVE=0
+  exit 1
+fi
 stage_release_metadata
 export_protected_assets
 ensure_aos

@@ -265,7 +265,8 @@ if args == ["status", "--json"]:
         print('{"state":"running","state":"stopped"}'); sys.exit(0)
     print(json.dumps({"state": "starting" if scenario == "status-unknown" else
                      "running" if (root / "running").exists() else "stopped"}))
-elif args == ["--principal", "default", "start", "--ephemeral"]:
+elif args in (["--principal", "default", "start"],
+              ["--principal", "default", "start", "--ephemeral"]):
     assert sys.stdin.read() == "", "startup must not consume the event payload"
     if scenario == "start-failed":
         sys.exit(1)
@@ -328,7 +329,7 @@ else:
         self.assertEqual(self.invoke(), {})
         calls = self.calls()
         self.assertEqual(calls[:2], [["status", "--json"],
-                                   ["--principal", "default", "start", "--ephemeral"]])
+                                   ["--principal", "default", "start"]])
         self.assertEqual(calls[2], ["status", "--json"])
         self.assertEqual(len(calls), 4, calls)
         self.assertEqual(calls[3][:3], ["--principal", "claude-code", "hook"])
@@ -359,7 +360,7 @@ else:
         self.assertEqual(value["decision"], "block")
         self.assertIn("~/.aos/bin/aos start", value["reason"])
         self.assertEqual(self.calls(), [["status", "--json"],
-                                      ["--principal", "default", "start", "--ephemeral"],
+                                      ["--principal", "default", "start"],
                                       ["status", "--json"]])
 
     def test_duplicate_status_keys_are_refused_without_starting(self):
@@ -369,7 +370,7 @@ else:
     def test_successful_start_without_readiness_never_delivers(self):
         self.assertEqual(self.invoke("start-not-ready")["decision"], "block")
         self.assertEqual(self.calls(), [["status", "--json"],
-                                      ["--principal", "default", "start", "--ephemeral"],
+                                      ["--principal", "default", "start"],
                                       ["status", "--json"]])
 
     def test_concurrent_start_failure_uses_the_now_running_runtime(self):

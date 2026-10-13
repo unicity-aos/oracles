@@ -1960,7 +1960,8 @@ then
   echo "oracle install unexpectedly succeeded after plugin failure" >&2
   exit 1
 fi
-test ! -e "$failed_plugin_home"
+test -d "$failed_plugin_home/extensions/oracles"
+test -z "$(find "$failed_plugin_home" ! -type d -print)"
 test ! -e "$failed_plugin_state/default-initialized"
 test ! -e "$failed_plugin_state/agent-codex-code"
 test ! -e "$failed_plugin_state/granted-codex-code-aos-mcp"
@@ -1983,7 +1984,8 @@ then
   echo "swapped receipt release root unexpectedly committed" >&2
   exit 1
 fi
-test ! -e "$swap_home"
+test -d "$swap_home/extensions/oracles"
+test -z "$(find "$swap_home" ! -type d -print)"
 test ! -e "$swap_state/default-initialized"
 test ! -e "$swap_state/agent-codex-code"
 test ! -e "$swap_state/granted-codex-code-aos-mcp"

@@ -90,7 +90,9 @@ release_install_lock() {
 mark_transaction_failure() {
   [ "$INSTALL_TRANSACTION_ACTIVE" -eq 1 ] || return 0
   TRANSACTION_FAILED=1
-  [ "$AOS_HOME_EXISTED" -eq 0 ] && ROLLBACK_AOS_HOME=1 || return 0
+  if [ "$AOS_HOME_EXISTED" -eq 0 ] && [ -z "$COMMITTED_HOSTS" ]; then
+    ROLLBACK_AOS_HOME=1
+  fi
 }
 
 mark_host_committed() {
@@ -159,9 +161,16 @@ cleanup() {
     RUNTIME_RESTORE_STOPPED=0
   fi
   if [ "$ROLLBACK_AOS_HOME" -eq 1 ]; then
-    rm -rf "$AOS_HOME_DIR"
+    # Keep the locked inode and its private ancestors until all deletion ends.
+    # The empty skeleton is reusable on retry; nothing is deleted after unlock.
+    for rollback_root in "$AOS_HOME_DIR" "$AOS_HOME_DIR/extensions" "$AOS_HOME_DIR/extensions/oracles"; do
+      ensure_contained_directory "$rollback_root" "fresh install rollback root"
+      find "$rollback_root" -mindepth 1 -maxdepth 1 \
+        ! -path "$AOS_HOME_DIR/extensions" ! -path "$AOS_HOME_DIR/extensions/oracles" \
+        ! -path "$INSTALL_LOCK" -exec rm -rf {} +
+    done
     ROLLBACK_AOS_HOME=0
-  elif [ "$TRANSACTION_FAILED" -eq 1 ] && [ "$AOS_HOME_EXISTED" -eq 1 ]; then
+  elif [ "$TRANSACTION_FAILED" -eq 1 ]; then
     case " $COMMITTED_RECEIPT_HOSTS " in
       *" $ROLLBACK_RECEIPT_HOST "*)
         NEW_RECEIPT=""

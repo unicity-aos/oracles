@@ -3,6 +3,7 @@
 
 import os
 import importlib.util
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +15,53 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class ReleaseCandidateTests(unittest.TestCase):
+    def test_fresh_home_rollback_keeps_the_lock_inode_until_deletion_ends(self) -> None:
+        source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw).resolve()
+            home = root / "aos"
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            remover = fake_bin / "rm"
+            remover.write_text(f"#!{sys.executable}\n" + '''
+import fcntl, os, pathlib, subprocess, sys
+lock = pathlib.Path(os.environ['TEST_INSTALL_LOCK'])
+def assert_locked():
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with lock.open('a') as fd:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            with open(os.environ['TEST_LOCK_AUDIT'], 'a') as log: log.write('held\\n')
+        else:
+            raise SystemExit('concurrent installer acquired during cleanup')
+assert_locked()
+subprocess.run([os.environ['TEST_REAL_RM'], *sys.argv[1:]], check=True)
+if str(lock) not in sys.argv[1:]: assert_locked()
+''')
+            remover.chmod(0o700)
+            script = source + '''
+INSTALL_TRANSACTION_ACTIVE=1
+ensure_install_destinations claude
+acquire_install_lock
+mkdir -p "$AOS_HOME_DIR/runtime"
+printf owned > "$AOS_HOME_DIR/runtime/payload"
+WORK=$(mktemp -d "$AOS_HOME_DIR/capture.XXXXXX")
+kill -TERM "$$"
+exit 92
+'''
+            audit = root / "audit"
+            result = subprocess.run(["sh", "-c", script, "fresh", "--oracle-version", "2026.10.0-rc.9"],
+                env=dict(os.environ, AOS_HOME=str(home), PATH=str(fake_bin) + os.pathsep + os.environ["PATH"],
+                    TEST_INSTALL_LOCK=str(home / "extensions/oracles/.install.lock"),
+                    TEST_LOCK_AUDIT=str(audit), TEST_REAL_RM=shutil.which("rm")),
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 143, result.stderr)
+            self.assertGreaterEqual(len(audit.read_text().splitlines()), 3)
+            self.assertFalse((home / "runtime").exists())
+            self.assertEqual(sorted(str(path.relative_to(home)) for path in home.rglob('*')),
+                ["extensions", "extensions/oracles"])
+
     def test_duplicate_requested_hosts_are_installed_once(self) -> None:
         source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
         with tempfile.TemporaryDirectory() as raw:
@@ -353,7 +401,7 @@ exit 92
                 (root / "Pack.lock").symlink_to("current/Pack.lock")
             script = source + '''
 INSTALL_TRANSACTION_ACTIVE=1
-AOS_HOME_EXISTED=1
+AOS_HOME_EXISTED=0
 ensure_install_destinations "claude codex"
 acquire_install_lock
 WORK=$(mktemp -d "$AOS_HOME_DIR/capture.XXXXXX")

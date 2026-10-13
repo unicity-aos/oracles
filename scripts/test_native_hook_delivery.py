@@ -4,6 +4,7 @@
 import json
 import os
 import runpy
+import signal
 from pathlib import Path
 import shutil
 import shlex
@@ -35,7 +36,7 @@ class NativeHookDelivery(unittest.TestCase):
                 self.assertEqual(CODEC["native_output"]("grok", event,
                     reply(event, skip=True, context="ignored by native host")), {})
 
-    def test_codex_native_hook_does_not_bootstrap_or_probe_capsules(self):
+    def test_native_hooks_never_provision_or_probe_capsules(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)
             home = root / "aos"
@@ -45,6 +46,7 @@ class NativeHookDelivery(unittest.TestCase):
             fake.write_text(
                 f'#!{sys.executable}\nimport json, os, sys\n'
                 'with open(os.environ["HOOK_TEST_LOG"], "a") as log: log.write(" ".join(sys.argv[1:])+"\\n")\n'
+                'if sys.argv[1:] == ["status", "--json"]:\n print(json.dumps({"state":"running"})); sys.exit(0)\n'
                 'assert "hook" in sys.argv\nsys.stdin.read()\n'
                 'event=sys.argv[sys.argv.index("--event")+1]\n'
                 'print(json.dumps({"schema_version":1,"event":event,"decision":{"skip":False},"context":None}))\n'
@@ -73,9 +75,11 @@ class NativeHookDelivery(unittest.TestCase):
                         self.assertEqual(json.loads(result.stdout), {})
                         expected += 1
             calls = log.read_text().splitlines()
-            self.assertEqual(len(calls), expected, calls)
+            deliveries = [call for call in calls if " hook " in call]
+            self.assertEqual(len(deliveries), expected, calls)
             self.assertEqual(expected, 58)
-            self.assertTrue(all(" hook " in call and "--format json" in call for call in calls))
+            self.assertTrue(all("--format json" in call for call in deliveries))
+            self.assertTrue(all(call == "status --json" or call in deliveries for call in calls))
 
     def test_inventory_and_native_semantics_for_every_event(self):
         for host, count in (("claude", 33), ("codex", 12), ("grok", 15)):
@@ -232,6 +236,163 @@ class NativeHookDelivery(unittest.TestCase):
                 self.assertTrue(any("aos-native-hook" in command for command in commands))
             self.assertEqual((ROOT / "plugins" / directory / "bin/aos-native-hook").read_bytes(),
                              (ROOT / "plugins/common/bin/aos-native-hook").read_bytes())
+
+
+class StoppedRuntimeRecovery(unittest.TestCase):
+    """Exercise the packaged wrapper and launcher; fake only the external AOS CLI."""
+
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.root = Path(self.scratch.name)
+        self.home = self.root / "aos"
+        (self.home / "runtime").mkdir(parents=True)
+        self.log = self.root / "calls"
+        self.fake = self.root / "aos-fixture"
+        self.fake.write_text(f'#!{sys.executable}\n' + '''
+import json, os, pathlib, subprocess, sys, time
+root = pathlib.Path(os.environ["RECOVERY_TEST_ROOT"])
+args = sys.argv[1:]
+with (root / "calls").open("a") as log:
+    log.write(json.dumps({"args": args, "cwd": os.getcwd()}) + "\\n")
+scenario = os.environ.get("RECOVERY_SCENARIO", "stopped")
+if args == ["status", "--json"]:
+    if scenario == "status-failed":
+        sys.exit(1)
+    if scenario == "status-invalid":
+        print("not JSON"); sys.exit(0)
+    if scenario == "status-duplicate":
+        print('{"state":"running","state":"stopped"}'); sys.exit(0)
+    print(json.dumps({"state": "starting" if scenario == "status-unknown" else
+                     "running" if (root / "running").exists() else "stopped"}))
+elif args == ["--principal", "default", "start", "--ephemeral"]:
+    assert sys.stdin.read() == "", "startup must not consume the event payload"
+    if scenario == "start-failed":
+        sys.exit(1)
+    if scenario == "start-not-ready":
+        sys.exit(0)
+    if scenario == "concurrent-start":
+        (root / "running").touch()
+        sys.exit(1)  # Another launcher won the startup race.
+    if scenario == "start-hung":
+        time.sleep(30)
+    if scenario == "detached":
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"],
+                                 start_new_session=True)
+        (root / "child-pid").write_text(str(child.pid))
+    (root / "running").touch()
+    print("startup diagnostic on stdout")
+    print("startup diagnostic on stderr", file=sys.stderr)
+elif len(args) > 2 and args[:3] == ["--principal", "claude-code", "hook"]:
+    assert json.load(sys.stdin)["session_id"] == "recovery-test"
+    if not (root / "running").exists():
+        sys.exit(1)
+    event = args[args.index("--event") + 1]
+    print(json.dumps({"schema_version": 1, "event": event,
+                      "decision": {"skip": scenario == "deny", "reason": "policy denied"},
+                      "context": None}))
+else:
+    sys.exit(91)  # No installation, capsule probing, or raw Astrid dispatch.
+''')
+        self.fake.chmod(0o700)
+        self.env = {key: value for key, value in os.environ.items()
+                    if not key.startswith(("AOS_", "ASTRID_", "CLAUDE_", "GROK_", "CODEX_", "PLUGIN_"))}
+        plugin = ROOT / "plugins/claude"
+        self.env.update(HOME=str(self.root), AOS_HOME=str(self.home), AOS_BIN=str(self.fake),
+                        CLAUDE_PLUGIN_ROOT=str(plugin), AOS_PLUGIN_ROOT=str(plugin),
+                        RECOVERY_TEST_ROOT=str(self.root), TMPDIR=str(self.root))
+        self.addCleanup(self.stop_detached_child)
+
+    def stop_detached_child(self):
+        pid = self.root / "child-pid"
+        if pid.exists():
+            try:
+                os.kill(int(pid.read_text()), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def invoke(self, scenario="stopped", event="user_prompt_submit"):
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "plugins/claude/bin/aos-native-hook"), "claude", event],
+            input='{"session_id":"recovery-test","prompt":"hello"}',
+            cwd=self.root, env=dict(self.env, RECOVERY_SCENARIO=scenario),
+            text=True, capture_output=True, timeout=13,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def calls(self):
+        return [json.loads(line)["args"] for line in self.log.read_text().splitlines()]
+
+    def test_stopped_runtime_recovers_before_a_single_prompt_delivery(self):
+        self.assertEqual(self.invoke(), {})
+        calls = self.calls()
+        self.assertEqual(calls[:2], [["status", "--json"],
+                                   ["--principal", "default", "start", "--ephemeral"]])
+        self.assertEqual(calls[2], ["status", "--json"])
+        self.assertEqual(len(calls), 4, calls)
+        self.assertEqual(calls[3][:3], ["--principal", "claude-code", "hook"])
+        for line in self.log.read_text().splitlines():
+            self.assertEqual(Path(json.loads(line)["cwd"]).resolve(), (self.home / "runtime").resolve())
+
+    def test_running_runtime_is_not_restarted(self):
+        (self.root / "running").touch()
+        self.assertEqual(self.invoke(), {})
+        self.assertEqual(self.calls()[0], ["status", "--json"])
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_recovered_runtime_still_enforces_policy_denial(self):
+        value = self.invoke("deny", "pre_tool_use")
+        self.assertEqual(value["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(value["hookSpecificOutput"]["permissionDecisionReason"], "policy denied")
+        self.assertEqual(len(self.calls()), 4)
+
+    def test_failed_or_invalid_status_never_starts_or_delivers(self):
+        for scenario in ("status-failed", "status-invalid", "status-unknown"):
+            with self.subTest(scenario=scenario):
+                self.log.unlink(missing_ok=True)
+                self.assertEqual(self.invoke(scenario)["decision"], "block")
+                self.assertEqual(self.calls(), [["status", "--json"]])
+
+    def test_failed_start_refuses_with_recovery_guidance_without_delivery(self):
+        value = self.invoke("start-failed")
+        self.assertEqual(value["decision"], "block")
+        self.assertIn("~/.aos/bin/aos start", value["reason"])
+        self.assertEqual(self.calls(), [["status", "--json"],
+                                      ["--principal", "default", "start", "--ephemeral"],
+                                      ["status", "--json"]])
+
+    def test_duplicate_status_keys_are_refused_without_starting(self):
+        self.assertEqual(self.invoke("status-duplicate").get("decision"), "block")
+        self.assertEqual(self.calls(), [["status", "--json"]])
+
+    def test_successful_start_without_readiness_never_delivers(self):
+        self.assertEqual(self.invoke("start-not-ready")["decision"], "block")
+        self.assertEqual(self.calls(), [["status", "--json"],
+                                      ["--principal", "default", "start", "--ephemeral"],
+                                      ["status", "--json"]])
+
+    def test_concurrent_start_failure_uses_the_now_running_runtime(self):
+        self.assertEqual(self.invoke("concurrent-start"), {})
+        self.assertEqual(len(self.calls()), 4)
+        self.assertEqual(self.calls()[-1][:3], ["--principal", "claude-code", "hook"])
+
+    def test_hung_start_is_bounded_by_the_existing_binding_deadline(self):
+        started = time.monotonic()
+        self.assertEqual(self.invoke("start-hung")["decision"], "block")
+        self.assertLess(time.monotonic() - started, 12)
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_detached_daemon_cannot_hold_the_decision_output_pipe_open(self):
+        started = time.monotonic()
+        self.assertEqual(self.invoke("detached"), {})
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertTrue((self.root / "child-pid").exists())
+
+    def test_passive_hook_does_not_start_the_runtime(self):
+        self.assertEqual(self.invoke(event="session_start"), {})
+        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual(self.calls()[0][:3], ["--principal", "claude-code", "hook"])
 
 
 if __name__ == "__main__":

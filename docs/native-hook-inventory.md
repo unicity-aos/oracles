@@ -30,8 +30,20 @@ Grok from accepting a prompt through this passive callback.
 
 Observer/context delivery has a two-second internal deadline, below the
 three-second registration limit. Binding delivery has ten seconds below its
-fifteen-second registration limit. Hooks do not provision or install capsules;
-SessionStart's separate setup helper owns readiness. Explicit SessionEnd
+fifteen-second registration limit. Before a Claude binding hook delivers its
+event, the launcher checks the selected AOS runtime's JSON status from the
+product workspace. A stopped runtime is started with
+`aos --principal default start --ephemeral`; a running runtime is left alone.
+Status, startup, and the single event delivery share the ten-second deadline.
+Invalid status, startup that leaves the runtime stopped, and unavailable policy
+still refuse the event. A failed start command can recover when the follow-up
+status confirms that another launcher has made the runtime running.
+The refusal includes `~/.aos/bin/aos start` as manual recovery guidance; use
+the configured AOS executable instead when the installation overrides it.
+Passive hooks and other hosts do not request this recovery.
+
+Hooks do not provision or install capsules; the MCP setup path owns
+provisioning. Explicit SessionEnd
 retires the route, while Grok child teardown keeps its parent route. Repeated
 Stop callbacks preserve the client's recursion marker for AOS to avoid loops.
 

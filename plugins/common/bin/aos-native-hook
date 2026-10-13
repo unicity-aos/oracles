@@ -88,6 +88,9 @@ def hook_inventory(host):
 
 def refusal(event, host="claude"):
     reason = "AOS policy could not be checked. Check AOS status and retry."
+    if host == "claude":
+        reason = ("AOS policy could not be checked. Run `~/.aos/bin/aos start` "
+                  "(or your configured AOS command's `start`) and retry.")
     name, _, mode = hook_contract(host, event)
     if mode in ("observe", "context"):
         return {}
@@ -216,6 +219,8 @@ def main():
         launcher = Path(__file__).resolve().with_name("aos-up")
         command = [str(launcher)] + (["codex"] if host == "codex" else [])
         command += ["hook", event]
+        if host == "claude" and mode not in ("observe", "context"):
+            command.append("--ensure-runtime")
         # Below the shortest registered binding-hook timeout (15 seconds),
         # leaving the host time to consume an explicit refusal on failure.
         child_type = value.get("subagentType")

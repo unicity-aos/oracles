@@ -75,6 +75,24 @@ class ReleaseCandidateTests(unittest.TestCase):
                          AOS_CHANNEL="", AOS_VERSION="", ORACLE_CHANNEL="dev"))
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_exact_aos_install_reads_product_before_labelled_runtime(self) -> None:
+        source = (ROOT / "install.sh").read_text()
+        function = "ensure_aos() {" + source.split("ensure_aos() {", 1)[1].split("\ndetect_hosts()", 1)[0]
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve()
+            (home / "bin").mkdir()
+            binary = home / "bin/aos"
+            binary.write_text("#!/bin/sh\nprintf '%s\\n' 'Unicity AOS 2026.10.0-rc.7' '  runtime: Astrid 2026.10.0-rc.6'\n")
+            binary.chmod(0o700)
+            installer = home / "source-install.sh"
+            installer.write_text("#!/bin/sh\nexit 0\n")
+            program = 'set -eu\nhave() { command -v "$1" >/dev/null 2>&1; }\ndie() { echo "$*" >&2; exit 1; }\n' + function + '\nensure_aos\n'
+            result = subprocess.run(["sh", "-c", program], capture_output=True, text=True,
+                env=dict(os.environ, AOS_HOME_DIR=str(home), AOS_INSTALL_URL=str(installer),
+                         NO_INSTALL_AOS="0", AOS_CHANNEL="", AOS_VERSION="2026.10.0-rc.7",
+                         ASSUME_YES="0", WORK=str(home)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_staging_preserves_numeric_source_and_rejects_wrong_base(self) -> None:
         spec = importlib.util.spec_from_file_location("stage_rc", ROOT / "scripts/stage_release_candidate.py")
         module = importlib.util.module_from_spec(spec)
@@ -153,6 +171,70 @@ class ReleaseCandidateTests(unittest.TestCase):
                     env=dict(os.environ), capture_output=True, text=True,
                 )
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
+
+    def test_rejected_installer_keeps_every_committed_host_pointer(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve()
+            pointers = []
+            for host in ("claude", "codex", "grok"):
+                root = home / "extensions/oracles" / host
+                (root / "releases/2026.10.0-rc.8").mkdir(parents=True)
+                (root / "releases/2026.10.0-rc.8/Pack.lock").write_text('[pack]\nversion = "2026.10.0-rc.8"\n')
+                for name, target in (("current", "releases/2026.10.0-rc.8"), ("Pack.lock", "current/Pack.lock")):
+                    (root / name).symlink_to(target)
+                    pointers.append((root / name, target))
+            for requested_host in ("claude", "codex", "grok"):
+                result = subprocess.run(["sh", str(ROOT / "install.sh"), "--host", requested_host,
+                    "--oracle-version", "2026.10.0-rc.7",
+                    "--no-install-aos", "--skip-host-plugin", "--yes"],
+                    env=dict(os.environ, AOS_HOME=str(home)), capture_output=True, text=True, timeout=10)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("restart the host session", result.stderr)
+                for pointer, target in pointers:
+                    self.assertTrue(pointer.is_symlink(), (requested_host, pointer, result.stderr))
+                    self.assertEqual(os.readlink(pointer), target)
+                self.assertFalse((home / "extensions/oracles/.install.lock").exists())
+
+    def test_committed_host_pack_cannot_be_implicitly_downgraded(self) -> None:
+        source = (ROOT / "install.sh").read_text()
+        function = "validate_oracle_activation() {" + source.split("validate_oracle_activation() {", 1)[1].split("\nruntime_toml_value()", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="oracle-activation-") as raw:
+            home = Path(raw).resolve()
+            host = home / "extensions/oracles/claude"
+            host.mkdir(parents=True)
+            current = host / "current"
+            for installed, requested, allow, accepted in (
+                ("2026.10.0-rc.8", "2026.10.0-rc.7", 0, False),
+                ("2026.10.0-rc.8", "2026.10.0-rc.8", 0, True),
+                ("2026.10.0-rc.9", "2026.10.0-rc.10", 0, True),
+                ("2026.10.0-rc.10", "2026.10.0-rc.9", 0, False),
+                ("2026.10.0", "2026.10.0-rc.8", 0, False),
+                ("2026.10.0-rc.8", "2026.10.0", 0, True),
+                ("2026.9.4", "2026.10.0-rc.1", 0, True),
+                ("2026.10.0-rc.8", "2026.10.0-rc.7", 1, True),
+            ):
+                with self.subTest(installed=installed, requested=requested, allow=allow):
+                    if current.is_symlink():
+                        current.unlink()
+                    current.symlink_to("releases/" + installed)
+                    result = subprocess.run(
+                        ["sh", "-c", function + '\nvalidate_oracle_activation "claude codex grok"'],
+                        env=dict(os.environ, AOS_HOME_DIR=str(home), ORACLES_VERSION=requested,
+                                 ALLOW_ORACLE_DOWNGRADE=str(allow)),
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    self.assertEqual(os.readlink(current), "releases/" + installed)
+                    if not accepted:
+                        self.assertIn("restart the host session", result.stderr)
+            current.unlink()
+            result = subprocess.run(
+                ["sh", "-c", function + '\nvalidate_oracle_activation "claude"'],
+                env=dict(os.environ, AOS_HOME_DIR=str(home), ORACLES_VERSION="2026.10.0-rc.8",
+                         ALLOW_ORACLE_DOWNGRADE="0"),
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

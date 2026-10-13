@@ -15,6 +15,7 @@ ASSUME_YES=0
 ALL_HOSTS=0
 NO_INSTALL_AOS=0
 SKIP_HOST_PLUGIN=0
+ALLOW_ORACLE_DOWNGRADE=0
 PLUGINS_ONLY=0
 CHECK_ONLY=0
 JSON_OUTPUT=0
@@ -227,6 +228,8 @@ Usage: install.sh [options]
   --yes, -y         non-interactive host-pack provisioning
   --oracle-version V exact signed oracle pack version (default: latest stable; latest RC with --oracle-channel dev)
   --oracle-channel C select stable or dev Oracle releases independently of AOS installation
+  --allow-oracle-downgrade
+                     deliberately activate an older Oracle pack in this home
   --aos-channel C   install/follow the AOS stable, dev, or nightly channel
   --aos-version V   install an exact AOS calendar-semver release
   --local-assets D  use locally built capsules and pack manifests for testing
@@ -254,6 +257,7 @@ while [ "$#" -gt 0 ]; do
       esac
       ;;
     --all) ALL_HOSTS=1 ;;
+    --allow-oracle-downgrade) ALLOW_ORACLE_DOWNGRADE=1 ;;
     --yes|-y) ASSUME_YES=1 ;;
     --oracle-version)
       shift
@@ -642,6 +646,51 @@ calendar_version_at_least() {
   }'
 }
 
+# An old plugin startup must not undo an already committed newer host pack.
+# Keep deliberate historical installation available through an explicit option.
+validate_oracle_activation() {
+  [ "$ALLOW_ORACLE_DOWNGRADE" -eq 0 ] || return 0
+  python3 - "$AOS_HOME_DIR" "$ORACLES_VERSION" "$@" <<'PYCODE'
+import os, pathlib, re, sys
+
+home = pathlib.Path(sys.argv[1])
+version_pattern = r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-rc\.([1-9][0-9]*))?"
+def version_key(version):
+    match = re.fullmatch(version_pattern, version)
+    if match is None:
+        raise ValueError("invalid committed Oracle version")
+    major, minor, patch, rc = match.groups()
+    return (int(major), int(minor), int(patch), rc is None, int(rc or 0))
+
+requested = sys.argv[2]
+try:
+    requested_key = version_key(requested)
+    for host in sys.argv[3].split():
+        root = home / "extensions/oracles" / host
+        current = root / "current"
+        installed = None
+        if current.is_symlink():
+            target = os.readlink(current)
+            if not target.startswith("releases/") or "/" in target[len("releases/"):]:
+                raise ValueError("invalid committed Oracle receipt pointer")
+            # Preserve the committed floor even if receipt repair is needed.
+            installed = target[len("releases/"):]
+        else:
+            pack = root / "Pack.lock"
+            if pack.is_file():
+                section = re.search(r"(?ms)^\[pack\]\s*$(.*?)(?=^\[|\Z)", pack.read_text())
+                versions = re.findall(r'^version\s*=\s*"([^"\n]+)"\s*$', section[1], re.M) if section else []
+                if len(versions) != 1:
+                    raise ValueError("cannot establish the installed Oracle version")
+                installed = versions[0]
+        if installed is not None and requested_key < version_key(installed):
+            raise ValueError(f"stale {host} Oracle {requested} cannot replace committed {installed}; restart the host session, or use --allow-oracle-downgrade for a deliberate historical install")
+except (OSError, ValueError) as error:
+    print(f"aos-oracles: {error}", file=sys.stderr)
+    sys.exit(1)
+PYCODE
+}
+
 runtime_toml_value() {
   rt_file=$1
   rt_key=$2
@@ -736,7 +785,7 @@ ensure_aos() {
   PATH="$aos_bin:$PATH"
   export PATH
   if [ -n "$AOS_VERSION" ]; then
-    installed=$(aos --version | awk 'NF { value = $NF } END { print value }')
+    installed=$(aos --version | awk 'NR == 1 { print $NF }')
     [ "$installed" = "$AOS_VERSION" ] \
       || die "requested Unicity AOS $AOS_VERSION but installer selected $installed"
   fi
@@ -1773,7 +1822,7 @@ validate_pack() {
   printf '%s\n' "$aos_floor" \
     | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
     || die "signed pack has invalid AOS version floor '$aos_floor'"
-  installed_aos=$(aos --version | awk 'NF { value = $NF } END { print value }')
+  installed_aos=$(aos --version | awk 'NR == 1 { print $NF }')
   printf '%s\n' "$installed_aos" \
     | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$' \
     || die "could not determine the installed Unicity AOS version"
@@ -2444,6 +2493,11 @@ fi
 INSTALL_TRANSACTION_ACTIVE=1
 ensure_install_destinations "$hosts"
 acquire_install_lock
+if ! validate_oracle_activation "$hosts"; then
+  # No receipt rollback state has been captured during this preflight.
+  INSTALL_TRANSACTION_ACTIVE=0
+  exit 1
+fi
 stage_release_metadata
 export_protected_assets
 ensure_aos

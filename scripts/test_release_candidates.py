@@ -263,6 +263,40 @@ exit 92
             self.assertEqual((home / "extensions/oracles/codex/Pack.lock").read_text(), "prior codex receipt\n")
             self.assertFalse((home / "extensions/oracles/.install.lock").exists())
 
+    def test_between_host_signal_keeps_the_committed_receipt(self) -> None:
+        source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve()
+            for host in ("claude", "codex"):
+                root = home / "extensions/oracles" / host
+                for version in ("2026.10.0-rc.8", "2026.10.0-rc.9"):
+                    (root / "releases" / version).mkdir(parents=True)
+                    (root / "releases" / version / "Pack.lock").write_text(version)
+                (root / "current").symlink_to("releases/2026.10.0-rc.8")
+                (root / "Pack.lock").symlink_to("current/Pack.lock")
+            script = source + '''
+INSTALL_TRANSACTION_ACTIVE=1
+AOS_HOME_EXISTED=1
+ensure_install_destinations "claude codex"
+acquire_install_lock
+WORK=$(mktemp -d "$AOS_HOME_DIR/capture.XXXXXX")
+capture_receipt_rollback_state claude
+atomic_symlink releases/2026.10.0-rc.9 "$AOS_HOME_DIR/extensions/oracles/claude/current"
+mark_host_committed claude
+# Exercise the signal window before write_receipt clears the capture flag.
+kill -TERM "$$"
+exit 92
+'''
+            result = subprocess.run(["sh", "-c", script, "commit", "--oracle-version", "2026.10.0-rc.9"],
+                env=dict(os.environ, AOS_HOME=str(home)), capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 143, result.stderr)
+            for host, version in (("claude", "2026.10.0-rc.9"), ("codex", "2026.10.0-rc.8")):
+                root = home / "extensions/oracles" / host
+                self.assertEqual(os.readlink(root / "current"), "releases/" + version)
+                self.assertEqual(os.readlink(root / "Pack.lock"), "current/Pack.lock")
+                self.assertEqual((root / "Pack.lock").read_text(), version)
+            self.assertFalse((home / "extensions/oracles/.install.lock").exists())
+
     def test_committed_host_pack_cannot_be_implicitly_downgraded(self) -> None:
         source = (ROOT / "install.sh").read_text()
         function = "validate_oracle_activation() {" + source.split("validate_oracle_activation() {", 1)[1].split("\nruntime_toml_value()", 1)[0]

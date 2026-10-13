@@ -151,6 +151,7 @@ cleanup() {
     case " $COMMITTED_HOSTS " in
       *" $ROLLBACK_RECEIPT_HOST "*)
         NEW_RECEIPT=""
+        RECEIPT_ROLLBACK_CAPTURED=0
         ;;
       *) [ -z "$NEW_RECEIPT" ] || rm -rf "$NEW_RECEIPT" ;;
     esac
@@ -2467,6 +2468,7 @@ write_receipt() {
   fi
   say "✓ $host oracle pack $ORACLES_VERSION committed"
   mark_host_committed "$host"
+  RECEIPT_ROLLBACK_CAPTURED=0
   NEW_RECEIPT=""
 }
 

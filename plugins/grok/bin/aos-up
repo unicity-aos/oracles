@@ -395,7 +395,9 @@ emit_host_hook() {
     if [ "$runtime_state" = stopped ]; then
       # The wrapper bounds this entire invocation, including startup. Keep
       # daemon-inherited streams off the decision pipe and hook input.
-      "$AOS" --principal default start --ephemeral </dev/null >&2 || true
+      # Binding hooks can run without a lasting MCP connection. Use the normal
+      # persistent daemon so idle retirement cannot race the next policy call.
+      "$AOS" --principal default start </dev/null >&2 || true
       # Another hook or the MCP launcher can win a concurrent start. Trust
       # the resulting runtime state rather than this start command's exit.
       runtime_state=$(hook_runtime_state) || return 1

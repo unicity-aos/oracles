@@ -4,7 +4,7 @@
 
 **Goal:** Recover Claude's blocking native hooks after the per-user AOS daemon stops, within the existing deadline and without weakening policy enforcement.
 
-**Architecture:** The native wrapper requests runtime readiness from its existing `aos-up` launcher before binding event delivery. The launcher resolves the same AOS executable and workspace, accepts only a valid running/stopped status, and starts a stopped runtime through `aos --principal default start --ephemeral`. It delivers the event once, after readiness preparation. The existing ten-second wrapper deadline covers status, start, and delivery.
+**Architecture:** The native wrapper requests runtime readiness from its existing `aos-up` launcher before binding event delivery. The launcher resolves the same AOS executable and workspace, accepts only a valid running/stopped status, and starts a stopped runtime through `aos --principal default start`. It delivers the event once, after readiness preparation. The existing ten-second wrapper deadline covers status, start, and delivery.
 
 **Tech Stack:** Python standard library, POSIX shell, existing AOS CLI.
 
@@ -60,3 +60,11 @@
 - Review corrections: reject duplicate status fields and confirm runtime state after every start attempt. A failed start can recover if another launcher made the runtime running; a successful start that leaves it stopped cannot deliver. Three additional regressions failed before these changes and passed afterward.
 - Final verification: 25 native-hook tests passed; host MCP startup, host-hook lifecycle, ShellCheck, registration sync, and diff whitespace checks passed again after the review corrections. The reviewer found no remaining material code issue.
 - Complete: implementation and review finished on `fix/codewall-135-runtime-recovery`. The original checkout and live runtime were not modified. Temporary read-only inspection and baseline worktrees were removed.
+
+## Binding-hook lifetime correction
+
+Real source-composition testing found that successful cold/warm delivery did not suffice: an invalid token was correctly refused, but the next valid owner was refused while an ephemeral daemon finalized, and immediate stop returned a durable projection fence error. This was distinct from invalid diagnostic reuse of a session ID with a fresh token. Original failed evidence remains retained.
+
+Recovery now starts AOS in its normal persistent mode. Binding calls may have no lasting MCP connection; their runtime must survive gaps between prompts. This introduces no login service, policy bypass, retry of delivered events, or change to the ten-second deadline. Existing running daemons are left alone, and explicit operator stop still ends the recovered runtime. Passive hooks and other-host native paths retain their lifecycle.
+
+The recording startup regression rejects the old ephemeral command. Real qualification requires a fresh session, cold and warm success, persistent status, wrong-token refusal, valid-owner recovery, route retirement and explicit stopped/volume-only cleanup. Source composition remains distinct from published packages and physical reboot acceptance.

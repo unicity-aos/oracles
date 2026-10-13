@@ -33,7 +33,11 @@ three-second registration limit. Binding delivery has ten seconds below its
 fifteen-second registration limit. Before a Claude binding hook delivers its
 event, the launcher checks the selected AOS runtime's JSON status from the
 product workspace. A stopped runtime is started with
-`aos --principal default start --ephemeral`; a running runtime is left alone.
+`aos --principal default start`; a running runtime is left alone.
+A recovered binding-hook daemon uses AOS's normal persistent mode: intermittent
+policy calls do not provide a lasting MCP connection, so ephemeral retirement
+would race a later prompt. It remains running until explicitly stopped; passive
+hooks and MCP startup retain their existing lifecycle.
 Status, startup, and the single event delivery share the ten-second deadline.
 Invalid status, startup that leaves the runtime stopped, and unavailable policy
 still refuse the event. A failed start command can recover when the follow-up

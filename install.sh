@@ -53,6 +53,7 @@ PRIOR_PACK_LOCK_TARGET=""
 PRIOR_PACK_LOCK_BACKUP=""
 PRIOR_PACK_LOCK_MODE=""
 COMMITTED_HOSTS=""
+COMMITTED_RECEIPT_HOSTS=""
 CAPSULE_RECORD_FOUND=0
 RUNTIME_RESTORE_STOPPED=0
 RUNTIME_STARTED_PID=""
@@ -93,6 +94,16 @@ mark_host_committed() {
     *" $1 "*) ;;
     *) COMMITTED_HOSTS="$COMMITTED_HOSTS $1" ;;
   esac
+}
+
+# Plugin registration can commit before the receipt pointers are published.
+mark_receipt_committed() {
+  mark_host_committed "$1"
+  case " $COMMITTED_RECEIPT_HOSTS " in
+    *" $1 "*) ;;
+    *) COMMITTED_RECEIPT_HOSTS="$COMMITTED_RECEIPT_HOSTS $1" ;;
+  esac
+  RECEIPT_ROLLBACK_CAPTURED=0
 }
 
 restore_runtime_state() {
@@ -148,7 +159,7 @@ cleanup() {
     rm -rf "$AOS_HOME_DIR"
     ROLLBACK_AOS_HOME=0
   elif [ "$TRANSACTION_FAILED" -eq 1 ] && [ "$AOS_HOME_EXISTED" -eq 1 ]; then
-    case " $COMMITTED_HOSTS " in
+    case " $COMMITTED_RECEIPT_HOSTS " in
       *" $ROLLBACK_RECEIPT_HOST "*)
         NEW_RECEIPT=""
         RECEIPT_ROLLBACK_CAPTURED=0
@@ -2467,8 +2478,7 @@ write_receipt() {
     rm -f "$receipt_root/Pack.lock.sigstore.json"
   fi
   say "✓ $host oracle pack $ORACLES_VERSION committed"
-  mark_host_committed "$host"
-  RECEIPT_ROLLBACK_CAPTURED=0
+  mark_receipt_committed "$host"
   NEW_RECEIPT=""
 }
 

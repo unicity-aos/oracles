@@ -2,6 +2,7 @@
 """Exercise RC parsing and minimum ordering at the shipped installer boundary."""
 
 import os
+import fcntl
 import importlib.util
 import shutil
 from pathlib import Path
@@ -62,6 +63,73 @@ exit 92
             self.assertEqual(sorted(str(path.relative_to(home)) for path in home.rglob('*')),
                 ["extensions", "extensions/oracles"])
 
+    def test_fresh_home_lock_loser_preserves_the_winners_state(self) -> None:
+        source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve() / "aos"
+            lock = home / "extensions/oracles/.install.lock"
+            lock.parent.mkdir(parents=True)
+            winner = home / "winner/payload"
+            winner.parent.mkdir()
+            winner.write_text("committed")
+            script = source + r'''
+INSTALL_TRANSACTION_ACTIVE=1
+AOS_HOME_EXISTED=0
+ensure_install_destinations claude
+acquire_install_lock
+exit 92
+'''
+            with lock.open("w") as holder:
+                holder.write("winner")
+                holder.flush()
+                fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                result = subprocess.run(["sh", "-c", script, "contender", "--oracle-version", "2026.10.0-rc.9"],
+                    env=dict(os.environ, AOS_HOME=str(home)), capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("another oracle installation is active", result.stderr)
+            self.assertEqual((home / "winner/payload").read_text(), "committed")
+            self.assertEqual((home / "extensions/oracles/.install.lock").read_text(), "winner")
+
+    def test_success_announcement_follows_receipt_commit(self) -> None:
+        source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
+        # Exercise the real publication path, terminating at its success message.
+        with tempfile.TemporaryDirectory() as raw:
+            home = Path(raw).resolve()
+            root = home / "extensions/oracles/claude"
+            old = root / "releases/2026.10.0-rc.8"
+            old.mkdir(parents=True)
+            (old / "Pack.lock").write_text("old")
+            (root / "current").symlink_to("releases/2026.10.0-rc.8")
+            (root / "Pack.lock").symlink_to("current/Pack.lock")
+            stage = home / "pack-stage"
+            stage.mkdir()
+            (stage / "Pack.toml").write_text("new")
+            metadata = home / "metadata-stage"
+            metadata.mkdir()
+            for name in ("BLAKE3SUMS.txt", "runtime-compatibility.toml", "bindings"):
+                (metadata / name).write_text("")
+            script = source + r'''
+INSTALL_TRANSACTION_ACTIVE=1
+AOS_HOME_EXISTED=1
+ensure_install_destinations claude
+acquire_install_lock
+WORK=$(mktemp -d "$AOS_HOME_DIR/capture.XXXXXX")
+RELEASE_STAGE="$AOS_HOME_DIR/metadata-stage"
+CURRENT_PACK_BINDINGS="$RELEASE_STAGE/bindings"
+PLUGIN_BLAKE3=fixture
+ASSET_SOURCE=local
+capture_receipt_rollback_state claude
+say() { case "$*" in *"oracle pack"*"committed"*) kill -TERM "$$" ;; esac; }
+write_receipt claude claude-code "$AOS_HOME_DIR/pack-stage"
+exit 92
+'''
+            result = subprocess.run(["sh", "-c", script, "announcement", "--oracle-version", "2026.10.0-rc.9"],
+                env=dict(os.environ, AOS_HOME=str(home)), capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 143, result.stderr)
+            self.assertEqual(os.readlink(root / "current"), "releases/2026.10.0-rc.9")
+            self.assertTrue((root / "releases/2026.10.0-rc.9/Pack.lock").is_file())
+            self.assertFalse((home / "extensions/oracles/.install.lock").exists())
+
     def test_duplicate_requested_hosts_are_installed_once(self) -> None:
         source = (ROOT / "install.sh").read_text().split("\nensure_b3sum\nhosts=", 1)[0]
         with tempfile.TemporaryDirectory() as raw:
@@ -115,9 +183,7 @@ PLUGIN_BLAKE3=fixture
 ASSET_SOURCE=local
 capture_receipt_rollback_state claude
 mark_host_committed claude
-say() {
-  case "$*" in *"oracle pack"*"committed"*) kill -TERM "$$" ;; esac
-}
+mark_receipt_committed() { kill -TERM "$$"; }
 write_receipt claude claude-code "$AOS_HOME_DIR/pack-stage"
 exit 92
 '''

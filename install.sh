@@ -88,7 +88,7 @@ release_install_lock() {
 }
 
 mark_transaction_failure() {
-  [ "$INSTALL_TRANSACTION_ACTIVE" -eq 1 ] || return 0
+  [ "$INSTALL_TRANSACTION_ACTIVE" -eq 1 ] && [ "$LOCK_HELD" -eq 1 ] || return 0
   TRANSACTION_FAILED=1
   if [ "$AOS_HOME_EXISTED" -eq 0 ] && [ -z "$COMMITTED_HOSTS" ]; then
     ROLLBACK_AOS_HOME=1
@@ -2515,9 +2515,9 @@ write_receipt() {
   else
     rm -f "$receipt_root/Pack.lock.sigstore.json"
   fi
-  say "✓ $host oracle pack $ORACLES_VERSION committed"
   mark_receipt_committed "$host"
   NEW_RECEIPT=""
+  say "✓ $host oracle pack $ORACLES_VERSION committed"
 }
 
 if [ "$CHECK_ONLY" -eq 1 ]; then

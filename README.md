@@ -158,6 +158,15 @@ Capsules target `wasm32-unknown-unknown`. Build installable archives with the
 `astrid-build` binary from the exact Astrid Runtime release pinned by the AOS
 compatibility contract; raw Cargo `.wasm` files are not installable capsules.
 
+## Upgrading existing host sessions
+
+Oracle activation preserves each host's committed version. After an upgrade,
+restart existing host sessions: an old plugin cannot automatically reactivate
+an older pack. Same-version repair and forward upgrades remain available.
+For a deliberate historical installation into an already newer home, invoke
+`install.sh --oracle-version VERSION --allow-oracle-downgrade` explicitly.
+This does not bypass release signature verification.
+
 ## License
 
 MIT OR Apache-2.0

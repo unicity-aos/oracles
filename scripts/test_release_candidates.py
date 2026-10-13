@@ -154,6 +154,47 @@ class ReleaseCandidateTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode == 0, accepted, result.stderr)
 
+    def test_committed_host_pack_cannot_be_implicitly_downgraded(self) -> None:
+        source = (ROOT / "install.sh").read_text()
+        function = "validate_oracle_activation() {" + source.split("validate_oracle_activation() {", 1)[1].split("\nruntime_toml_value()", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="oracle-activation-") as raw:
+            home = Path(raw)
+            host = home / "extensions/oracles/claude"
+            host.mkdir(parents=True)
+            current = host / "current"
+            for installed, requested, allow, accepted in (
+                ("2026.10.0-rc.8", "2026.10.0-rc.7", 0, False),
+                ("2026.10.0-rc.8", "2026.10.0-rc.8", 0, True),
+                ("2026.10.0-rc.9", "2026.10.0-rc.10", 0, True),
+                ("2026.10.0-rc.10", "2026.10.0-rc.9", 0, False),
+                ("2026.10.0", "2026.10.0-rc.8", 0, False),
+                ("2026.10.0-rc.8", "2026.10.0", 0, True),
+                ("2026.9.4", "2026.10.0-rc.1", 0, True),
+                ("2026.10.0-rc.8", "2026.10.0-rc.7", 1, True),
+            ):
+                with self.subTest(installed=installed, requested=requested, allow=allow):
+                    if current.is_symlink():
+                        current.unlink()
+                    current.symlink_to("releases/" + installed)
+                    result = subprocess.run(
+                        ["sh", "-c", function + '\nvalidate_oracle_activation "claude codex grok"'],
+                        env=dict(os.environ, AOS_HOME_DIR=str(home), ORACLES_VERSION=requested,
+                                 ALLOW_ORACLE_DOWNGRADE=str(allow)),
+                        capture_output=True, text=True, timeout=5,
+                    )
+                    self.assertEqual(result.returncode == 0, accepted, result.stderr)
+                    self.assertEqual(os.readlink(current), "releases/" + installed)
+                    if not accepted:
+                        self.assertIn("restart the host session", result.stderr)
+            current.unlink()
+            result = subprocess.run(
+                ["sh", "-c", function + '\nvalidate_oracle_activation "claude"'],
+                env=dict(os.environ, AOS_HOME_DIR=str(home), ORACLES_VERSION="2026.10.0-rc.8",
+                         ALLOW_ORACLE_DOWNGRADE="0"),
+                capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

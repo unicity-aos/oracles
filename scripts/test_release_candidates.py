@@ -175,8 +175,6 @@ class ReleaseCandidateTests(unittest.TestCase):
     def test_rejected_installer_keeps_every_committed_host_pointer(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             home = Path(raw).resolve()
-            assets = home / "assets"
-            assets.mkdir()
             pointers = []
             for host in ("claude", "codex", "grok"):
                 root = home / "extensions/oracles" / host
@@ -187,7 +185,7 @@ class ReleaseCandidateTests(unittest.TestCase):
                     pointers.append((root / name, target))
             for requested_host in ("claude", "codex", "grok"):
                 result = subprocess.run(["sh", str(ROOT / "install.sh"), "--host", requested_host,
-                    "--oracle-version", "2026.10.0-rc.7", "--local-assets", str(assets),
+                    "--oracle-version", "2026.10.0-rc.7",
                     "--no-install-aos", "--skip-host-plugin", "--yes"],
                     env=dict(os.environ, AOS_HOME=str(home)), capture_output=True, text=True, timeout=10)
                 self.assertNotEqual(result.returncode, 0)

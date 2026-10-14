@@ -1094,7 +1094,7 @@ test ! -e "$malformed_identity_home/extensions/oracles/codex/current"
 rc_notice_home="$home/rc-notice/.aos"
 rc_notice_state="$work/rc-notice-state"
 mkdir -p "$rc_notice_state"
-TEST_CAPSULE_SHOW_NOTICE='! Update available: v2026.10.0-rc.2 → v2026.9.4. Run `astrid update` to upgrade.' \
+TEST_CAPSULE_SHOW_NOTICE='! Update available: v2026.10.0-rc.6 → v2026.10.0. Run `astrid update --channel dev` to upgrade.' \
   TEST_STATE="$rc_notice_state" AOS_HOME="$rc_notice_home" \
   "$repo_root/install.sh" --host codex --yes --no-install-aos \
   >"$work/rc-notice.out" 2>&1

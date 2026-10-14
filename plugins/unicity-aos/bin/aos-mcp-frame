@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import re
+import runpy
 import subprocess
 import sys
 import threading
@@ -152,21 +153,12 @@ def verify_runtime_before_popen() -> None:
     ):
         raise SystemExit("aos-mcp-frame: runtime is not the canonical release executable")
     try:
-        blake3 = subprocess.run(
-            ["b3sum", executable], check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
-        ).stdout.decode().split()[0]
-        if os.path.exists("/usr/bin/sha256sum"):
-            sha256 = subprocess.run(
-                ["/usr/bin/sha256sum", executable], check=True, stdout=subprocess.PIPE
-            ).stdout.decode().split()[0]
-        else:
-            sha256 = subprocess.run(
-                ["/usr/bin/shasum", "-a", "256", executable], check=True, stdout=subprocess.PIPE
-            ).stdout.decode().split()[0]
-    except (OSError, subprocess.SubprocessError, IndexError) as error:
-        raise SystemExit(f"aos-mcp-frame: could not hash runtime: {error}") from error
-    if blake3 != expected_blake3 or sha256 != expected_sha256:
-        raise SystemExit("aos-mcp-frame: runtime digest does not match its signed record")
+        digests = runpy.run_path(str(Path(__file__).with_name("aos-mcp-digests.py")))
+        digests["verify"](executable_path, expected_blake3, expected_sha256,
+                          aos_home / "bin/aos",
+                          releases / release_version / "release-manifest.json")
+    except (ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
+        raise SystemExit(f"aos-mcp-frame: {error}") from error
 
 
 def main() -> int:

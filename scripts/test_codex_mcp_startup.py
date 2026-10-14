@@ -222,6 +222,7 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         '  if [ "${TEST_AOS_RUNTIME_LINE:-0}" = 1 ]; then printf "  runtime: Astrid %s\\n" "${TEST_RUNTIME_VERSION:-2026.9.1}"; fi\n'
         '  exit "${TEST_AOS_VERSION_STATUS:-0}"\n'
         'fi\n'
+        'if [ "${1:-}" = checksum ]; then [ "${TEST_CHECKSUM_EXIT:-0}" = 0 ] || exit "$TEST_CHECKSUM_EXIT"; if [ -n "${TEST_CHECKSUM_RESULT:-}" ]; then printf "%s\\n" "$TEST_CHECKSUM_RESULT"; exit 0; fi; shasum -a 256 "$2" | awk \'{print $1}\'; exit 0; fi\n'
         'case " $* " in\n'
         '  " --principal default start --ephemeral ") touch "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started"; exit 0 ;;\n'
         '  *" capsule show aos-mcp --agent codex-code "*) [ -f "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started" ] || exit 94; exit 0 ;;\n'
@@ -641,6 +642,37 @@ def main() -> None:
             "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.0"
         ], "ready startup unexpectedly re-entered provisioning"
 
+        # Public installers support hosts without b3sum. Both resolver and
+        # final frame must use the independently SHA-256-checked AOS checksum.
+        b3sum_fixture = fake_bin / "b3sum"
+        b3sum_fixture.rename(fake_bin / "hidden-b3sum")
+        try:
+            no_b3sum = resolve_active(environment)
+            assert no_b3sum.returncode == 0, no_b3sum.stderr
+            no_b3sum = launch(environment, host_workspace)
+            assert no_b3sum.returncode == 0, no_b3sum.stderr
+            assert any(line.startswith("checksum ") for line in aos_log.read_text().splitlines())
+            for bad_environment in (
+                {"TEST_CHECKSUM_EXIT": "91"},
+                {"TEST_CHECKSUM_RESULT": "0" * 64},
+                {"TEST_CHECKSUM_RESULT": "not-a-digest"},
+            ):
+                rejected = resolve_active({**environment, **bad_environment})
+                assert rejected.returncode != 0, (bad_environment, rejected.stdout)
+            product = home / "bin/aos"
+            saved_product = product.read_bytes()
+            product.write_bytes(saved_product + b"# damaged checksum implementation\n")
+            before_checksum = aos_log.read_text().count("checksum ")
+            try:
+                rejected = resolve_active(environment)
+                assert rejected.returncode != 0, rejected.stdout
+                assert "checksum product does not match" in rejected.stderr, rejected.stderr
+                assert aos_log.read_text().count("checksum ") == before_checksum
+            finally:
+                product.write_bytes(saved_product)
+        finally:
+            (fake_bin / "hidden-b3sum").rename(b3sum_fixture)
+
         # A provisioned default home must survive a relaunch whose environment
         # has no AOS_HOME; the adapter exports the already-resolved home.
         default_home_environment = {
@@ -903,6 +935,8 @@ def main() -> None:
                 f'_aos_active_runtime_path="{expected_runtime}"; '
                 f'_aos_home="{home}"; '
                 f'_aos_release="{home / "releases/2026.9.1"}"; '
+                f'_aos_plugin_root="{PLUGIN}"; AOS="{home / "bin/aos"}"; '
+                f'_aos_manifest="{home / "releases/2026.9.1/release-manifest.json"}"; '
                 f'_aos_expected_blake3="{expected_digests[0]}"; '
                 f'_aos_expected_sha256="{expected_digests[1]}"; '
                 "export _aos_expected_blake3 _aos_expected_sha256; "
@@ -917,7 +951,7 @@ def main() -> None:
             check=False,
         )
         assert byte_gate.returncode != 0, (byte_gate.stdout, byte_gate.stderr)
-        assert "BLAKE3 digest does not match" in byte_gate.stderr
+        assert "digest does not match" in byte_gate.stderr
         expected_runtime.write_bytes(executable_bytes)
         expected_runtime.chmod(0o700)
 
@@ -930,6 +964,8 @@ def main() -> None:
                 f'_aos_active_runtime_path="{expected_runtime}"; '
                 f'_aos_home="{home}"; '
                 f'_aos_release="{home / "releases/2026.9.1"}"; '
+                f'_aos_plugin_root="{PLUGIN}"; AOS="{home / "bin/aos"}"; '
+                f'_aos_manifest="{home / "releases/2026.9.1/release-manifest.json"}"; '
                 f'_aos_expected_blake3="{expected_digests[0]}"; '
                 f'_aos_expected_sha256="{expected_digests[1]}"; '
                 "export _aos_active_runtime_path _aos_home _aos_release "
@@ -992,7 +1028,7 @@ def main() -> None:
         expected_runtime.write_text(substituted)
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
-        assert "BLAKE3 digest does not match" in rejected.stderr
+        assert "digest does not match" in rejected.stderr
         expected_runtime.write_bytes(executable_bytes)
         expected_runtime.chmod(0o700)
 

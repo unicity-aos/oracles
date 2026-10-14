@@ -173,29 +173,9 @@ PY
     echo "aos-resolve: active AOS release is missing its bundled Astrid CLI" >&2
     return 1
   }
-  command -v b3sum >/dev/null 2>&1 || {
-    echo "aos-resolve: b3sum is required to authenticate the selected Astrid bytes" >&2
-    return 127
-  }
-  if command -v sha256sum >/dev/null 2>&1; then
-    _aos_actual_sha256=$(sha256sum "$ASTRID" 2>/dev/null | awk '{print $1}')
-  elif command -v shasum >/dev/null 2>&1; then
-    _aos_actual_sha256=$(shasum -a 256 "$ASTRID" 2>/dev/null | awk '{print $1}')
-  else
-    echo "aos-resolve: sha256sum or shasum is required to authenticate Astrid" >&2
-    return 127
-  fi
-  _aos_actual_blake3=$(b3sum "$ASTRID" 2>/dev/null | awk '{print $1}')
-  printf '%s\n' "$_aos_actual_blake3" | grep -Eq '^[0-9a-f]{64}$' \
-    && [ "$_aos_actual_blake3" = "$_aos_expected_blake3" ] || {
-      echo "aos-resolve: active Astrid BLAKE3 digest does not match its signed executable record" >&2
-      return 1
-    }
-  printf '%s\n' "$_aos_actual_sha256" | grep -Eq '^[0-9a-f]{64}$' \
-    && [ "$_aos_actual_sha256" = "$_aos_expected_sha256" ] || {
-      echo "aos-resolve: active Astrid SHA-256 digest does not match its signed executable record" >&2
-      return 1
-    }
+  python3 "$_aos_plugin_root/bin/aos-mcp-digests.py" \
+    "$ASTRID" "$_aos_expected_blake3" "$_aos_expected_sha256" \
+    "$AOS" "$_aos_manifest"
 }
 
 # Select the product's consent bridge only after the active release and runtime

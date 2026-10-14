@@ -1103,6 +1103,35 @@ test -e "$rc_notice_home/extensions/oracles/codex/current"
 test ! -e "$rc_notice_state/agent-claude-code"
 test ! -e "$rc_notice_state/agent-grok-code"
 
+# A dev-train runtime names its own upgrade command in the notice. That wording
+# is still only a notice, never a transport failure.
+dev_notice_home="$home/dev-notice/.aos"
+dev_notice_state="$work/dev-notice-state"
+mkdir -p "$dev_notice_state"
+TEST_CAPSULE_SHOW_NOTICE='! Update available: v2026.10.0-rc.6 → v2026.10.0. Run `astrid update --channel dev` to upgrade.' \
+  TEST_STATE="$dev_notice_state" AOS_HOME="$dev_notice_home" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos \
+  >"$work/dev-notice.out" 2>&1
+test -e "$dev_notice_state/agent-claude-code"
+test ! -e "$dev_notice_state/agent-codex-code"
+test ! -e "$dev_notice_state/agent-grok-code"
+
+# Text after the notice is not a notice: an unrecognised extra diagnostic line
+# keeps the read fatal, whatever the notice wording.
+extra_line_home="$home/extra-line/.aos"
+extra_line_state="$work/extra-line-state"
+mkdir -p "$extra_line_state"
+if TEST_CAPSULE_SHOW_NOTICE='! Update available: v2026.10.0-rc.6 → v2026.10.0. Run `astrid update --channel dev` to upgrade.
+error: capsule store is unreadable' \
+  TEST_STATE="$extra_line_state" AOS_HOME="$extra_line_home" \
+  "$repo_root/install.sh" --host claude --yes --no-install-aos \
+  >"$work/extra-line.out" 2>&1; then
+  echo "an unrecognised capsule-show diagnostic must stay fatal" >&2
+  exit 1
+fi
+grep -F "could not read AOS capsule 'aos-mcp' for claude-code" "$work/extra-line.out" >/dev/null
+test ! -e "$extra_line_state/agent-claude-code"
+
 # A failed read is not proof of absence. Even with no prior capsule record,
 # a daemon/transport failure must stop before AOS workspace selection, first
 # boot, principal creation, grants, snapshot activation, or any receipt state.

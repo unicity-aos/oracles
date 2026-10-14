@@ -644,12 +644,24 @@ def main() -> None:
 
         # Public installers support hosts without b3sum. Both resolver and
         # final frame must use the independently SHA-256-checked AOS checksum.
+        isolated_bin = root / "without-b3sum-bin"
+        isolated_bin.mkdir()
+        for name in ("awk", "basename", "cat", "chmod", "cmp", "cut", "date",
+                     "dirname", "env", "find", "grep", "head", "id", "ln", "ls",
+                     "mkdir", "mktemp", "perl", "printf", "pwd", "readlink", "rm",
+                     "sed", "sh", "shasum", "sha256sum", "sleep", "sort", "stat",
+                     "tail", "touch", "tr", "uname", "wc", "python3"):
+            executable = shutil.which(name, path=environment["PATH"])
+            if executable:
+                (isolated_bin / name).symlink_to(Path(executable).resolve())
+        no_b3_environment = {**environment, "PATH": str(isolated_bin)}
+        assert shutil.which("b3sum", path=no_b3_environment["PATH"]) is None
         b3sum_fixture = fake_bin / "b3sum"
         b3sum_fixture.rename(fake_bin / "hidden-b3sum")
         try:
-            no_b3sum = resolve_active(environment)
+            no_b3sum = resolve_active(no_b3_environment)
             assert no_b3sum.returncode == 0, no_b3sum.stderr
-            no_b3sum = launch(environment, host_workspace)
+            no_b3sum = launch(no_b3_environment, host_workspace)
             assert no_b3sum.returncode == 0, no_b3sum.stderr
             assert any(line.startswith("checksum ") for line in aos_log.read_text().splitlines())
             for bad_environment in (
@@ -657,14 +669,14 @@ def main() -> None:
                 {"TEST_CHECKSUM_RESULT": "0" * 64},
                 {"TEST_CHECKSUM_RESULT": "not-a-digest"},
             ):
-                rejected = resolve_active({**environment, **bad_environment})
+                rejected = resolve_active({**no_b3_environment, **bad_environment})
                 assert rejected.returncode != 0, (bad_environment, rejected.stdout)
             product = home / "bin/aos"
             saved_product = product.read_bytes()
             product.write_bytes(saved_product + b"# damaged checksum implementation\n")
             before_checksum = aos_log.read_text().count("checksum ")
             try:
-                rejected = resolve_active(environment)
+                rejected = resolve_active(no_b3_environment)
                 assert rejected.returncode != 0, rejected.stdout
                 assert "checksum product does not match" in rejected.stderr, rejected.stderr
                 assert aos_log.read_text().count("checksum ") == before_checksum

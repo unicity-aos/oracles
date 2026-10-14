@@ -60,7 +60,7 @@ def verify(executable: Path, expected_blake3: str, expected_sha256: str,
             raise ValueError('checksum product does not match its executable inventory')
         command = [str(product), 'checksum', str(executable)]
     result = subprocess.run(command, check=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True, timeout=30)
+                            stderr=subprocess.DEVNULL, text=True, timeout=3)
     fields = result.stdout.split()
     if (not fields or fields[0] != expected_blake3
             or (not b3sum and len(fields) != 1)):

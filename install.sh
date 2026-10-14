@@ -1116,7 +1116,10 @@ load_capsule_record() {
   if [ "$cr_status" -ne 0 ]; then
     # Keep unknown diagnostics fatal, but do not mistake a cached update notice
     # accompanying the exact absent-capsule error for a transport failure.
-    cr_diagnostic=$(sed '/^! Update available: v[0-9][0-9.]*\(-rc\.[1-9][0-9]*\)\{0,1\} → v[0-9][0-9.]*\(-rc\.[1-9][0-9]*\)\{0,1\}\. Run `astrid update` to upgrade\.$/d' "$cr_error")
+    # The upgrade command varies by install method and release train
+    # (`astrid update`, `astrid update --channel dev`, brew, cargo), so any
+    # backtick-quoted command is accepted; the rest of the line stays exact.
+    cr_diagnostic=$(sed '/^! Update available: v[0-9][0-9.]*\(-rc\.[1-9][0-9]*\)\{0,1\} → v[0-9][0-9.]*\(-rc\.[1-9][0-9]*\)\{0,1\}\. Run `[^`][^`]*` to upgrade\.$/d' "$cr_error")
     # AOS marks an absent capsule with status 1 and this documented
     # diagnostic. Any other failure can mean unreadable or truncated state,
     # and must stop before workspace selection or default first-boot mutation.

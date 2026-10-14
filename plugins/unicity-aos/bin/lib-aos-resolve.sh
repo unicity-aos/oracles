@@ -261,8 +261,13 @@ aos_resolve_active_runtime() {
     echo "aos-resolve: plugin snapshot has an invalid Oracle release identity" >&2
     return 1
   }
-  _aos_version=$("$AOS" --version 2>/dev/null \
-    | awk 'NF { value = $NF } END { print value }')
+  # AOS may print a second runtime identity line. Select the named product,
+  # never the final version token (which belongs to bundled Astrid).
+  _aos_version_output=$("$AOS" --version 2>/dev/null) || return 1
+  _aos_version=$(printf '%s\n' "$_aos_version_output" | awk '
+    $1 == "Unicity" && $2 == "AOS" && NF == 3 { count++; value = $3 }
+    END { if (count == 1) print value }
+  ')
   printf '%s\n' "$_aos_version" \
     | grep -Eq '^20[0-9][0-9]\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-rc\.[1-9][0-9]*)?$' || {
       echo "aos-resolve: active AOS command reported an invalid release version" >&2

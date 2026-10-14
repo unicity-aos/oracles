@@ -217,7 +217,11 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         "set -eu\n"
         'printf "%s\\n" "$*" >> "$TEST_AOS_LOG"\n'
         'pwd -P >> "$TEST_AOS_CWD_LOG"\n'
-        'if [ "${1:-}" = --version ]; then printf "Unicity AOS %s\\n" "${TEST_AOS_VERSION:-2026.9.1}"; exit 0; fi\n'
+        'if [ "${1:-}" = --version ]; then\n'
+        '  printf "Unicity AOS %s\\n" "${TEST_AOS_VERSION:-2026.9.1}"\n'
+        '  if [ "${TEST_AOS_RUNTIME_LINE:-0}" = 1 ]; then printf "  runtime: Astrid %s\\n" "${TEST_RUNTIME_VERSION:-2026.9.1}"; fi\n'
+        '  exit "${TEST_AOS_VERSION_STATUS:-0}"\n'
+        'fi\n'
         'case " $* " in\n'
         '  " --principal default start --ephemeral ") touch "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started"; exit 0 ;;\n'
         '  *" capsule show aos-mcp --agent codex-code "*) [ -f "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started" ] || exit 94; exit 0 ;;\n'
@@ -814,6 +818,17 @@ def main() -> None:
         assert resolved.returncode == 0, (resolved.stdout, resolved.stderr)
         assert resolved.stdout.strip() == str(expected_runtime)
 
+        # A plausible product line from a failed command is not authoritative.
+        # The old pipeline masked this failure behind awk's successful status.
+        before_failed_version = astrid_log.read_text()
+        for status in (1, 91):
+            failed_version = resolve_active({
+                **environment, "TEST_AOS_VERSION_STATUS": str(status),
+            })
+            assert failed_version.returncode != 0, (status, failed_version.stdout)
+            assert failed_version.stdout == "", failed_version.stdout
+        assert astrid_log.read_text() == before_failed_version
+
         # Product RC identity must be tested independently of runtime identity:
         # the public package uses the suffix in both its path and metadata.
         rc_product = "2026.10.0-rc.2"
@@ -837,6 +852,23 @@ def main() -> None:
         rc_launch = launch(rc_environment, host_workspace)
         assert rc_launch.returncode == 0, (rc_launch.stdout, rc_launch.stderr)
         assert install_log.read_text() == install_before_rc, "RC relaunch reinstalled AOS"
+        # Current AOS prints both identities. Astrid's different RC must never
+        # become the product directory or cause provisioning on a ready pack.
+        combined_runtime = "2026.10.0-rc.3"
+        write_authenticated_runtime(home, environment, combined_runtime, rc_product)
+        combined_environment = {
+            **rc_environment,
+            "TEST_AOS_RUNTIME_LINE": "1",
+            "TEST_RUNTIME_VERSION": combined_runtime,
+        }
+        combined = resolve_active(combined_environment)
+        assert combined.returncode == 0, (combined.stdout, combined.stderr)
+        assert combined.stdout.strip() == str(rc_release / "runtime/bin/astrid")
+        combined_launch = launch(combined_environment, host_workspace)
+        assert combined_launch.returncode == 0, (combined_launch.stdout, combined_launch.stderr)
+        assert install_log.read_text() == install_before_rc, "combined version reinstalled AOS"
+        write_authenticated_runtime(home, environment, rc_product, rc_product)
+
         for invalid_product in (
             "2026.10.0-rc.0", "2026.10.0-rc.01", "2026.10.0-rc.2+build",
             "2026.10.0-beta.1", "2026.010.0-rc.2",

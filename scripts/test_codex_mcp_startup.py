@@ -186,21 +186,21 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         "#!/bin/sh\n"
         "set -eu\n"
         'printf "%s\\n" "$*" >> "$TEST_INSTALL_LOG"\n'
-        '[ "$*" = "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.0" ] '
+        '[ "$*" = "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.1" ] '
         '|| { printf "%s\\n" "unexpected installer arguments: $*" >&2; exit 91; }\n'
         'release="$AOS_HOME/releases/2026.9.1"\n'
         'receipt_root="$AOS_HOME/extensions/oracles/codex"\n'
-        'receipt="$receipt_root/releases/2026.10.0"\n'
+        'receipt="$receipt_root/releases/2026.10.1"\n'
         'mkdir -p "$AOS_HOME/bin" "$AOS_HOME/runtime/bin" "$release/runtime/bin" "$receipt"\n'
         'rm -f "$AOS_HOME/runtime/preflight-started"\n'
-        'printf "%s\\n" \'version = "2026.10.0"\' > "$receipt/Pack.lock"\n'
+        'printf "%s\\n" \'version = "2026.10.1"\' > "$receipt/Pack.lock"\n'
         'cat > "$receipt/Receipt.toml" <<\'RECEIPT\'\n'
         'schema-version = 1\n'
-        'oracle-version = "2026.10.0"\n'
+        'oracle-version = "2026.10.1"\n'
         'host = "codex"\n'
         'principal = "codex-code"\n'
         'source = "release"\n'
-        'plugin-snapshot = "../../../plugins/2026.10.0"\n'
+        'plugin-snapshot = "../../../plugins/2026.10.1"\n'
         'plugin-blake3 = "0000000000000000000000000000000000000000000000000000000000000000"\n'
         'RECEIPT\n'
         'cat > "$receipt/runtime-compatibility.toml" <<\'COMPAT\'\n'
@@ -272,7 +272,7 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         'manifest["release_files"]["bin/aos"] = {"blake3": product_blake3, "sha256": product_sha256, "mode": 0o755}\n'
         "pathlib.Path(path).write_text(json.dumps(manifest, indent=2) + \"\\n\")\n"
         "PY\n"
-        'ln -s "releases/2026.10.0" "$receipt_root/current"\n'
+        'ln -s "releases/2026.10.1" "$receipt_root/current"\n'
         'ln -s "current/Pack.lock" "$receipt_root/Pack.lock"\n',
     )
 
@@ -620,7 +620,7 @@ def main() -> None:
         assert first.stderr == "", first.stderr
         assert first.stdout.strip() in {"mcp-ready", ""}, first.stdout
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.0"
+            "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.1"
         ]
         attach = [line for line in astrid_log.read_text().splitlines() if "mcp attach" in line]
         assert attach == [
@@ -639,7 +639,7 @@ def main() -> None:
         second = launch(environment, host_workspace)
         assert second.returncode == 0, (second.returncode, second.stdout, second.stderr)
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.0"
+            "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.1"
         ], "ready startup unexpectedly re-entered provisioning"
 
         # Public installers support hosts without b3sum. Both resolver and
@@ -697,7 +697,7 @@ def main() -> None:
             default_home.stderr,
         )
         assert install_log.read_text().splitlines() == [
-            "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.0"
+            "--host codex --skip-host-plugin --no-install-aos --yes --oracle-version 2026.10.1"
         ], "default-home relaunch unexpectedly re-entered provisioning"
 
         # The equals form is dispatch, not a raw-AOS escape hatch. It must use
@@ -1196,7 +1196,7 @@ def main() -> None:
 
         receipt = home / "extensions/oracles/codex/current/Receipt.toml"
         receipt_text = receipt.read_text()
-        receipt.write_text(receipt_text.replace('oracle-version = "2026.10.0"', 'oracle-version = "0.2.6"'))
+        receipt.write_text(receipt_text.replace('oracle-version = "2026.10.1"', 'oracle-version = "0.2.6"'))
         rejected = resolve_active(environment)
         assert rejected.returncode != 0, (rejected.stdout, rejected.stderr)
         assert "receipt identity does not match this plugin" in rejected.stderr

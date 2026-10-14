@@ -220,7 +220,7 @@ def plant_fake_runtime(home: Path, installer: Path) -> None:
         'if [ "${1:-}" = --version ]; then\n'
         '  printf "Unicity AOS %s\\n" "${TEST_AOS_VERSION:-2026.9.1}"\n'
         '  if [ "${TEST_AOS_RUNTIME_LINE:-0}" = 1 ]; then printf "  runtime: Astrid %s\\n" "${TEST_RUNTIME_VERSION:-2026.9.1}"; fi\n'
-        '  exit 0\n'
+        '  exit "${TEST_AOS_VERSION_STATUS:-0}"\n'
         'fi\n'
         'case " $* " in\n'
         '  " --principal default start --ephemeral ") touch "${AOS_HOME:-$HOME/.aos}/runtime/preflight-started"; exit 0 ;;\n'
@@ -817,6 +817,17 @@ def main() -> None:
         expected_runtime = home / "releases/2026.9.1/runtime/bin/astrid"
         assert resolved.returncode == 0, (resolved.stdout, resolved.stderr)
         assert resolved.stdout.strip() == str(expected_runtime)
+
+        # A plausible product line from a failed command is not authoritative.
+        # The old pipeline masked this failure behind awk's successful status.
+        before_failed_version = astrid_log.read_text()
+        for status in (1, 91):
+            failed_version = resolve_active({
+                **environment, "TEST_AOS_VERSION_STATUS": str(status),
+            })
+            assert failed_version.returncode != 0, (status, failed_version.stdout)
+            assert failed_version.stdout == "", failed_version.stdout
+        assert astrid_log.read_text() == before_failed_version
 
         # Product RC identity must be tested independently of runtime identity:
         # the public package uses the suffix in both its path and metadata.
